@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>Talk to our Assistant</title>
+  <style>
+    :root {
+      --idle-1: #3b82f6;
+      --idle-2: #6366f1;
+      --live-1: #10b981;
+      --live-2: #06b6d4;
+      --end-1: #64748b;
+      --end-2: #475569;
+    }
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      background:
+        radial-gradient(1200px 800px at 50% -10%, #1e293b 0%, transparent 60%),
+        radial-gradient(900px 700px at 90% 110%, #312e81 0%, transparent 55%),
+        radial-gradient(900px 700px at 5% 100%, #0f766e 0%, transparent 55%),
+        #060912;
+      color: #e5e7eb;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      min-height: 100dvh; overflow: hidden; user-select: none;
+    }
+
+    .stage { display: flex; flex-direction: column; align-items: center; gap: 40px; }
+
+    /* The orb button */
+    .orb-wrap { position: relative; width: 260px; height: 260px; display: grid; place-items: center; }
+
+    /* Animated rings emanating outward */
+    .ring {
+      position: absolute; inset: 0; border-radius: 50%;
+      border: 2px solid rgba(99,102,241,.45);
+      opacity: 0; pointer-events: none;
+    }
+    .state-live .ring { animation: ripple 2.4s ease-out infinite; border-color: rgba(16,185,129,.5); }
+    .state-live .ring:nth-child(2) { animation-delay: .8s; }
+    .state-live .ring:nth-child(3) { animation-delay: 1.6s; }
+    @keyframes ripple {
+      0% { transform: scale(.7); opacity: .7; }
+      100% { transform: scale(1.45); opacity: 0; }
+    }
+
+    .orb {
+      position: relative;
+      width: 200px; height: 200px; border-radius: 50%;
+      border: none; cursor: pointer; color: #fff;
+      background: radial-gradient(circle at 32% 28%, var(--idle-1), var(--idle-2) 72%);
+      box-shadow:
+        0 0 0 1px rgba(255,255,255,.10) inset,
+        0 18px 50px rgba(59,130,246,.45),
+        0 0 70px rgba(99,102,241,.35);
+      display: grid; place-items: center; gap: 6px;
+      transition: transform .18s ease, box-shadow .35s ease, background .45s ease;
+      animation: breathe 4s ease-in-out infinite;
+    }
+    .orb:active { transform: scale(.96); }
+    @keyframes breathe {
+      0%,100% { box-shadow: 0 0 0 1px rgba(255,255,255,.10) inset, 0 18px 50px rgba(59,130,246,.40), 0 0 60px rgba(99,102,241,.30); }
+      50% { box-shadow: 0 0 0 1px rgba(255,255,255,.14) inset, 0 22px 60px rgba(59,130,246,.55), 0 0 90px rgba(99,102,241,.45); }
+    }
+
+    .orb .icon { font-size: 52px; line-height: 1; filter: drop-shadow(0 2px 6px rgba(0,0,0,.3)); }
+    .orb .label { font-size: 16px; font-weight: 700; letter-spacing: .01em; }
+
+    /* Live state */
+    .state-live .orb {
+      background: radial-gradient(circle at 32% 28%, var(--live-1), var(--live-2) 72%);
+      box-shadow: 0 0 0 1px rgba(255,255,255,.12) inset, 0 18px 55px rgba(16,185,129,.5), 0 0 90px rgba(6,182,212,.4);
+      animation: livePulse 1.8s ease-in-out infinite;
+    }
+    @keyframes livePulse {
+      0%,100% { transform: scale(1); }
+      50% { transform: scale(1.04); }
+    }
+
+    /* Connecting state */
+    .state-connecting .orb { animation: spinGlow 1.2s linear infinite; cursor: progress; }
+    @keyframes spinGlow {
+      0% { box-shadow: 0 0 0 1px rgba(255,255,255,.1) inset, 0 0 40px rgba(99,102,241,.4); }
+      50% { box-shadow: 0 0 0 1px rgba(255,255,255,.2) inset, 0 0 80px rgba(99,102,241,.7); }
+      100% { box-shadow: 0 0 0 1px rgba(255,255,255,.1) inset, 0 0 40px rgba(99,102,241,.4); }
+    }
+
+    /* Ended state */
+    .state-ended .orb {
+      background: radial-gradient(circle at 32% 28%, var(--end-1), var(--end-2) 72%);
+      box-shadow: 0 14px 40px rgba(15,23,42,.5);
+      animation: none;
+    }
+
+    .caption { font-size: 15px; color: #94a3b8; min-height: 22px; text-align: center; letter-spacing: .02em; transition: color .3s; }
+    .title { position: absolute; top: 34px; font-size: 14px; letter-spacing: .22em; text-transform: uppercase; color: #64748b; font-weight: 600; }
+
+    /* Soft equalizer bars under the orb while live */
+    .eq { display: flex; gap: 5px; height: 26px; align-items: flex-end; opacity: 0; transition: opacity .3s; }
+    .state-live .eq { opacity: 1; }
+    .eq span { width: 5px; background: linear-gradient(180deg, #5eead4, #22d3ee); border-radius: 4px; height: 30%; animation: bounce 1s ease-in-out infinite; }
+    .eq span:nth-child(2){ animation-delay:.1s } .eq span:nth-child(3){ animation-delay:.2s }
+    .eq span:nth-child(4){ animation-delay:.3s } .eq span:nth-child(5){ animation-delay:.15s }
+    .eq span:nth-child(6){ animation-delay:.25s } .eq span:nth-child(7){ animation-delay:.05s }
+    @keyframes bounce { 0%,100%{height:25%} 50%{height:100%} }
+  </style>
+</head>
+<body>
+  <div class="title">AI Leasing Assistant</div>
+  <div class="stage" id="stage">
+    <div class="orb-wrap" id="orbWrap">
+      <span class="ring"></span><span class="ring"></span><span class="ring"></span>
+      <button class="orb" id="orb" aria-label="Start call">
+        <span class="icon" id="orbIcon">📞</span>
+        <span class="label" id="orbLabel">Start Call</span>
+      </button>
+    </div>
+    <div class="eq" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div>
+    <div class="caption" id="caption">Tap to talk with our assistant</div>
+  </div>
+
+  <audio id="audioPlayer" style="display:none"></audio>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const APP_URL = {{ app_url|tojson }};
+
+    // call lifecycle: idle | connecting | live | ended
+    let phase = "idle";
+    let callId = null;
+    let ws = null;
+
+    function setPhase(p, caption) {
+      phase = p;
+      $("stage").className = "stage";              // reset
+      $("orbWrap").className = "orb-wrap";
+      if (p === "connecting") $("orbWrap").classList.add("state-connecting");
+      if (p === "live")       $("orbWrap").classList.add("state-live");
+      if (p === "ended")      $("orbWrap").classList.add("state-ended");
+
+      const icon = $("orbIcon"), label = $("orbLabel");
+      if (p === "idle")       { icon.textContent = "📞"; label.textContent = "Start Call"; }
+      if (p === "connecting") { icon.textContent = "…";  label.textContent = "Connecting"; }
+      if (p === "live")       { icon.textContent = "⏹";  label.textContent = "Tap to End"; }
+      if (p === "ended")      { icon.textContent = "✓";  label.textContent = "Call Ended"; }
+      if (caption !== undefined) $("caption").textContent = caption;
+    }
+
+    /* ───────────────── Mic: streams PCM16 @ 8kHz (same as full console) ───────────────── */
+    class VoiceStreamingMic {
+      constructor(ws) { this.ws = ws; this.stream = null; this.ctx = null; this.processor = null; this.active = false; this.muted = true; this.agentSpeaking = false; }
+      async start() {
+        this.stream = await navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
+        });
+        this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const source = this.ctx.createMediaStreamSource(this.stream);
+        this.processor = this.ctx.createScriptProcessor(2048, 1, 1);
+        this.processor.onaudioprocess = (e) => this._onAudio(e);
+        source.connect(this.processor);
+        const silent = this.ctx.createGain(); silent.gain.value = 0;
+        this.processor.connect(silent); silent.connect(this.ctx.destination);
+        this.active = true;
+      }
+      _floatToPcm16Chunk(input) {
+        const ratio = this.ctx.sampleRate / 8000;
+        const outLen = Math.max(1, Math.floor(input.length / ratio));
+        const int16 = new Int16Array(outLen);
+        for (let i = 0; i < outLen; i++) {
+          const idx = Math.min(input.length - 1, Math.floor(i * ratio));
+          int16[i] = Math.max(-32768, Math.min(32767, Math.round(input[idx] * 32767)));
+        }
+        return int16;
+      }
+      _sendMediaChunk(int16) {
+        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+        const bytes = new Uint8Array(int16.buffer);
+        let bin = ""; for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+        this.ws.send(JSON.stringify({ event: "media", media: { payload: btoa(bin), encoding: "linear16", sample_rate: 8000 } }));
+      }
+      _onAudio(e) {
+        if (!this.active) return;
+        const input = e.inputBuffer.getChannelData(0);
+        if (this.agentSpeaking) { this._sendMediaChunk(this._floatToPcm16Chunk(input)); return; }
+        if (this.muted) return;
+        this._sendMediaChunk(this._floatToPcm16Chunk(input));
+      }
+      unmute() { this.muted = false; this.agentSpeaking = false; }
+      mute() { this.muted = true; this.agentSpeaking = false; }
+      stop() {
+        this.active = false; this.mute();
+        if (this.processor) { this.processor.disconnect(); this.processor = null; }
+        if (this.ctx) { this.ctx.close().catch(() => {}); this.ctx = null; }
+        if (this.stream) { this.stream.getTracks().forEach(t => t.stop()); this.stream = null; }
+      }
+    }
+
+    let voiceMic = null;
+    const agentAudioQueue = [];
+    let agentAudioPlaying = false;
+    let playSessionId = 0;
+    let activeBlobUrl = null;
+    let playbackWatchdog = null;
+    let pendingUnmute = false;
+    let agentQuietUntil = 0;
+    const POST_PLAYBACK_MUTE_MS = 350;
+
+    function isPlayerBusy() { const p = $("audioPlayer"); return !!(p.src && !p.paused && !p.ended); }
+    function invalidatePlayback() { playSessionId += 1; }
+    function resetAudioElement() {
+      const p = $("audioPlayer"); p.onended = null; p.onerror = null;
+      try { p.pause(); p.currentTime = 0; } catch (e) {}
+      if (activeBlobUrl) { URL.revokeObjectURL(activeBlobUrl); activeBlobUrl = null; }
+      p.removeAttribute("src"); try { p.load(); } catch (e) {}
+    }
+    function ensureAgentPlayback() {
+      if (!agentAudioQueue.length) { agentAudioPlaying = false; return; }
+      if (agentAudioPlaying && isPlayerBusy()) return;
+      if (agentAudioPlaying && !isPlayerBusy()) agentAudioPlaying = false;
+      playNextAgentAudio();
+    }
+    function schedulePlaybackWatchdog() {
+      if (playbackWatchdog) clearTimeout(playbackWatchdog);
+      playbackWatchdog = setTimeout(() => {
+        playbackWatchdog = null;
+        if (!agentAudioQueue.length) return;
+        if (!isPlayerBusy()) { agentAudioPlaying = false; playNextAgentAudio(); }
+      }, 2000);
+    }
+    function stopAgentPlayback() {
+      invalidatePlayback(); resetAudioElement();
+      agentAudioQueue.length = 0; agentAudioPlaying = false; pendingUnmute = false;
+      if (playbackWatchdog) { clearTimeout(playbackWatchdog); playbackWatchdog = null; }
+      if (voiceMic) { voiceMic.agentSpeaking = false; voiceMic.muted = false; }
+    }
+    function onAgentSpeaking() { pendingUnmute = false; if (voiceMic) voiceMic.agentSpeaking = true; }
+    function tryUnmuteMic() {
+      if (!pendingUnmute || !voiceMic) return;
+      const wait = agentQuietUntil - Date.now();
+      if (wait > 0) { setTimeout(tryUnmuteMic, wait); return; }
+      pendingUnmute = false; voiceMic.unmute();
+      if (phase === "live") $("caption").textContent = "Listening…";
+    }
+    function onAgentDone() {
+      if (voiceMic) voiceMic.agentSpeaking = false;
+      pendingUnmute = true; agentQuietUntil = Date.now() + POST_PLAYBACK_MUTE_MS;
+      tryUnmuteMic();
+    }
+    function playNextAgentAudio() {
+      if (!agentAudioQueue.length) { agentAudioPlaying = false; return; }
+      agentAudioPlaying = true; onAgentSpeaking();
+      if (phase === "live") $("caption").textContent = "Assistant speaking…";
+      const { b64, turnEnd } = agentAudioQueue.shift();
+      const session = playSessionId;
+      playAudio(b64, () => { if (session !== playSessionId) return; if (turnEnd) onAgentDone(); playNextAgentAudio(); });
+    }
+    function enqueueAgentAudio(b64, turnEnd = true) {
+      agentAudioQueue.push({ b64, turnEnd: turnEnd !== false });
+      ensureAgentPlayback(); schedulePlaybackWatchdog();
+    }
+    function playAudio(b64, onEnded) {
+      if (!b64) { if (onEnded) onEnded(); return; }
+      const session = playSessionId; const player = $("audioPlayer");
+      const finish = () => { if (session !== playSessionId) return; if (onEnded) onEnded(); };
+      player.onended = finish; player.onerror = () => finish();
+      if (activeBlobUrl) { URL.revokeObjectURL(activeBlobUrl); activeBlobUrl = null; }
+      try {
+        const bin = atob(b64); const arr = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+        const blob = new Blob([arr], { type: "audio/wav" });
+        activeBlobUrl = URL.createObjectURL(blob); player.src = activeBlobUrl;
+      } catch (e) { player.src = "data:audio/wav;base64," + b64; }
+      player.volume = 0.9;
+      player.play().catch(() => finish());
+    }
+
+    /* ───────────────── Call control ───────────────── */
+    async function api(path, body) {
+      const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
+      if (!r.ok) throw new Error((await r.text()) || r.statusText);
+      return r.json();
+    }
+
+    async function startCall() {
+      setPhase("connecting", "Connecting…");
+      try {
+        const data = await api("/test/api/start", { mode: "voice", phone_number: "+15555550123" });
+        callId = data.call_id;
+        ws = new WebSocket(data.ws_url);
+
+        ws.onopen = async () => {
+          ws.send(JSON.stringify({ event: "start" }));
+          try {
+            voiceMic = new VoiceStreamingMic(ws);
+            await voiceMic.start();
+            setPhase("live", "Connected — say hello!");
+          } catch (e) {
+            setPhase("idle", "Microphone access is needed to talk.");
+            cleanup();
+          }
+        };
+
+        ws.onmessage = (ev) => {
+          let msg; try { msg = JSON.parse(ev.data); } catch (_) { return; }
+          if (msg.event === "play_wav" && msg.audio_wav_b64) {
+            enqueueAgentAudio(msg.audio_wav_b64, msg.turn_end);
+          } else if (msg.event === "interrupt") {
+            stopAgentPlayback();
+          } else if (msg.event === "transcript") {
+            if (phase === "live") $("caption").textContent = "…";
+          } else if (msg.event === "complete") {
+            endCall("Thanks for your time. Goodbye!");
+          } else if (msg.event === "error") {
+            // keep the call alive; surface a soft hint
+            if (phase === "live") $("caption").textContent = "One moment…";
+          }
+        };
+
+        ws.onerror = () => { if (phase !== "ended") setPhase("idle", "Connection problem. Tap to try again."); cleanup(); };
+        ws.onclose = () => { if (phase === "live" || phase === "connecting") { setPhase("idle", "Call disconnected. Tap to start again."); cleanup(); } };
+      } catch (e) {
+        setPhase("idle", "Couldn't start the call. Tap to try again.");
+        cleanup();
+      }
+    }
+
+    function cleanup() {
+      if (voiceMic) { voiceMic.stop(); voiceMic = null; }
+      pendingUnmute = false; invalidatePlayback();
+      agentAudioQueue.length = 0; agentAudioPlaying = false;
+      resetAudioElement();
+      if (ws) { try { ws.send(JSON.stringify({ event: "stop" })); } catch (_) {} try { ws.close(); } catch (_) {} ws = null; }
+    }
+
+    async function endCall(caption) {
+      const id = callId;
+      cleanup();
+      setPhase("ended", caption || "Call ended.");
+      if (id) { try { await api("/test/api/end", { call_id: id }); } catch (_) {} }
+      // Return to idle shortly so the client can call again.
+      setTimeout(() => { if (phase === "ended") setPhase("idle", "Tap to talk with our assistant"); }, 2600);
+    }
+
+    $("orb").addEventListener("click", () => {
+      if (phase === "idle" || phase === "ended") startCall();
+      else if (phase === "live") endCall("Call ended.");
+      // ignore taps while connecting
+    });
+  </script>
+</body>
+</html>

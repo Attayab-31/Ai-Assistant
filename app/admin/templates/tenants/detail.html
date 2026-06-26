@@ -1,0 +1,208 @@
+{% extends "base.html" %}
+{% block title %}Tenant Detail{% endblock %}
+{% block page_title %}Tenant Detail{% endblock %}
+{% block content %}
+<style>
+  .edit-form { max-width: 720px; }
+  .form-group { margin-bottom: 16px; }
+  .form-group label { display: block; font-weight: 500; margin-bottom: 4px; }
+  .form-group input, .form-group select, .form-group textarea { width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; }
+  .form-actions { display: flex; gap: 8px; margin-top: 20px; }
+  .btn { padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; }
+  .btn-primary { background: #007bff; color: white; }
+  .btn-secondary { background: #6c757d; color: white; }
+  .alert { padding: 12px; margin-bottom: 16px; border-radius: 4px; }
+  .alert-success { background: #d4edda; color: #155724; }
+  .alert-error { background: #f8d7da; color: #721c24; }
+  .badge { display: inline-block; padding: 4px 8px; border-radius: 3px; font-size: 12px; }
+  .screening-table td { padding: 4px 8px 4px 0; vertical-align: top; }
+  .screening-table .muted { width: 180px; }
+</style>
+
+<div class="stack">
+  <section class="card">
+    <h2>{{ tenant.full_name or tenant.phone_number|phone_display }}</h2>
+    <p>Caller ID: {{ tenant.phone_number|phone_display }}</p>
+    <p>Status: <span class="badge" style="background: {{ tenant.qualification_status|status_color }}">{{ tenant.qualification_status }}</span></p>
+    <p>Score: <span style="color: {{ tenant.qualification_score|score_color }}">{{ tenant.qualification_score or 0 }}/100</span></p>
+  </section>
+
+  <section class="card">
+    <h2>Extracted Screening Data</h2>
+    <table class="screening-table" style="width: 100%;">
+      <tbody>
+        <tr><td class="muted">Full name</td><td>{{ tenant.full_name or "-" }}</td></tr>
+        <tr><td class="muted">Contact phone</td><td>{{ tenant.contact_phone|phone_display if tenant.contact_phone else "-" }}</td></tr>
+        <tr><td class="muted">Email</td><td>{{ tenant.email or "-" }}</td></tr>
+        <tr><td class="muted">Move-in</td><td>{{ tenant.move_in_raw or tenant.move_in_date or "-" }}</td></tr>
+        <tr><td class="muted">Move timing</td><td>{{ tenant.move_timing or "-" }}</td></tr>
+        <tr><td class="muted">Occupants</td><td>{{ tenant.occupants_count or "-" }} total ({{ tenant.adults_count or "-" }} adults, {{ tenant.children_count or 0 }} children)</td></tr>
+        <tr><td class="muted">Current residence</td><td>{{ tenant.current_residence or "-" }}</td></tr>
+        <tr><td class="muted">Time at residence</td><td>{{ tenant.residence_duration or "-" }}</td></tr>
+        <tr><td class="muted">Move reason</td><td>{{ tenant.move_reason or "-" }}</td></tr>
+        <tr><td class="muted">Pets</td><td>{% if tenant.has_pets is none %}-{% elif tenant.has_pets %}Yes{% if tenant.pet_type %} — {{ tenant.pet_type }}{% endif %}{% if tenant.pet_breed %}, {{ tenant.pet_breed }}{% endif %}{% if tenant.pet_weight %}, ~{{ tenant.pet_weight }} lbs{% endif %}{% else %}No{% endif %}</td></tr>
+        <tr><td class="muted">Eviction history</td><td>{% if tenant.has_eviction is none %}-{% elif tenant.has_eviction %}Yes{% if tenant.eviction_circumstances %} — {{ tenant.eviction_circumstances }}{% endif %}{% else %}No{% endif %}</td></tr>
+        <tr><td class="muted">Monthly income</td><td>{{ tenant.monthly_income|currency if tenant.monthly_income else (tenant.income_raw or "-") }}</td></tr>
+        <tr><td class="muted">Employer</td><td>{{ tenant.employer or "-" }}</td></tr>
+        <tr><td class="muted">Employment duration</td><td>{{ tenant.employment_duration or "-" }}</td></tr>
+        <tr><td class="muted">Background notes</td><td>{{ tenant.general_notes or "-" }}</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="card">
+    <h2>Edit Tenant Information</h2>
+    <div id="msg"></div>
+    <form class="edit-form" onsubmit="saveTenant(event)">
+      <div class="form-group">
+        <label>Full name</label>
+        <input type="text" id="fullName" value="{{ tenant.full_name or '' }}" />
+      </div>
+      <div class="form-group">
+        <label>Contact phone</label>
+        <input type="text" id="contactPhone" value="{{ tenant.contact_phone or '' }}" />
+      </div>
+      <div class="form-group">
+        <label>Email</label>
+        <input type="email" id="email" value="{{ tenant.email or '' }}" />
+      </div>
+      <div class="form-group">
+        <label>Income (monthly)</label>
+        <input type="number" id="income" value="{{ tenant.monthly_income or 0 }}" step="1" />
+      </div>
+      <div class="form-group">
+        <label>Adults</label>
+        <input type="number" id="adults" value="{{ tenant.adults_count or 0 }}" min="0" />
+      </div>
+      <div class="form-group">
+        <label>Children</label>
+        <input type="number" id="children" value="{{ tenant.children_count or 0 }}" min="0" />
+      </div>
+      <div class="form-group">
+        <label>Move-in Date</label>
+        <input type="text" id="moveDate" value="{{ tenant.move_in_raw or tenant.move_in_date or '' }}" placeholder="e.g. 2025-07-01" />
+      </div>
+      <div class="form-group">
+        <label>Move timing</label>
+        <input type="text" id="moveTiming" value="{{ tenant.move_timing or '' }}" />
+      </div>
+      <div class="form-group">
+        <label>Current residence</label>
+        <input type="text" id="currentResidence" value="{{ tenant.current_residence or '' }}" />
+      </div>
+      <div class="form-group">
+        <label>Time at residence</label>
+        <input type="text" id="residenceDuration" value="{{ tenant.residence_duration or '' }}" />
+      </div>
+      <div class="form-group">
+        <label>Move Reason</label>
+        <input type="text" id="moveReason" value="{{ tenant.move_reason or '' }}" placeholder="e.g. Current lease ending" />
+      </div>
+      <div class="form-group">
+        <label>Employer</label>
+        <input type="text" id="employer" value="{{ tenant.employer or '' }}" />
+      </div>
+      <div class="form-group">
+        <label>Employment duration</label>
+        <input type="text" id="employmentDuration" value="{{ tenant.employment_duration or '' }}" />
+      </div>
+      <div class="form-group">
+        <label>Background notes</label>
+        <textarea id="generalNotes" rows="3">{{ tenant.general_notes or '' }}</textarea>
+      </div>
+      <div class="form-group">
+        <label>Admin notes</label>
+        <textarea id="notes" rows="3">{{ tenant.notes or '' }}</textarea>
+      </div>
+      <div class="form-group">
+        <label>Eviction History</label>
+        <select id="hasEviction">
+          <option value="false" {% if not tenant.has_eviction %}selected{% endif %}>No</option>
+          <option value="true" {% if tenant.has_eviction %}selected{% endif %}>Yes</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Pets</label>
+        <select id="hasPets">
+          <option value="" {% if tenant.has_pets is none %}selected{% endif %}>Unknown</option>
+          <option value="false" {% if tenant.has_pets is sameas false %}selected{% endif %}>No</option>
+          <option value="true" {% if tenant.has_pets %}selected{% endif %}>Yes</option>
+        </select>
+      </div>
+      <div class="form-actions">
+        <button type="submit" class="btn btn-primary">Save Changes</button>
+        <button type="button" class="btn btn-secondary" onclick="location.reload()">Cancel</button>
+      </div>
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>Call History</h2>
+    <table>
+      <thead><tr><th>Status</th><th>Duration</th><th>Questions</th><th>Date</th></tr></thead>
+      <tbody>
+      {% for call in history_calls %}
+        <tr>
+          <td><a href="/admin/calls/{{ call.id }}">{{ call.status }}</a></td>
+          <td>{{ call.duration_seconds|duration }}</td>
+          <td>{{ call.questions_answered or 0 }}</td>
+          <td>{{ call.created_at|time_ago }}</td>
+        </tr>
+      {% else %}
+        <tr><td colspan="4" class="muted">No call history.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </section>
+</div>
+
+<script>
+  const tenantId = "{{ tenant.id }}";
+
+  function showMessage(text, isError = false) {
+    const msg = document.getElementById('msg');
+    msg.className = isError ? 'alert alert-error' : 'alert alert-success';
+    msg.textContent = text;
+    setTimeout(() => { msg.textContent = ''; msg.className = ''; }, 4000);
+  }
+
+  async function saveTenant(e) {
+    e.preventDefault();
+    const petsVal = document.getElementById('hasPets').value;
+    const data = {
+      full_name: document.getElementById('fullName').value.trim(),
+      contact_phone: document.getElementById('contactPhone').value.trim(),
+      email: document.getElementById('email').value.trim(),
+      monthly_income: parseInt(document.getElementById('income').value) || 0,
+      adults_count: parseInt(document.getElementById('adults').value) || 0,
+      children_count: parseInt(document.getElementById('children').value) || 0,
+      move_in_raw: document.getElementById('moveDate').value,
+      move_timing: document.getElementById('moveTiming').value,
+      current_residence: document.getElementById('currentResidence').value,
+      residence_duration: document.getElementById('residenceDuration').value,
+      move_reason: document.getElementById('moveReason').value,
+      employer: document.getElementById('employer').value,
+      employment_duration: document.getElementById('employmentDuration').value,
+      general_notes: document.getElementById('generalNotes').value,
+      notes: document.getElementById('notes').value,
+      has_eviction: document.getElementById('hasEviction').value === 'true',
+    };
+    if (petsVal !== '') {
+      data.has_pets = petsVal === 'true';
+    }
+
+    try {
+      const r = await fetch(`/admin/api/tenants/${tenantId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      showMessage('Tenant updated successfully');
+      setTimeout(() => location.reload(), 1500);
+    } catch (e) {
+      showMessage('Error: ' + e.message, true);
+    }
+  }
+</script>
+{% endblock %}

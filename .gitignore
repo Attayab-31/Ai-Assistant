@@ -1,0 +1,21 @@
+.env
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+*.log
+logs/
+
+# Editor / AI-agent working directories (not part of the project)
+.devin/
+.agents/
+.kilocode/
+.cursor/
+.DS_Store
+Thumbs.db
+

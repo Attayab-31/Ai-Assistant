@@ -1,0 +1,185 @@
+{% extends "settings/base.html" %}
+{% block title %}Caller FAQs{% endblock %}
+{% block page_title %}Caller FAQs{% endblock %}
+{% block settings_content %}
+
+<div class="stack">
+  <div class="callout">
+    <span>💬</span>
+    <span>
+      These are the answers your assistant gives when a caller asks a common question during screening
+      (for example, “Do you accept Section 8?”). Just edit the <strong>answer</strong> in plain English —
+      it's read aloud to the caller, then the assistant continues the screening. There are
+      <strong>{{ faq_topic_count }}</strong> built-in topics; you can edit or turn them on/off, but you can't add or remove topics.
+    </span>
+  </div>
+
+  <!-- Try a phrase -->
+  <div class="form-section">
+    <h3 style="margin-top: 0;">🧪 Try a question</h3>
+    <p class="text-muted" style="margin-top: 0;">Type something a caller might ask and see which answer would play.</p>
+    <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+      <input type="text" id="tryPhrase" placeholder="e.g. Do you take housing vouchers?" style="flex: 1; min-width: 220px;" />
+      <button type="button" class="btn btn-secondary" onclick="tryPhrase()">Check</button>
+    </div>
+    <div id="tryResult" style="margin-top: 12px; display: none;"></div>
+  </div>
+
+  <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+    <button type="button" onclick="saveAllFaqs()" class="btn btn-primary">💾 Save all changes</button>
+    <button type="button" onclick="resetFaqs()" class="btn btn-secondary">↻ Reset to defaults</button>
+  </div>
+
+  {% if faqs %}
+    <div id="faqsContainer">
+      {% for faq in faqs %}
+      <div class="form-section faq-card" data-topic="{{ faq.topic }}">
+        <div class="faq-view">
+          <div style="display: flex; justify-content: space-between; align-items: start; gap: 12px;">
+            <div style="flex: 1; min-width: 0;">
+              <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                <h4 style="margin: 0; font-size: 15px;"><span class="faq-title-view">{{ faq.title }}</span></h4>
+                <span class="pill faq-status-pill" style="{{ '' if faq.get('active', True) else 'background:#fee2e2;color:#991b1b;' }}">
+                  {{ "On" if faq.get("active", True) else "Off" }}
+                </span>
+              </div>
+              <p class="faq-answer-view" style="margin: 8px 0 0; color: var(--ink);">{{ faq.answer }}</p>
+            </div>
+            <button type="button" onclick="toggleEdit(this)" class="btn btn-secondary" style="padding: 6px 12px; font-size: 13px;">Edit</button>
+          </div>
+        </div>
+
+        <div class="faq-edit" style="display: none; margin-top: 12px;">
+          <div class="form-group">
+            <label>Title <span class="text-muted">(for your reference only)</span></label>
+            <input type="text" class="edit-title" value="{{ faq.title }}" />
+          </div>
+          <div class="form-group">
+            <label>Answer the assistant speaks</label>
+            <textarea class="edit-answer" rows="4">{{ faq.answer }}</textarea>
+          </div>
+          <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-weight: 500;">
+            <input type="checkbox" class="edit-active" style="width:auto;" {{ "checked" if faq.get("active", True) else "" }} />
+            Use this answer during calls
+          </label>
+
+          <details class="adv">
+            <summary>Advanced — keyword matching (optional, preview only)</summary>
+            <div class="warn-note">ℹ️ During live calls the AI assistant decides when this FAQ applies on its own — it does not use these keywords. This pattern only powers the "Try a phrase" preview below, so you can keep or ignore it.</div>
+            <div class="form-group" style="margin-top: 10px; margin-bottom: 0;">
+              <label>Match keywords (regex)</label>
+              <textarea class="edit-pattern" rows="2">{{ faq.pattern }}</textarea>
+            </div>
+          </details>
+
+          <div style="margin-top: 12px;">
+            <button type="button" onclick="toggleEdit(this)" class="btn btn-secondary">Done</button>
+          </div>
+        </div>
+        <script type="application/json" class="faq-meta">{{ faq | tojson }}</script>
+      </div>
+      {% endfor %}
+    </div>
+  {% else %}
+    <div class="form-section">
+      <p class="text-muted">No FAQs configured yet. Click “Reset to defaults” to load the built-in set.</p>
+    </div>
+  {% endif %}
+</div>
+
+<script>
+  function readFaqMeta(card) {
+    return JSON.parse(card.querySelector('.faq-meta').textContent);
+  }
+
+  // Edit fields always hold the latest values (they're prefilled from meta and
+  // kept in the DOM), so we read everything from them regardless of edit state.
+  function collectFaqs() {
+    return Array.from(document.querySelectorAll('.faq-card')).map(card => {
+      const meta = readFaqMeta(card);
+      meta.title = card.querySelector('.edit-title').value.trim();
+      meta.answer = card.querySelector('.edit-answer').value.trim();
+      meta.pattern = card.querySelector('.edit-pattern').value.trim();
+      meta.active = card.querySelector('.edit-active').checked;
+      return meta;
+    });
+  }
+
+  function toggleEdit(btn) {
+    const card = btn.closest('.faq-card');
+    const view = card.querySelector('.faq-view');
+    const edit = card.querySelector('.faq-edit');
+    const showingEdit = edit.style.display === 'none';
+    if (!showingEdit) {
+      // Closing edit: reflect new values in the reading view.
+      card.querySelector('.faq-title-view').textContent = card.querySelector('.edit-title').value.trim();
+      card.querySelector('.faq-answer-view').textContent = card.querySelector('.edit-answer').value.trim();
+      const active = card.querySelector('.edit-active').checked;
+      const pill = card.querySelector('.faq-status-pill');
+      pill.textContent = active ? 'On' : 'Off';
+      pill.style.cssText = active ? '' : 'background:#fee2e2;color:#991b1b;';
+    }
+    view.style.display = showingEdit ? 'none' : 'block';
+    edit.style.display = showingEdit ? 'block' : 'none';
+  }
+
+  function tryPhrase() {
+    const phrase = document.getElementById('tryPhrase').value.trim();
+    const box = document.getElementById('tryResult');
+    box.style.display = 'block';
+    if (!phrase) { box.innerHTML = '<span class="text-muted">Type a question above first.</span>'; return; }
+
+    let matched = null;
+    for (const card of document.querySelectorAll('.faq-card')) {
+      const meta = readFaqMeta(card);
+      if (meta.active === false) continue;
+      const pattern = (card.querySelector('.edit-pattern').value || meta.pattern || '').trim();
+      if (!pattern) continue;
+      try {
+        if (new RegExp(pattern, 'i').test(phrase)) {
+          matched = { title: card.querySelector('.edit-title').value.trim(), answer: card.querySelector('.edit-answer').value.trim() };
+          break;
+        }
+      } catch (e) { /* ignore an invalid pattern */ }
+    }
+
+    if (matched) {
+      box.innerHTML = `<div class="alert alert-success" style="margin:0;">
+        <div style="font-weight:600; margin-bottom:4px;">✓ Matches: ${matched.title}</div>
+        <div>“${matched.answer}”</div></div>`;
+    } else {
+      box.innerHTML = `<div class="warn-note" style="margin:0;">No built-in keyword set matches this exactly. During a real call the assistant may still understand and answer it on its own — this quick check only tests the backup keywords.</div>`;
+    }
+  }
+
+  async function saveAllFaqs() {
+    try {
+      const r = await fetch('/api/settings/faqs', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ faqs: collectFaqs() }),
+      });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        throw new Error(err.detail || await r.text());
+      }
+      showMessage('✓ FAQs saved');
+      setTimeout(() => location.reload(), 1000);
+    } catch (e) {
+      showMessage('✗ Error: ' + e.message, true);
+    }
+  }
+
+  async function resetFaqs() {
+    if (!confirm('Reset all FAQs back to the built-in defaults? Your edits will be lost.')) return;
+    try {
+      const r = await fetch('/api/settings/faqs/reset', { method: 'POST' });
+      if (!r.ok) throw new Error(await r.text());
+      showMessage('✓ FAQs reset to defaults');
+      setTimeout(() => location.reload(), 1000);
+    } catch (e) {
+      showMessage('✗ Error: ' + e.message, true);
+    }
+  }
+</script>
+{% endblock %}

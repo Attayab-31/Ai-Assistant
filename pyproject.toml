@@ -1,0 +1,39 @@
+# Tooling configuration for code standardization.
+# Functionality is unaffected — these tools enforce consistent style only.
+
+[tool.black]
+line-length = 88
+# py312 is the highest token black 23.x accepts; output is compatible with the 3.13 runtime.
+target-version = ["py312"]
+extend-exclude = '''
+/(
+  | venv
+  | \.venv
+  | __pycache__
+  | alembic/versions
+)/
+'''
+
+[tool.isort]
+profile = "black"
+line_length = 88
+skip = ["venv", ".venv", "alembic/versions"]
+known_first_party = ["app", "config"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py313"
+extend-exclude = ["venv", ".venv", "alembic/versions", "__pycache__"]
+
+[tool.ruff.lint]
+# E/W: pycodestyle, F: pyflakes, I: isort, UP: pyupgrade, B: bugbear
+select = ["E", "W", "F", "I", "UP", "B"]
+ignore = [
+    "E501",   # line length — handled by black
+    "B008",   # function call in default arg — intentional for FastAPI Depends()
+    "E712",   # `== True/False` — REQUIRED for SQLAlchemy ORM filter expressions
+    "UP042",  # str+Enum → StrEnum — would change str(enum) behavior; keep explicit .value usage
+]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]  # re-exports are intentional in package inits

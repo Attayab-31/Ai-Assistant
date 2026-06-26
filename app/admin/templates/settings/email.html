@@ -1,0 +1,158 @@
+{% extends "settings/base.html" %}
+{% block title %}Email Settings{% endblock %}
+{% block page_title %}Email Settings{% endblock %}
+{% block settings_content %}
+
+<div class="callout" style="margin-bottom: 16px;">
+  <span>📧</span>
+  <span>This controls the email you receive after each screening call. Set where results go and what the email says, then use <strong>Send test email</strong> to make sure it arrives.</span>
+</div>
+
+<form onsubmit="saveEmailSettings(event)" class="stack">
+  <div class="form-grid">
+    <div class="form-section">
+      <h3 style="margin-top: 0;">Where results go</h3>
+      <div class="form-group">
+        <label>Your email <span class="req">*</span></label>
+        <input type="email" id="landlord_email" value="{{ settings.get('landlord_email', '') }}" placeholder="you@example.com" required />
+        <p class="text-muted">We send each screening result here.</p>
+      </div>
+      <div class="form-group">
+        <label>Sender name</label>
+        <input type="text" id="email_from_name" value="{{ settings.get('email_from_name', 'AI Tenant Screener') }}" placeholder="AI Tenant Screener" />
+        <p class="text-muted">The name that shows up as the sender.</p>
+      </div>
+      <div class="form-group">
+        <label>Sender email address</label>
+        <input type="email" id="email_from_address" value="{{ settings.get('email_from_address', '') }}" placeholder="noreply@example.com" />
+        <p class="text-muted">The address the email is sent from.</p>
+        <div class="warn-note">⚠️ The sender address must be on a domain you've verified with your email provider, or messages may not be delivered. If unsure, leave this blank to use the default.</div>
+      </div>
+      <div class="form-group">
+        <label>CC (optional)</label>
+        <input type="text" id="cc_emails" value="{{ settings.get('cc_emails', '') }}" placeholder="teammate@example.com, manager@example.com" />
+        <p class="text-muted">Also send a copy to these addresses. Separate multiple with commas.</p>
+      </div>
+      <div class="form-group">
+        <label>BCC (optional)</label>
+        <input type="text" id="bcc_emails" value="{{ settings.get('bcc_emails', '') }}" placeholder="records@example.com" />
+        <p class="text-muted">Send a hidden copy to these addresses. Separate multiple with commas.</p>
+      </div>
+    </div>
+
+    <div class="form-section">
+      <h3 style="margin-top: 0;">When to send</h3>
+      <div class="form-group">
+        <label>Send an email after each call?</label>
+        <select id="email_notifications_enabled">
+          <option value="true" {% if settings.get('email_notifications_enabled', 'true')|string|lower == 'true' %}selected{% endif %}>Yes — notify me</option>
+          <option value="false" {% if settings.get('email_notifications_enabled', 'true')|string|lower != 'true' %}selected{% endif %}>No — don't email me</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Which results?</label>
+        <select id="email_qualified_only">
+          <option value="false" {% if settings.get('email_qualified_only', 'false')|string|lower != 'true' %}selected{% endif %}>All applicants</option>
+          <option value="true" {% if settings.get('email_qualified_only', 'false')|string|lower == 'true' %}selected{% endif %}>Only ones who qualified</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Include the full call transcript?</label>
+        <select id="email_include_transcript">
+          <option value="false" {% if settings.get('email_include_transcript', 'false')|string|lower != 'true' %}selected{% endif %}>No</option>
+          <option value="true" {% if settings.get('email_include_transcript', 'false')|string|lower == 'true' %}selected{% endif %}>Yes — attach the whole conversation</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="form-section">
+      <h3 style="margin-top: 0;">What the email says</h3>
+      <p class="text-muted" style="margin-top: 0;">Click a tag to drop it in — it gets replaced with the real value when the email is sent.</p>
+      <div class="form-group">
+        <label>Subject line</label>
+        <input type="text" id="email_subject_template" value="{{ settings.get('email_subject_template', 'New Screening Result: {name}') }}" />
+        <div style="margin-top: 6px;">
+          <span class="var-chip" onclick="insertVar('email_subject_template','{name}')">{name}</span>
+          <span class="var-chip" onclick="insertVar('email_subject_template','{phone}')">{phone}</span>
+          <span class="var-chip" onclick="insertVar('email_subject_template','{status}')">{status}</span>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Message</label>
+        <textarea id="email_body_template" style="min-height: 150px;">{{ settings.get('email_body_template', 'Call screening complete') }}</textarea>
+        <div style="margin-top: 6px;">
+          <span class="var-chip" onclick="insertVar('email_body_template','{name}')">{name}</span>
+          <span class="var-chip" onclick="insertVar('email_body_template','{phone}')">{phone}</span>
+          <span class="var-chip" onclick="insertVar('email_body_template','{status}')">{status}</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="form-actions">
+    <button type="submit" class="btn btn-primary">💾 Save email settings</button>
+    <button type="button" onclick="testEmail()" class="btn btn-secondary">📧 Send test email</button>
+    <button type="button" onclick="location.reload()" class="btn btn-secondary">↺ Undo changes</button>
+  </div>
+</form>
+
+<script>
+  function insertVar(targetId, token) {
+    const el = document.getElementById(targetId);
+    const start = el.selectionStart ?? el.value.length;
+    const end = el.selectionEnd ?? el.value.length;
+    el.value = el.value.slice(0, start) + token + el.value.slice(end);
+    el.focus();
+    const pos = start + token.length;
+    try { el.setSelectionRange(pos, pos); } catch (e) { /* textarea/non-text inputs */ }
+  }
+
+  async function saveEmailSettings(e) {
+    e.preventDefault();
+    const data = {
+      landlord_email: document.getElementById('landlord_email').value,
+      email_from_name: document.getElementById('email_from_name').value,
+      email_from_address: document.getElementById('email_from_address').value,
+      email_notifications_enabled: document.getElementById('email_notifications_enabled').value === 'true',
+      email_qualified_only: document.getElementById('email_qualified_only').value === 'true',
+      email_include_transcript: document.getElementById('email_include_transcript').value === 'true',
+      email_subject_template: document.getElementById('email_subject_template').value,
+      email_body_template: document.getElementById('email_body_template').value,
+      cc_emails: document.getElementById('cc_emails').value,
+      bcc_emails: document.getElementById('bcc_emails').value,
+    };
+    try {
+      const r = await fetch('/api/settings/email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data)
+      });
+      if (!r.ok) throw new Error(await r.text());
+      showMessage('✓ Email settings saved');
+      setTimeout(() => location.reload(), 1500);
+    } catch (e) {
+      showMessage('✗ Error: ' + e.message, true);
+    }
+  }
+
+  async function testEmail() {
+    const email = document.getElementById('landlord_email').value;
+    if (!email) {
+      showMessage('Please enter your email first', true);
+      return;
+    }
+    try {
+      showMessage('📧 Sending test email…');
+      const r = await fetch('/api/settings/email/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email })
+      });
+      if (!r.ok) throw new Error(await r.text());
+      showMessage('✓ Test email sent — check your inbox');
+    } catch (e) {
+      showMessage('✗ Error: ' + e.message, true);
+    }
+  }
+</script>
+{% endblock %}

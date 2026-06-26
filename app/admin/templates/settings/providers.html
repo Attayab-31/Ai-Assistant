@@ -1,0 +1,196 @@
+{% extends "settings/base.html" %}
+{% block title %}AI & Voice{% endblock %}
+{% block page_title %}AI &amp; Voice{% endblock %}
+{% block settings_content %}
+
+{% set llm_names = {"groq": "Groq", "openai": "OpenAI", "openrouter": "OpenRouter"} %}
+{% set stt_names = {"deepgram": "Deepgram", "groq": "Groq Whisper"} %}
+{% set tts_names = {"google": "Google", "deepgram": "Deepgram"} %}
+{% set cur_llm = provider_status.llm or settings.get('active_llm_provider') %}
+{% set cur_stt = provider_status.stt or settings.get('active_stt_provider') %}
+{% set cur_tts = provider_status.tts or settings.get('active_tts_provider') %}
+
+<div class="stack">
+  <div class="callout">
+    <span>🤖</span>
+    <span>
+      These are the three engines that power your phone calls. The current setup is
+      already working — <strong>you usually don't need to change anything here</strong>.
+      Only switch an engine if support asked you to, or if one stops working.
+    </span>
+  </div>
+
+  <!-- Check everything works -->
+  <div class="form-section">
+    <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;">
+      <h3 style="margin: 0;">Is everything working?</h3>
+      <button type="button" class="btn btn-primary" onclick="checkHealth()">✅ Check now</button>
+    </div>
+    <div id="healthOutput" style="margin-top: 14px; display: none;"></div>
+  </div>
+
+  <!-- AI Brain (LLM) -->
+  <div class="form-section">
+    <div class="engine-name">🧠 AI Brain <span class="dot ok" title="active"></span></div>
+    <p class="engine-desc">Understands what the caller says and decides how to reply. Currently using <strong>{{ llm_names.get(cur_llm, cur_llm) or '—' }}</strong>.</p>
+    <label>Change the AI brain</label>
+    <select id="llm_provider">
+      {% for p in ["groq", "openai", "openrouter"] %}
+      <option value="{{ p }}" {% if cur_llm == p %}selected{% endif %}>{{ llm_names[p] }}{% if cur_llm == p %} (current){% endif %}</option>
+      {% endfor %}
+    </select>
+    <details class="adv">
+      <summary>Advanced options</summary>
+      <div class="form-group" style="margin-bottom: 10px;">
+        <label>Specific model name (optional)</label>
+        <input type="text" id="llm_model" placeholder="Leave blank for the recommended default" />
+      </div>
+      <div class="form-group" style="margin-bottom: 0;">
+        <label>Replace API key (optional)</label>
+        <input type="password" id="llm_api_key" placeholder="Only if you're rotating the key" autocomplete="new-password" />
+      </div>
+    </details>
+    <div style="margin-top: 12px;"><button type="button" class="btn btn-primary" onclick="switchProvider('llm')">Save AI brain</button></div>
+  </div>
+
+  <!-- Ears (STT) -->
+  <div class="form-section">
+    <div class="engine-name">🎧 Ears (Speech-to-Text) <span class="dot ok" title="active"></span></div>
+    <p class="engine-desc">Turns what the caller says into text the assistant can read. Currently using <strong>{{ stt_names.get(cur_stt, cur_stt) or '—' }}</strong>.</p>
+    <label>Change the ears</label>
+    <select id="stt_provider">
+      {% for p in ["deepgram", "groq"] %}
+      <option value="{{ p }}" {% if cur_stt == p %}selected{% endif %}>{{ stt_names[p] }}{% if cur_stt == p %} (current){% endif %}</option>
+      {% endfor %}
+    </select>
+    <details class="adv">
+      <summary>Advanced options</summary>
+      <div class="form-group" style="margin-bottom: 10px;">
+        <label>Specific model name (optional)</label>
+        <input type="text" id="stt_model" placeholder="Leave blank for the recommended default" />
+      </div>
+      <div class="form-group" style="margin-bottom: 0;">
+        <label>Replace API key (optional)</label>
+        <input type="password" id="stt_api_key" placeholder="Only if you're rotating the key" autocomplete="new-password" />
+      </div>
+    </details>
+    <div style="margin-top: 12px;"><button type="button" class="btn btn-primary" onclick="switchProvider('stt')">Save ears</button></div>
+  </div>
+
+  <!-- Voice (TTS) -->
+  <div class="form-section">
+    <div class="engine-name">🔊 Voice (Text-to-Speech) <span class="dot ok" title="active"></span></div>
+    <p class="engine-desc">Gives the assistant its spoken voice on the call. Currently using <strong>{{ tts_names.get(cur_tts, cur_tts) or '—' }}</strong>.</p>
+    <label>Change the voice</label>
+    <select id="tts_provider">
+      {% for p in ["google", "deepgram"] %}
+      <option value="{{ p }}" {% if cur_tts == p %}selected{% endif %}>{{ tts_names[p] }}{% if cur_tts == p %} (current){% endif %}</option>
+      {% endfor %}
+    </select>
+    <div class="form-group" style="margin-top: 12px;">
+      <label>Speaking speed</label>
+      <input type="number" id="tts_speed" min="0.75" max="1.25" step="0.05" value="{{ settings.get('tts_speed', '1.0') }}" />
+      <p class="text-muted" style="margin: 4px 0 0;">1.0 is normal. Lower is slower, higher is faster (between 0.75 and 1.25). Applies to Google TTS; Deepgram voices use a fixed natural pace and ignore this.</p>
+    </div>
+    <details class="adv">
+      <summary>Advanced options</summary>
+      <div class="form-group" style="margin-bottom: 0;">
+        <label>Specific voice name (optional)</label>
+        <input type="text" id="tts_voice" placeholder="Leave blank for the recommended default" />
+      </div>
+    </details>
+    <div style="margin-top: 12px;"><button type="button" class="btn btn-primary" onclick="switchProvider('tts')">Save voice</button></div>
+  </div>
+
+  <!-- Reliability -->
+  <div class="form-section">
+    <div class="engine-name">🛟 Automatic backup</div>
+    <p class="engine-desc">If the main engine has a hiccup during a call, the assistant can instantly switch to a backup so the call keeps going.</p>
+    <label>Use a backup engine if the main one fails?</label>
+    <select id="auto_fallback_enabled">
+      <option value="true" {% if settings.get('auto_fallback_enabled', 'true')|string|lower == 'true' %}selected{% endif %}>Yes — keep calls running (recommended)</option>
+      <option value="false" {% if settings.get('auto_fallback_enabled', 'true')|string|lower != 'true' %}selected{% endif %}>No — use only the chosen engine</option>
+    </select>
+    <div style="margin-top: 12px;"><button type="button" class="btn btn-primary" onclick="saveReliability()">Save</button></div>
+  </div>
+</div>
+
+<script>
+  const ENGINE_LABELS = { llm: '🧠 AI Brain', stt: '🎧 Ears', tts: '🔊 Voice' };
+
+  async function switchProvider(kind) {
+    const provider = document.getElementById(`${kind}_provider`).value;
+    const body = { provider };
+    if (kind === 'llm') {
+      const m = (document.getElementById('llm_model').value || '').trim(); if (m) body.model = m;
+      const k = (document.getElementById('llm_api_key').value || '').trim(); if (k) body.api_key = k;
+    } else if (kind === 'stt') {
+      const m = (document.getElementById('stt_model').value || '').trim(); if (m) body.model = m;
+      const k = (document.getElementById('stt_api_key').value || '').trim(); if (k) body.api_key = k;
+    } else if (kind === 'tts') {
+      const v = (document.getElementById('tts_voice').value || '').trim(); if (v) body.voice = v;
+      const s = parseFloat(document.getElementById('tts_speed').value);
+      if (!isNaN(s)) body.speed = Math.max(0.75, Math.min(1.25, s));
+    }
+    try {
+      const r = await fetch(`/api/settings/${kind}/switch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        throw new Error(err.detail || r.statusText);
+      }
+      showMessage('✓ Saved — new calls will use this right away.');
+      setTimeout(() => location.reload(), 1200);
+    } catch (e) {
+      showMessage('✗ Could not switch: ' + e.message, true);
+    }
+  }
+
+  async function saveReliability() {
+    const data = {
+      auto_fallback_enabled: document.getElementById('auto_fallback_enabled').value === 'true',
+    };
+    try {
+      const r = await fetch('/api/settings/general', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        throw new Error(err.detail || r.statusText);
+      }
+      showMessage('✓ Saved — new calls will use this right away.');
+      setTimeout(() => location.reload(), 1200);
+    } catch (e) {
+      showMessage('✗ Could not save: ' + e.message, true);
+    }
+  }
+
+  async function checkHealth() {
+    const out = document.getElementById('healthOutput');
+    out.style.display = 'block';
+    out.innerHTML = '<span class="text-muted">⏳ Checking…</span>';
+    try {
+      const r = await fetch('/api/settings/health');
+      if (!r.ok) throw new Error(r.statusText);
+      const data = await r.json();
+      const rows = ['llm', 'stt', 'tts'].map((k) => {
+        const info = data[k] || {};
+        const ok = !!info.healthy;
+        const latency = info.latency_ms != null ? ` · ${info.latency_ms} ms` : '';
+        return `<div class="status-row">
+          <span style="display:flex; align-items:center; gap:8px;"><span class="dot ${ok ? 'ok' : 'bad'}"></span> ${ENGINE_LABELS[k]} <span class="text-muted">(${info.provider || '—'})</span></span>
+          <span style="color:${ok ? 'var(--ok)' : 'var(--bad)'}; font-weight:600;">${ok ? '✓ Working' + latency : '✗ Not responding'}</span>
+        </div>`;
+      }).join('');
+      out.innerHTML = rows;
+    } catch (e) {
+      out.innerHTML = `<div class="alert alert-error" style="margin:0;">Couldn't run the check: ${e.message}</div>`;
+    }
+  }
+</script>
+{% endblock %}

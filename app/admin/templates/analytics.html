@@ -1,0 +1,167 @@
+{% extends "base.html" %}
+{% block title %}Analytics{% endblock %}
+{% block page_title %}Analytics{% endblock %}
+{% block head %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  .chart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px; margin-top: 14px; }
+  .chart-card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; }
+  .chart-card h3 { margin: 0 0 12px; font-size: 14px; }
+  .chart-wrap { position: relative; height: 260px; }
+  .range-bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .range-bar a { padding: 6px 12px; border-radius: 6px; border: 1px solid var(--line); color: var(--ink); }
+  .range-bar a.active { background: var(--accent); color: white; border-color: var(--accent); }
+</style>
+{% endblock %}
+{% block content %}
+<div class="range-bar" style="margin-bottom: 14px;">
+  <span class="muted">Range:</span>
+  {% for d in [7, 30, 90] %}
+    <a href="/admin/analytics?days={{ d }}" class="{{ 'active' if days == d else '' }}">{{ d }} days</a>
+  {% endfor %}
+  <a href="/admin/api/analytics/export?days={{ days }}" style="margin-left:auto;">⬇ Export CSV</a>
+</div>
+
+<div class="grid stats">
+  <div class="card"><div class="muted">Total Calls</div><div class="metric">{{ stats.total_calls or 0 }}</div></div>
+  <div class="card"><div class="muted">Qualified This Month</div><div class="metric">{{ stats.qualified_this_month or 0 }}</div></div>
+  <div class="card"><div class="muted">Disqualified This Month</div><div class="metric">{{ stats.disqualified_this_month or 0 }}</div></div>
+  <div class="card"><div class="muted">Avg Qualified Score</div><div class="metric">{{ analytics.avg_qualified_score or 0 }}</div></div>
+</div>
+
+<div class="chart-grid">
+  <div class="chart-card" style="grid-column: 1 / -1;">
+    <h3>Calls per Day (last {{ days }} days)</h3>
+    <div class="chart-wrap"><canvas id="callsByDay"></canvas></div>
+  </div>
+  <div class="chart-card">
+    <h3>Qualification Breakdown</h3>
+    <div class="chart-wrap"><canvas id="qualBreakdown"></canvas></div>
+  </div>
+  <div class="chart-card">
+    <h3>Call Status</h3>
+    <div class="chart-wrap"><canvas id="statusBreakdown"></canvas></div>
+  </div>
+  <div class="chart-card">
+    <h3>Calls by Hour of Day</h3>
+    <div class="chart-wrap"><canvas id="callsByHour"></canvas></div>
+  </div>
+  <div class="chart-card">
+    <h3>Questions Answered Distribution</h3>
+    <div class="chart-wrap"><canvas id="questionsDist"></canvas></div>
+  </div>
+  <div class="chart-card">
+    <h3>LLM Provider Usage</h3>
+    <div class="chart-wrap"><canvas id="llmUsage"></canvas></div>
+  </div>
+</div>
+
+<script>
+  const analytics = {{ analytics | tojson }};
+
+  const COLORS = {
+    qualified: '#22c55e',
+    review: '#f59e0b',
+    unqualified: '#ef4444',
+    unknown: '#94a3b8',
+    accent: '#2563eb',
+    palette: ['#2563eb', '#22c55e', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#ec4899', '#94a3b8'],
+  };
+
+  const noData = (obj) => !obj || (Array.isArray(obj) ? obj.length === 0 : Object.keys(obj).length === 0);
+
+  function renderEmpty(canvasId) {
+    const c = document.getElementById(canvasId);
+    const ctx = c.getContext('2d');
+    ctx.font = '13px sans-serif';
+    ctx.fillStyle = '#94a3b8';
+    ctx.textAlign = 'center';
+    ctx.fillText('No data for this range', c.width / 2, c.height / 2);
+  }
+
+  // Calls per day (line)
+  (function () {
+    const days = analytics.calls_by_day || [];
+    if (noData(days)) return renderEmpty('callsByDay');
+    new Chart(document.getElementById('callsByDay'), {
+      type: 'line',
+      data: {
+        labels: days.map(d => d.date),
+        datasets: [{
+          label: 'Calls',
+          data: days.map(d => d.count),
+          borderColor: COLORS.accent,
+          backgroundColor: 'rgba(37, 99, 235, 0.12)',
+          fill: true,
+          tension: 0.3,
+          pointRadius: 3,
+        }],
+      },
+      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, ticks: { precision: 0 } } } },
+    });
+  })();
+
+  // Qualification breakdown (doughnut)
+  (function () {
+    const data = analytics.qualification_breakdown || {};
+    if (noData(data)) return renderEmpty('qualBreakdown');
+    const labels = Object.keys(data);
+    new Chart(document.getElementById('qualBreakdown'), {
+      type: 'doughnut',
+      data: {
+        labels,
+        datasets: [{ data: labels.map(k => data[k]), backgroundColor: labels.map(k => COLORS[k] || COLORS.unknown) }],
+      },
+      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom' } } },
+    });
+  })();
+
+  // Call status (bar)
+  (function () {
+    const data = analytics.status_breakdown || {};
+    if (noData(data)) return renderEmpty('statusBreakdown');
+    const labels = Object.keys(data);
+    new Chart(document.getElementById('statusBreakdown'), {
+      type: 'bar',
+      data: { labels, datasets: [{ label: 'Calls', data: labels.map(k => data[k]), backgroundColor: COLORS.accent }] },
+      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, ticks: { precision: 0 } } } },
+    });
+  })();
+
+  // Calls by hour (bar, 0-23)
+  (function () {
+    const data = analytics.calls_by_hour || {};
+    if (noData(data)) return renderEmpty('callsByHour');
+    const labels = Array.from({ length: 24 }, (_, h) => String(h));
+    new Chart(document.getElementById('callsByHour'), {
+      type: 'bar',
+      data: { labels: labels.map(h => h + ':00'), datasets: [{ label: 'Calls', data: labels.map(h => data[h] || 0), backgroundColor: '#06b6d4' }] },
+      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, ticks: { precision: 0 } } } },
+    });
+  })();
+
+  // Questions distribution (bar)
+  (function () {
+    const data = analytics.questions_distribution || {};
+    if (noData(data)) return renderEmpty('questionsDist');
+    const labels = Object.keys(data).sort((a, b) => Number(a) - Number(b));
+    new Chart(document.getElementById('questionsDist'), {
+      type: 'bar',
+      data: { labels, datasets: [{ label: 'Calls', data: labels.map(k => data[k]), backgroundColor: '#8b5cf6' }] },
+      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, ticks: { precision: 0 } } } },
+    });
+  })();
+
+  // LLM usage (doughnut)
+  (function () {
+    const data = analytics.llm_usage || {};
+    if (noData(data)) return renderEmpty('llmUsage');
+    const labels = Object.keys(data);
+    new Chart(document.getElementById('llmUsage'), {
+      type: 'doughnut',
+      data: { labels, datasets: [{ data: labels.map(k => data[k]), backgroundColor: labels.map((_, i) => COLORS.palette[i % COLORS.palette.length]) }] },
+      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom' } } },
+    });
+  })();
+</script>
+{% endblock %}

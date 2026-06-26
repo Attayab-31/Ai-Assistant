@@ -1,0 +1,181 @@
+{% extends "settings/base.html" %}
+{% block title %}Screening Questions{% endblock %}
+{% block page_title %}Screening Questions{% endblock %}
+{% block settings_content %}
+
+<div class="stack">
+  <p class="text-muted" style="margin-top: 0;">
+    The screening flow has <strong>{{ flow_state_count }}</strong> fixed states (Q1–Q15 plus conditional
+    Q6A pet details and Q11A eviction details). Callers who answer “no pets” or “no eviction” skip those
+    follow-ups, so a typical completed call shows <strong>15 / 15</strong> questions answered.
+    You can edit question wording and retry prompts here; flow states cannot be added or removed.
+  </p>
+
+  <div style="display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap;">
+    <button type="button" onclick="resetQuestions()" class="btn btn-secondary">↻ Reset to Defaults</button>
+    <button type="button" onclick="previewFlow()" class="btn btn-secondary">👁️ Preview Flow</button>
+    <button type="button" onclick="saveAllQuestions()" class="btn btn-primary">💾 Save All Changes</button>
+  </div>
+
+  {% if questions %}
+    <div id="questionsContainer">
+      {% for question in questions %}
+      <div class="form-section question-card" data-state="{{ question.state }}">
+        <div class="question-view">
+          <div style="display: flex; justify-content: space-between; align-items: start; gap: 12px;">
+            <div style="flex: 1;">
+              <h4 style="margin: 0 0 4px; font-size: 15px;">
+                {{ question.id }} — {{ question.state }}
+                {% if question.state in ["Q6A_PET_DETAILS", "Q11A_EVICTION_DETAILS"] %}
+                  <span class="text-muted" style="font-weight: normal; font-size: 13px;">(conditional)</span>
+                {% endif %}
+              </h4>
+              <p class="question-text" style="margin: 0 0 8px; color: var(--ink);">{{ question.question }}</p>
+              <p class="text-muted" style="margin: 0; font-size: 13px;">
+                Order: {{ question.order or loop.index }} |
+                Fields: {{ (question.extract_fields or [])|join(", ") }} |
+                Active: {{ "yes" if question.get("active", True) else "no" }}
+              </p>
+            </div>
+            <button type="button" onclick="toggleEdit(this)" class="btn btn-secondary" style="padding: 6px 12px; font-size: 13px;">Edit</button>
+          </div>
+        </div>
+        <div class="question-edit" style="display: none; margin-top: 12px;">
+          <div class="form-group">
+            <label>Question</label>
+            <textarea class="edit-question" rows="2">{{ question.question }}</textarea>
+          </div>
+          <div class="form-group">
+            <label>Retry prompt (1st)</label>
+            <textarea class="edit-retry1" rows="2">{{ question.get("retry_prompt", "") }}</textarea>
+          </div>
+          <div class="form-group">
+            <label>Retry prompt (2nd)</label>
+            <textarea class="edit-retry2" rows="2">{{ question.get("retry_prompt_2", "") }}</textarea>
+          </div>
+          <div class="form-group">
+            <label>Retry prompt (3rd)</label>
+            <textarea class="edit-retry3" rows="2">{{ question.get("retry_prompt_3", "") }}</textarea>
+          </div>
+          {% set is_protected = question.state in ["Q1_FULL_NAME", "Q2_PHONE", "Q3_EMAIL"] %}
+          <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+            <input type="checkbox" class="edit-active"
+              {{ "checked" if (question.get("active", True) or is_protected) else "" }}
+              {{ "disabled" if is_protected else "" }} />
+            Active in flow
+            {% if is_protected %}
+              <span class="text-muted" style="font-size: 12px;">(required — always on)</span>
+            {% endif %}
+          </label>
+          <button type="button" onclick="toggleEdit(this)" class="btn btn-secondary">Done</button>
+        </div>
+        <script type="application/json" class="question-meta">{{ question | tojson }}</script>
+      </div>
+      {% endfor %}
+    </div>
+  {% else %}
+    <div class="form-section">
+      <p class="text-muted">No screening questions configured. Click "Reset to Defaults" to load default questions.</p>
+    </div>
+  {% endif %}
+
+  <div id="previewContainer" style="display: none; margin-top: 20px;">
+    <div class="form-section">
+      <h3 style="margin-top: 0;">Conversation Flow Preview</h3>
+      <p id="previewMeta" class="text-muted"></p>
+      <div id="previewContent" style="max-height: 400px; overflow-y: auto;"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+  function readQuestionMeta(card) {
+    const el = card.querySelector('.question-meta');
+    return JSON.parse(el.textContent);
+  }
+
+  function collectQuestions() {
+    // Always read the edit inputs (they hold the current value whether or not
+    // the edit panel is open) so retry prompts and the active toggle persist
+    // even after the panel is collapsed before saving.
+    return Array.from(document.querySelectorAll('.question-card')).map(card => {
+      const meta = readQuestionMeta(card);
+      meta.question = card.querySelector('.edit-question').value.trim();
+      meta.retry_prompt = card.querySelector('.edit-retry1').value.trim();
+      meta.retry_prompt_2 = card.querySelector('.edit-retry2').value.trim();
+      meta.retry_prompt_3 = card.querySelector('.edit-retry3').value.trim();
+      meta.active = card.querySelector('.edit-active').checked;
+      return meta;
+    });
+  }
+
+  function toggleEdit(btn) {
+    const card = btn.closest('.question-card');
+    const view = card.querySelector('.question-view');
+    const edit = card.querySelector('.question-edit');
+    const showingEdit = edit.style.display === 'none';
+    if (showingEdit) {
+      edit.querySelector('.edit-question').value = card.querySelector('.question-text').textContent.trim();
+    } else {
+      card.querySelector('.question-text').textContent = edit.querySelector('.edit-question').value.trim();
+    }
+    view.style.display = showingEdit ? 'none' : 'block';
+    edit.style.display = showingEdit ? 'block' : 'none';
+    btn.textContent = showingEdit ? 'Done' : 'Edit';
+  }
+
+  async function saveAllQuestions() {
+    try {
+      const questions = collectQuestions();
+      const r = await fetch('/api/settings/questions', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ questions }),
+      });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        throw new Error(err.detail || await r.text());
+      }
+      showMessage('✓ Questions saved');
+      setTimeout(() => location.reload(), 1000);
+    } catch (e) {
+      showMessage('✗ Error: ' + e.message, true);
+    }
+  }
+
+  async function resetQuestions() {
+    if (!confirm('Reset all questions to system defaults?')) return;
+    try {
+      const r = await fetch('/api/settings/questions/reset', { method: 'POST' });
+      if (!r.ok) throw new Error(await r.text());
+      showMessage('✓ Questions reset to defaults');
+      setTimeout(() => location.reload(), 1000);
+    } catch (e) {
+      showMessage('✗ Error: ' + e.message, true);
+    }
+  }
+
+  async function previewFlow() {
+    const preview = document.getElementById('previewContainer');
+    const content = document.getElementById('previewContent');
+    const meta = document.getElementById('previewMeta');
+    preview.style.display = 'block';
+    content.innerHTML = '⏳ Loading preview...';
+    meta.textContent = '';
+
+    try {
+      const r = await fetch('/api/settings/questions/preview');
+      if (!r.ok) throw new Error(await r.text());
+      const data = await r.json();
+      meta.textContent = `${data.flow_state_count} flow states · sample path (no pets, no eviction): ${data.active_question_count_sample} active questions`;
+      content.innerHTML = (data.flow || []).map(turn =>
+        `<div style="margin-bottom: 12px; padding: 8px; background: ${turn.speaker === 'AI' ? '#e3f2fd' : '#f3e5f5'}; border-radius: 4px;">
+          <strong>${turn.speaker}:</strong> ${turn.text || '(pause)'}
+        </div>`
+      ).join('');
+    } catch (e) {
+      content.innerHTML = '✗ Error: ' + e.message;
+    }
+  }
+</script>
+{% endblock %}

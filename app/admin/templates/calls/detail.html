@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% block title %}Call Detail{% endblock %}
+{% block page_title %}Call Detail{% endblock %}
+{% block content %}
+<div class="stack">
+  <section class="card">
+    <h2>{{ call.phone_number|phone_display }}</h2>
+    <p>Status: <span class="badge" style="background: {{ call.status|status_color }}">{{ call.status }}</span></p>
+    <p>Duration: {{ call.duration_seconds|duration }}</p>
+    <p>
+      Questions answered:
+      {% if tenant and active_question_count %}
+        {{ call.questions_answered or 0 }} / {{ active_question_count }}
+      {% else %}
+        {{ call.questions_answered or 0 }}
+      {% endif %}
+      {% if call.call_completed %} · screening complete{% endif %}
+    </p>
+    <p>Providers: STT {{ call.stt_provider or "-" }}, LLM {{ call.llm_provider or "-" }}, TTS {{ call.tts_provider or "-" }}</p>
+    <div id="callMsg"></div>
+    <div style="display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap;">
+      {% if tenant %}
+      <button type="button" class="btn btn-primary" onclick="resendEmail()">📧 Resend result email</button>
+      {% endif %}
+      <button type="button" class="btn btn-danger" onclick="deleteCall()">🗑️ Delete call</button>
+    </div>
+  </section>
+
+  {% if tenant %}
+  <section class="card">
+    <h2>Screening Summary</h2>
+    <p>Score: <span style="color: {{ tenant.qualification_score|score_color }}">{{ tenant.qualification_score or 0 }}/100</span></p>
+    <p>Status: <span class="badge" style="background: {{ tenant.qualification_status|status_color }}">{{ tenant.qualification_status }}</span></p>
+
+    <table style="width: 100%; margin-top: 12px;">
+      <tbody>
+        <tr><td class="muted" style="width: 180px; padding: 4px 8px 4px 0;">Full name</td><td>{{ tenant.full_name or "-" }}</td></tr>
+        <tr><td class="muted">Contact phone</td><td>{{ tenant.contact_phone|phone_display if tenant.contact_phone else "-" }}</td></tr>
+        <tr><td class="muted">Email</td><td>{{ tenant.email or "-" }}</td></tr>
+        <tr><td class="muted">Move-in</td><td>{{ tenant.move_in_raw or tenant.move_in_date or "-" }}</td></tr>
+        <tr><td class="muted">Move timing</td><td>{{ tenant.move_timing or "-" }}</td></tr>
+        <tr><td class="muted">Occupants</td><td>{{ tenant.occupants_count or "-" }} total ({{ tenant.adults_count or "-" }} adults, {{ tenant.children_count or 0 }} children)</td></tr>
+        <tr><td class="muted">Current residence</td><td>{{ tenant.current_residence or "-" }}</td></tr>
+        <tr><td class="muted">Time at residence</td><td>{{ tenant.residence_duration or "-" }}</td></tr>
+        <tr><td class="muted">Move reason</td><td>{{ tenant.move_reason or "-" }}</td></tr>
+        <tr><td class="muted">Pets</td><td>{% if tenant.has_pets is none %}-{% elif tenant.has_pets %}Yes{% if tenant.pet_type %} — {{ tenant.pet_type }}{% endif %}{% if tenant.pet_breed %}, {{ tenant.pet_breed }}{% endif %}{% if tenant.pet_weight %}, ~{{ tenant.pet_weight }} lbs{% endif %}{% else %}No{% endif %}</td></tr>
+        <tr><td class="muted">Eviction history</td><td>{% if tenant.has_eviction is none %}-{% elif tenant.has_eviction %}Yes{% if tenant.eviction_circumstances %} — {{ tenant.eviction_circumstances }}{% endif %}{% else %}No{% endif %}</td></tr>
+        <tr><td class="muted">Monthly income</td><td>{{ tenant.monthly_income|currency if tenant.monthly_income else (tenant.income_raw or "-") }}</td></tr>
+        <tr><td class="muted">Employer</td><td>{{ tenant.employer or "-" }}</td></tr>
+        <tr><td class="muted">Employment duration</td><td>{{ tenant.employment_duration or "-" }}</td></tr>
+        <tr><td class="muted">Background notes</td><td>{{ tenant.general_notes or "-" }}</td></tr>
+      </tbody>
+    </table>
+    <p style="margin-top: 12px;"><a href="/admin/tenants/{{ tenant.id }}">View tenant profile →</a></p>
+  </section>
+  {% endif %}
+
+  {% if score_breakdown %}
+  <section class="card">
+    <h2>Score Breakdown</h2>
+    <pre class="pre">{{ score_breakdown }}</pre>
+  </section>
+  {% endif %}
+
+  <section class="card">
+    <h2>Transcript</h2>
+    <pre class="pre">{{ call.full_transcript or "No transcript saved." }}</pre>
+  </section>
+</div>
+
+<script>
+  const callId = "{{ call.id }}";
+
+  function showCallMsg(text, isError = false) {
+    const el = document.getElementById('callMsg');
+    el.textContent = text;
+    el.style.cssText = `margin-top:10px;padding:10px 12px;border-radius:8px;font-weight:600;`
+      + (isError ? 'background:#fee2e2;color:#991b1b;' : 'background:#dcfce7;color:#166534;');
+    setTimeout(() => { el.textContent = ''; el.style.cssText = ''; }, 4000);
+  }
+
+  async function resendEmail() {
+    try {
+      const r = await fetch(`/admin/api/calls/${callId}/resend-email`, { method: 'POST' });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        throw new Error(err.detail || r.statusText);
+      }
+      showCallMsg('✓ Result email queued — it will arrive shortly.');
+    } catch (e) {
+      showCallMsg('✗ Could not resend: ' + e.message, true);
+    }
+  }
+
+  async function deleteCall() {
+    if (!confirm('Delete this call? It will be hidden from lists and reports.')) return;
+    try {
+      const r = await fetch(`/admin/api/calls/${callId}`, { method: 'DELETE' });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        throw new Error(err.detail || r.statusText);
+      }
+      showCallMsg('✓ Call deleted. Redirecting…');
+      setTimeout(() => { location.href = '/admin/calls'; }, 1200);
+    } catch (e) {
+      showCallMsg('✗ Could not delete: ' + e.message, true);
+    }
+  }
+</script>
+{% endblock %}

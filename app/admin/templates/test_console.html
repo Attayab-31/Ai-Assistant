@@ -1,0 +1,1129 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <title>Voice Agent Test Console</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+        :root {
+            --bg: #0b1220;
+            --panel: #131c30;
+            --panel-2: #1a2542;
+            --text: #e7ecf6;
+            --muted: #8aa0c2;
+            --accent: #4f8cff;
+            --accent-2: #7ee2c8;
+            --danger: #ff6b6b;
+            --warn: #f6c453;
+            --ok: #4ade80;
+            --border: #243355;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            background: var(--bg);
+            color: var(--text);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                "Helvetica Neue", Arial, sans-serif;
+            min-height: 100vh;
+        }
+
+        header {
+            padding: 18px 28px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            background: linear-gradient(180deg, #131c30, #0e1628);
+        }
+
+        header h1 {
+            font-size: 18px;
+            margin: 0;
+            letter-spacing: .3px;
+        }
+
+        header .meta {
+            color: var(--muted);
+            font-size: 13px;
+        }
+
+        main {
+            display: grid;
+            grid-template-columns: 1.2fr 1fr;
+            gap: 20px;
+            padding: 20px 28px;
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        @media (max-width: 1000px) {
+            main {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .panel {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            overflow: hidden;
+        }
+
+        .panel header {
+            padding: 12px 16px;
+            border-bottom: 1px solid var(--border);
+            background: var(--panel-2);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .panel header h2 {
+            margin: 0;
+            font-size: 14px;
+            color: var(--accent-2);
+            letter-spacing: .5px;
+            text-transform: uppercase;
+        }
+
+        .panel-body {
+            padding: 16px;
+        }
+
+        .row {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .row>* {
+            flex: 1 1 auto;
+        }
+
+        label {
+            font-size: 12px;
+            color: var(--muted);
+            display: block;
+            margin: 8px 0 4px;
+        }
+
+        input,
+        textarea,
+        select {
+            width: 100%;
+            background: #0d1525;
+            border: 1px solid var(--border);
+            color: var(--text);
+            padding: 10px 12px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-family: inherit;
+        }
+
+        textarea {
+            resize: vertical;
+            min-height: 64px;
+        }
+
+        button {
+            background: var(--accent);
+            color: white;
+            border: none;
+            padding: 10px 16px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 14px;
+        }
+
+        button.secondary {
+            background: var(--panel-2);
+            color: var(--text);
+            border: 1px solid var(--border);
+        }
+
+        button.danger {
+            background: var(--danger);
+        }
+
+        button.success {
+            background: var(--ok);
+            color: #07140c;
+        }
+
+        button:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+        }
+
+        .pill {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 999px;
+            font-size: 11px;
+            background: var(--panel-2);
+            border: 1px solid var(--border);
+            color: var(--muted);
+            margin-right: 6px;
+        }
+
+        .pill.ok {
+            color: var(--ok);
+            border-color: rgba(74, 222, 128, .3);
+        }
+
+        .pill.warn {
+            color: var(--warn);
+            border-color: rgba(246, 196, 83, .3);
+        }
+
+        .pill.bad {
+            color: var(--danger);
+            border-color: rgba(255, 107, 107, .3);
+        }
+
+        .transcript {
+            max-height: 480px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .msg {
+            padding: 10px 12px;
+            border-radius: 10px;
+            max-width: 88%;
+            line-height: 1.4;
+            font-size: 14px;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+
+        .msg.ai {
+            background: #1d2a4a;
+            align-self: flex-start;
+        }
+
+        .msg.user {
+            background: #2a1d4a;
+            align-self: flex-end;
+        }
+
+        .msg .who {
+            font-size: 11px;
+            color: var(--muted);
+            margin-bottom: 4px;
+        }
+
+        .kv {
+            display: grid;
+            grid-template-columns: max-content 1fr;
+            gap: 6px 12px;
+            font-size: 13px;
+        }
+
+        .kv b {
+            color: var(--muted);
+            font-weight: 500;
+        }
+
+        pre {
+            background: #0d1525;
+            padding: 10px;
+            border-radius: 8px;
+            overflow: auto;
+            font-size: 12px;
+        }
+
+        audio {
+            width: 100%;
+            margin-top: 8px;
+        }
+
+        .footer-actions {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-top: 12px;
+        }
+
+        .status-dot {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--muted);
+            margin-right: 6px;
+        }
+
+        .status-dot.active {
+            background: var(--ok);
+            box-shadow: 0 0 0 4px rgba(74, 222, 128, .15);
+        }
+
+        .status-dot.error {
+            background: var(--danger);
+        }
+
+        .hint {
+            color: var(--muted);
+            font-size: 12px;
+        }
+
+        .tabs {
+            display: flex;
+            gap: 6px;
+            margin-bottom: 12px;
+        }
+
+        .tabs button {
+            background: var(--panel-2);
+            border: 1px solid var(--border);
+            color: var(--muted);
+        }
+
+        .tabs button.active {
+            background: var(--accent);
+            color: white;
+            border-color: var(--accent);
+        }
+    </style>
+</head>
+
+<body>
+    <header>
+        <div>
+            <h1>🎙 Voice Agent Test Console</h1>
+            <div class="meta">
+                <span class="pill ok">LLM: {{ providers.llm or "—" }}</span>
+                <span class="pill ok">STT: {{ providers.stt or "—" }}</span>
+                <span class="pill ok">TTS: {{ providers.tts or "—" }}</span>
+            </div>
+        </div>
+        <div class="meta">
+            <span id="connStatus"><span class="status-dot" id="dot"></span><span id="statusText">idle</span></span>
+        </div>
+    </header>
+
+    <main>
+        <!-- LEFT: Conversation -->
+        <section class="panel">
+            <header>
+                <h2>Conversation</h2>
+                <div>
+                    <span class="pill" id="callIdPill">no session</span>
+                    <span class="pill" id="statePill">—</span>
+                </div>
+            </header>
+            <div class="panel-body">
+                <div class="row" style="margin-bottom: 12px;">
+                    <div style="flex:2 1 200px;">
+                        <label>Caller phone</label>
+                        <input id="phoneNumber" value="+15555550123" />
+                    </div>
+                    <div style="flex:1 1 120px;">
+                        <label>Agent name</label>
+                        <input id="agentName" placeholder="(from settings)" />
+                    </div>
+                    <div style="flex:1 1 120px;">
+                        <label>Property</label>
+                        <input id="propertyName" placeholder="(from settings)" />
+                    </div>
+                </div>
+                <div class="footer-actions">
+                    <button id="startBtn">Start call</button>
+                    <button id="endBtn" class="danger" disabled>End & score</button>
+                    <button id="resetBtn" class="secondary">Reset</button>
+                </div>
+
+                <hr style="border:none;border-top:1px solid var(--border);margin:16px 0" />
+
+                <div class="tabs">
+                    <button id="tabVoice" class="active">Live voice</button>
+                    <button id="tabText">Type</button>
+                    <button id="tabMic">Mic record</button>
+                </div>
+
+                <div id="voicePane">
+                    <div class="hint">
+                        Speak naturally when status shows <strong>Mic live</strong>. The browser detects
+                        when you finish (brief pause) and sends audio to the same STT→LLM→TTS pipeline
+                        Telnyx uses. AI replies with clear voice; next question plays automatically.
+                    </div>
+                    <div class="footer-actions">
+                        <button id="voiceStartBtn">Start live call</button>
+                        <button id="voiceStopBtn" class="danger" disabled>Stop mic</button>
+                    </div>
+                    <div id="voiceStatus" class="hint" style="margin-top:6px;"></div>
+                    <div class="hint" style="margin-top:6px;">
+                        Speak naturally — Deepgram streaming detects when you finish (no fixed
+                        pause needed). You can <strong>talk over the agent to interrupt</strong>;
+                        headphones reduce false triggers. Press <strong>End &amp; score</strong>
+                        when the screening is complete.
+                    </div>
+                </div>
+
+                <div id="textPane" style="display:none;">
+                    <label>Reply as the tenant</label>
+                    <textarea id="userText" placeholder="e.g. 'Two adults and one child.'"></textarea>
+                    <div class="footer-actions">
+                        <button id="sendBtn" disabled>Send to agent</button>
+                        <button id="quickStartBtn" class="secondary" disabled>Quick: scripted happy path</button>
+                    </div>
+                    <div class="hint" style="margin-top:6px;">Tip: press <kbd>Ctrl</kbd>+<kbd>Enter</kbd> to send.</div>
+                </div>
+
+                <div id="micPane" style="display:none;">
+                    <div class="hint">Record from mic — WebM is converted to WAV in your browser (no ffmpeg needed).</div>
+                    <div class="footer-actions">
+                        <button id="recBtn" class="secondary" disabled>● Record</button>
+                        <button id="stopRecBtn" class="secondary" disabled>■ Stop & send</button>
+                    </div>
+                    <div id="recStatus" class="hint" style="margin-top:6px;"></div>
+                </div>
+
+                <hr style="border:none;border-top:1px solid var(--border);margin:16px 0" />
+                <h3
+                    style="margin:0 0 8px;font-size:13px;color:var(--accent-2);text-transform:uppercase;letter-spacing:.5px;">
+                    Transcript</h3>
+                <div id="transcript" class="transcript"></div>
+                <audio id="audioPlayer" controls></audio>
+            </div>
+        </section>
+
+        <!-- RIGHT: Inspector -->
+        <section class="panel">
+            <header>
+                <h2>Session inspector</h2>
+            </header>
+            <div class="panel-body">
+                <div class="kv" id="sessionInfo">
+                    <b>state</b><span id="iState">—</span>
+                    <b>questions</b><span id="iQuestions">0 / —</span>
+                    <b>duration</b><span id="iDuration">0s</span>
+                    <b>llm provider</b><span id="iLLM">—</span>
+                    <b>stt provider</b><span id="iSTT">—</span>
+                    <b>tts provider</b><span id="iTTS">—</span>
+                </div>
+
+                <h3
+                    style="margin:16px 0 6px;font-size:13px;color:var(--accent-2);text-transform:uppercase;letter-spacing:.5px;">
+                    Extracted data</h3>
+                <pre id="extractedData">{}</pre>
+
+                <h3
+                    style="margin:16px 0 6px;font-size:13px;color:var(--accent-2);text-transform:uppercase;letter-spacing:.5px;">
+                    Errors</h3>
+                <pre id="errorsBox">[]</pre>
+
+                <h3
+                    style="margin:16px 0 6px;font-size:13px;color:var(--accent-2);text-transform:uppercase;letter-spacing:.5px;">
+                    Final result</h3>
+                <pre id="finalResult">—</pre>
+            </div>
+        </section>
+    </main>
+
+    <script>
+        // Realistic happy-path answers in the current screening order
+        // (Q1 name → Q15 notes; no pets / no eviction, so Q6A and Q11A are skipped).
+        const SCRIPTED = [
+            "My name is Jordan Smith.",
+            "Yes, that's right.",
+            "It's 317 555 1234.",
+            "Yes, correct.",
+            "jordan dot smith at gmail dot com",
+            "Yes, that's it.",
+            "I'm hoping to move in next month.",
+            "Two adults and no children.",
+            "No pets.",
+            "I currently rent an apartment in Indianapolis.",
+            "About three years.",
+            "My lease is ending and I'd like a quieter neighborhood.",
+            "Looking to move within a month.",
+            "No, I've never been evicted.",
+            "About forty-eight hundred dollars a month.",
+            "I work at Acme Logistics.",
+            "A little over four years.",
+            "No, nothing else to add."
+        ];
+
+        const $ = (id) => document.getElementById(id);
+        let state = { callId: null, complete: false, ws: null, voiceActive: false };
+
+        /**
+         * Live mic: streams PCM16 @ 8 kHz to the server as `media` events.
+         * Turn detection is handled by Deepgram streaming endpointing on the
+         * server (Tier 2) — the browser no longer decides when you are "done".
+         */
+        class VoiceStreamingMic {
+            constructor(ws) {
+                this.ws = ws;
+                this.stream = null;
+                this.ctx = null;
+                this.processor = null;
+                this.active = false;
+                this.muted = true;
+                this.agentSpeaking = false;
+            }
+
+            async start() {
+                this.stream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: true,
+                        channelCount: 1,
+                    },
+                });
+                this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+                const source = this.ctx.createMediaStreamSource(this.stream);
+                const bufferSize = 2048;
+                this.processor = this.ctx.createScriptProcessor(bufferSize, 1, 1);
+                this.processor.onaudioprocess = (e) => this._onAudio(e);
+                source.connect(this.processor);
+                const silent = this.ctx.createGain();
+                silent.gain.value = 0;
+                this.processor.connect(silent);
+                silent.connect(this.ctx.destination);
+                this.active = true;
+            }
+
+            _floatToPcm16Chunk(input) {
+                const ratio = this.ctx.sampleRate / 8000;
+                const outLen = Math.max(1, Math.floor(input.length / ratio));
+                const int16 = new Int16Array(outLen);
+                for (let i = 0; i < outLen; i++) {
+                    const idx = Math.min(input.length - 1, Math.floor(i * ratio));
+                    int16[i] = Math.max(-32768, Math.min(32767, Math.round(input[idx] * 32767)));
+                }
+                return int16;
+            }
+
+            _sendMediaChunk(int16) {
+                if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+                const bytes = new Uint8Array(int16.buffer);
+                let bin = "";
+                for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+                this.ws.send(JSON.stringify({
+                    event: "media",
+                    media: {
+                        payload: btoa(bin),
+                        encoding: "linear16",
+                        sample_rate: 8000,
+                    },
+                }));
+            }
+
+            _onAudio(e) {
+                if (!this.active) return;
+                const input = e.inputBuffer.getChannelData(0);
+
+                // Stream mic to the server continuously during agent speech so
+                // transcript-gated barge-in can detect real caller words.
+                if (this.agentSpeaking) {
+                    this._sendMediaChunk(this._floatToPcm16Chunk(input));
+                    return;
+                }
+
+                if (this.muted) return;
+                this._sendMediaChunk(this._floatToPcm16Chunk(input));
+            }
+
+            unmute() {
+                this.muted = false;
+                this.agentSpeaking = false;
+            }
+
+            mute() {
+                this.muted = true;
+                this.agentSpeaking = false;
+            }
+
+            stop() {
+                this.active = false;
+                this.mute();
+                if (this.processor) { this.processor.disconnect(); this.processor = null; }
+                if (this.ctx) { this.ctx.close().catch(() => {}); this.ctx = null; }
+                if (this.stream) { this.stream.getTracks().forEach(t => t.stop()); this.stream = null; }
+            }
+        }
+
+        let voiceMic = null;
+        let micReady = false;
+        let pendingUnmute = false;
+        const agentAudioQueue = [];
+        let agentAudioPlaying = false;
+        // Bumped on stop/barge-in so stale playAudio callbacks can't touch the queue.
+        let playSessionId = 0;
+        let activeBlobUrl = null;
+        let playbackWatchdog = null;
+
+        function isPlayerBusy() {
+            const player = $("audioPlayer");
+            return !!(player.src && !player.paused && !player.ended);
+        }
+
+        function invalidatePlayback() {
+            playSessionId += 1;
+        }
+
+        function resetAudioElement() {
+            const player = $("audioPlayer");
+            player.onended = null;
+            player.onerror = null;
+            try { player.pause(); player.currentTime = 0; } catch (e) {}
+            if (activeBlobUrl) {
+                URL.revokeObjectURL(activeBlobUrl);
+                activeBlobUrl = null;
+            }
+            player.removeAttribute("src");
+            try { player.load(); } catch (e) {}
+        }
+
+        function ensureAgentPlayback() {
+            if (!agentAudioQueue.length) {
+                agentAudioPlaying = false;
+                return;
+            }
+            if (agentAudioPlaying && isPlayerBusy()) return;
+            if (agentAudioPlaying && !isPlayerBusy()) {
+                console.warn("[voice] Recovering stalled agent audio queue");
+                agentAudioPlaying = false;
+            }
+            playNextAgentAudio();
+        }
+
+        function schedulePlaybackWatchdog() {
+            if (playbackWatchdog) clearTimeout(playbackWatchdog);
+            playbackWatchdog = setTimeout(() => {
+                playbackWatchdog = null;
+                if (!agentAudioQueue.length) return;
+                if (!isPlayerBusy()) {
+                    console.warn(
+                        "[voice] Watchdog restarting queue (" + agentAudioQueue.length + " clip(s) waiting)"
+                    );
+                    agentAudioPlaying = false;
+                    playNextAgentAudio();
+                }
+            }, 2000);
+        }
+
+        let agentQuietUntil = 0;
+        const POST_PLAYBACK_MUTE_MS = 350;
+
+        function stopAgentPlayback() {
+            invalidatePlayback();
+            resetAudioElement();
+            agentAudioQueue.length = 0;
+            agentAudioPlaying = false;
+            pendingUnmute = false;
+            if (playbackWatchdog) {
+                clearTimeout(playbackWatchdog);
+                playbackWatchdog = null;
+            }
+            // Transition to listening so the caller's continued speech keeps
+            // streaming on the normal (non-agentSpeaking) path.
+            if (voiceMic) {
+                voiceMic.agentSpeaking = false;
+                voiceMic.muted = false;
+            }
+            $("voiceStatus").textContent = "Go ahead — I'm listening.";
+            setStatus("listening", "ok");
+        }
+
+        function onAgentSpeaking() {
+            pendingUnmute = false;
+            if (voiceMic) {
+                voiceMic.agentSpeaking = true;
+            }
+        }
+
+        function tryUnmuteMic() {
+            if (!pendingUnmute || !voiceMic) return;
+            const wait = agentQuietUntil - Date.now();
+            if (wait > 0) {
+                setTimeout(tryUnmuteMic, wait);
+                return;
+            }
+            pendingUnmute = false;
+            voiceMic.unmute();
+            $("voiceStatus").textContent = "Mic live — speak naturally (streaming turn detection).";
+            setStatus("listening", "ok");
+            $("voiceStopBtn").disabled = false;
+        }
+
+        function onAgentDone() {
+            if (voiceMic) voiceMic.agentSpeaking = false;
+            pendingUnmute = true;
+            agentQuietUntil = Date.now() + POST_PLAYBACK_MUTE_MS;
+            // Mic unmute is scheduled here only from the playAudio completion
+            // callback (turnEnd). Do NOT touch player.onended — the server also
+            // emits agent_done on a timer that can fire mid-playback and used to
+            // overwrite onended, leaving agentAudioPlaying stuck and silencing
+            // every subsequent clip.
+            tryUnmuteMic();
+        }
+
+        function playNextAgentAudio() {
+            if (!agentAudioQueue.length) {
+                agentAudioPlaying = false;
+                return;
+            }
+            agentAudioPlaying = true;
+            onAgentSpeaking();
+            const { b64, turnEnd } = agentAudioQueue.shift();
+            const session = playSessionId;
+            playAudio(b64, () => {
+                if (session !== playSessionId) return;
+                if (turnEnd) onAgentDone();
+                playNextAgentAudio();
+            });
+        }
+
+        function enqueueAgentAudio(b64, turnEnd = true) {
+            agentAudioQueue.push({ b64, turnEnd: turnEnd !== false });
+            ensureAgentPlayback();
+            schedulePlaybackWatchdog();
+        }
+
+        const setStatus = (text, kind = "idle") => {
+            $("statusText").textContent = text;
+            $("dot").className = "status-dot " + (kind === "ok" ? "active" : kind === "err" ? "error" : "");
+        };
+
+        function appendMsg(who, text) {
+            if (!text || !text.toString().trim()) return;
+            const div = document.createElement("div");
+            div.className = "msg " + (who.toLowerCase() === "ai" ? "ai" : "user");
+            const textContent = String(text).trim();
+            div.innerHTML = `<div class="who">${who}</div>${escapeHtml(textContent)}`;
+            $("transcript").appendChild(div);
+            $("transcript").scrollTop = $("transcript").scrollHeight;
+            console.log(`[${who}] ${textContent}`);
+        }
+
+        function escapeHtml(s) {
+            return String(s).replace(/[&<>"']/g, c => ({
+                "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+            }[c]));
+        }
+
+        function applySession(data) {
+            if (!data) return;
+            const s = data.session || data;
+            $("callIdPill").textContent = data.call_id || s.call_id || "no session";
+            const st = s.state || s.current_state || "—";
+            $("statePill").textContent = st;
+            $("iState").textContent = st;
+            const total = s.active_question_count ?? 17;
+            $("iQuestions").textContent = (s.questions_answered ?? 0) + " / " + total;
+            $("iDuration").textContent = (s.duration_seconds ?? 0) + "s";
+            const prov = s.providers || {};
+            $("iLLM").textContent = prov.llm || s.llm_provider || "—";
+            $("iSTT").textContent = prov.stt || s.stt_provider || "—";
+            $("iTTS").textContent = prov.tts || s.tts_provider || "—";
+            $("extractedData").textContent = JSON.stringify(s.extracted_data || {}, null, 2);
+            $("errorsBox").textContent = JSON.stringify(s.errors || [], null, 2);
+        }
+
+        function playAudio(b64, onEnded) {
+            if (!b64) { if (onEnded) onEnded(); return; }
+            const session = playSessionId;
+            const player = $("audioPlayer");
+            const finish = () => {
+                if (session !== playSessionId) return;
+                if (onEnded) onEnded();
+            };
+            player.onended = finish;
+            player.onerror = () => {
+                console.warn("[voice] Audio playback error");
+                finish();
+            };
+            if (activeBlobUrl) {
+                URL.revokeObjectURL(activeBlobUrl);
+                activeBlobUrl = null;
+            }
+            try {
+                const bytes = b64ToBytes(b64);
+                const blob = new Blob([bytes], { type: "audio/wav" });
+                activeBlobUrl = URL.createObjectURL(blob);
+                player.src = activeBlobUrl;
+            } catch (e) {
+                player.src = "data:audio/wav;base64," + b64;
+            }
+            player.volume = 0.85;
+            player.play().catch((err) => {
+                console.warn("[voice] Audio play() rejected:", err);
+                finish();
+            });
+        }
+
+        async function api(path, body, isForm) {
+            const opts = { method: "POST" };
+            if (isForm) {
+                opts.body = body;
+            } else if (body) {
+                opts.headers = { "Content-Type": "application/json" };
+                opts.body = JSON.stringify(body);
+            }
+            const r = await fetch(path, opts);
+            if (!r.ok) throw new Error((await r.text()) || r.statusText);
+            return r.json();
+        }
+
+        function b64ToBytes(b64) {
+            const bin = atob(b64);
+            const arr = new Uint8Array(bin.length);
+            for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+            return arr;
+        }
+
+        function stopMicCapture() {
+            if (voiceMic) { voiceMic.stop(); voiceMic = null; }
+            micReady = false;
+            state.voiceActive = false;
+            $("voiceStopBtn").disabled = true;
+        }
+
+        function stopVoiceCall() {
+            stopMicCapture();
+            pendingUnmute = false;
+            invalidatePlayback();
+            agentAudioQueue.length = 0;
+            agentAudioPlaying = false;
+            resetAudioElement();
+            if (state.ws) {
+                try { state.ws.send(JSON.stringify({ event: "stop" })); } catch (_) {}
+                state.ws.close();
+                state.ws = null;
+            }
+        }
+
+        $("voiceStartBtn").onclick = async () => {
+            if (state.ws) stopVoiceCall();
+            $("transcript").innerHTML = "";
+            $("finalResult").textContent = "—";
+            setStatus("starting live call…");
+            $("voiceStatus").textContent = "Creating session…";
+            try {
+                const data = await api("/test/api/start", {
+                    phone_number: $("phoneNumber").value,
+                    agent_name: $("agentName").value || null,
+                    property_name: $("propertyName").value || null,
+                    mode: "voice",
+                });
+                state.callId = data.call_id;
+                state.complete = false;
+                applySession(data);
+                $("endBtn").disabled = false;
+                $("sendBtn").disabled = false;
+                $("quickStartBtn").disabled = false;
+                $("recBtn").disabled = false;
+
+                $("voiceStatus").textContent = "Connecting WebSocket…";
+                const ws = new WebSocket(data.ws_url);
+                state.ws = ws;
+
+                ws.onopen = async () => {
+                    setStatus("connected — playing greeting", "ok");
+                    $("voiceStatus").textContent = "Connected. Starting mic (muted during greeting)…";
+                    ws.send(JSON.stringify({ event: "start" }));
+                    try {
+                        voiceMic = new VoiceStreamingMic(ws);
+                        await voiceMic.start();
+                        micReady = true;
+                        state.voiceActive = true;
+                        $("voiceStatus").textContent = "Greeting playing — wait for Mic live.";
+                    } catch (e) {
+                        $("voiceStatus").textContent = "Mic error: " + e.message;
+                    }
+                };
+
+                ws.onmessage = (ev) => {
+                    let msg;
+                    try { msg = JSON.parse(ev.data); } catch (_) { return; }
+
+                    if (msg.event === "play_wav" && msg.audio_wav_b64) {
+                        enqueueAgentAudio(msg.audio_wav_b64, msg.turn_end);
+                    } else if (msg.event === "interrupt") {
+                        // Server confirmed a real barge-in (transcript-gated).
+                        // Stop local playback immediately so the caller is heard.
+                        stopAgentPlayback();
+                    } else if (msg.event === "agent_done") {
+                        // Informational only — playback completion is driven by
+                        // play_wav turn_end + the audio element onended callback.
+                        // Calling onAgentDone here used to break the queue.
+                    } else if (msg.event === "greeting" && msg.text) {
+                        appendMsg("AI", msg.text);
+                        applySession({ call_id: state.callId, session: msg.session });
+                    } else if (msg.event === "transcript" && msg.text) {
+                        appendMsg("Tenant", msg.text);
+                        $("voiceStatus").textContent = "Heard you — AI responding…";
+                    } else if (msg.event === "response" && msg.text) {
+                        appendMsg("AI", msg.text);
+                        applySession({ call_id: state.callId, session: msg.session });
+                    } else if (msg.event === "complete") {
+                        const sess = msg.session || {};
+                        const qa = sess.questions_answered ?? 0;
+                        const total = sess.active_question_count ?? 17;
+                        const done = sess.is_screening_complete
+                            || ["WRAP_UP", "ENDED"].includes(sess.state)
+                            || (total > 0 && qa >= total);
+                        applySession({ call_id: state.callId, session: sess });
+                        stopMicCapture();
+                        $("audioPlayer").pause();
+                        if (done) {
+                            state.complete = true;
+                            setStatus("call complete — press End & score", "ok");
+                            $("voiceStatus").textContent = "Screening complete.";
+                        } else {
+                            setStatus("call ended early", "err");
+                            $("voiceStatus").textContent =
+                                `Call ended before screening finished (${qa}/${total}). Start a new call or use Type tab.`;
+                        }
+                    } else if (msg.event === "debug" && msg.message) {
+                        $("voiceStatus").textContent = msg.message;
+                        if (msg.message.includes("Your turn")) {
+                            setStatus("listening", "ok");
+                        }
+                    } else if (msg.event === "error") {
+                        $("voiceStatus").textContent = msg.message || "WebSocket error";
+                        setStatus("error", "err");
+                    }
+                };
+
+                ws.onerror = () => {
+                    setStatus("WebSocket error", "err");
+                    $("voiceStatus").textContent = "WebSocket connection failed.";
+                };
+
+                ws.onclose = () => {
+                    stopMicCapture();
+                    if (!state.complete) setStatus("disconnected", "err");
+                };
+            } catch (e) {
+                setStatus("live call failed: " + e.message, "err");
+                $("voiceStatus").textContent = e.message;
+            }
+        };
+
+        $("voiceStopBtn").onclick = () => {
+            stopMicCapture();
+            $("voiceStatus").textContent = "Mic stopped (call still active — use End & score).";
+        };
+
+        $("startBtn").onclick = async () => {
+            stopVoiceCall();
+            $("transcript").innerHTML = "";
+            $("finalResult").textContent = "—";
+            setStatus("starting…");
+            try {
+                const data = await api("/test/api/start", {
+                    phone_number: $("phoneNumber").value,
+                    agent_name: $("agentName").value || null,
+                    property_name: $("propertyName").value || null,
+                    mode: "text",
+                });
+                state.callId = data.call_id;
+                state.complete = false;
+                appendMsg("AI", data.greeting_text);
+                playAudio(data.audio_wav_b64);
+                applySession(data);
+                $("sendBtn").disabled = false;
+                $("quickStartBtn").disabled = false;
+                $("endBtn").disabled = false;
+                $("recBtn").disabled = false;
+                setStatus("listening", "ok");
+            } catch (e) {
+                setStatus("start failed: " + e.message, "err");
+            }
+        };
+
+        async function sendText(text) {
+            if (!state.callId || !text.trim()) return;
+            appendMsg("Tenant", text);
+            setStatus("thinking…");
+            try {
+                const data = await api("/test/api/say", { call_id: state.callId, text });
+                appendMsg("AI", data.response_text);
+                playAudio(data.audio_wav_b64);
+                applySession(data);
+                if (data.is_complete) {
+                    state.complete = true;
+                    setStatus("call complete — press End & score", "ok");
+                } else {
+                    setStatus("listening", "ok");
+                }
+            } catch (e) {
+                setStatus("send failed: " + e.message, "err");
+            }
+        }
+
+        $("sendBtn").onclick = async () => {
+            const text = $("userText").value;
+            $("userText").value = "";
+            await sendText(text);
+        };
+
+        $("userText").addEventListener("keydown", (e) => {
+            if (e.ctrlKey && e.key === "Enter") $("sendBtn").click();
+        });
+
+        $("quickStartBtn").onclick = async () => {
+            for (const line of SCRIPTED) {
+                await sendText(line);
+                if (state.complete) break;
+                await new Promise(r => setTimeout(r, 600));
+            }
+        };
+
+        $("endBtn").onclick = async () => {
+            if (!state.callId) return;
+            stopVoiceCall();
+            setStatus("scoring…");
+            try {
+                const data = await api("/test/api/end", { call_id: state.callId });
+                $("finalResult").textContent = JSON.stringify(data, null, 2);
+                setStatus("done", "ok");
+                $("sendBtn").disabled = true;
+                $("quickStartBtn").disabled = true;
+                $("endBtn").disabled = true;
+                $("recBtn").disabled = true;
+                state.callId = null;
+            } catch (e) {
+                setStatus("end failed: " + e.message, "err");
+            }
+        };
+
+        $("resetBtn").onclick = () => {
+            stopVoiceCall();
+            state = { callId: null, complete: false, ws: null, voiceActive: false };
+            $("transcript").innerHTML = "";
+            $("finalResult").textContent = "—";
+            $("extractedData").textContent = "{}";
+            $("errorsBox").textContent = "[]";
+            $("callIdPill").textContent = "no session";
+            $("statePill").textContent = "—";
+            $("sendBtn").disabled = true;
+            $("quickStartBtn").disabled = true;
+            $("endBtn").disabled = true;
+            $("recBtn").disabled = true;
+            $("stopRecBtn").disabled = true;
+            $("voiceStopBtn").disabled = true;
+            $("voiceStatus").textContent = "";
+            setStatus("idle");
+        };
+
+        function showTab(active) {
+            ["tabVoice", "tabText", "tabMic"].forEach(id => {
+                $(id).classList.toggle("active", id === active);
+            });
+            $("voicePane").style.display = active === "tabVoice" ? "" : "none";
+            $("textPane").style.display = active === "tabText" ? "" : "none";
+            $("micPane").style.display = active === "tabMic" ? "" : "none";
+        }
+
+        $("tabVoice").onclick = () => showTab("tabVoice");
+        $("tabText").onclick = () => showTab("tabText");
+        $("tabMic").onclick = () => showTab("tabMic");
+
+        /** Decode any browser audio blob → mono 8 kHz PCM WAV (no ffmpeg needed). */
+        async function blobToWav8k(blob) {
+            const ctx = new AudioContext();
+            const decoded = await ctx.decodeAudioData(await blob.arrayBuffer());
+            await ctx.close();
+            const targetRate = 8000;
+            const length = Math.ceil(decoded.duration * targetRate);
+            const offline = new OfflineAudioContext(1, length, targetRate);
+            const src = offline.createBufferSource();
+            src.buffer = decoded;
+            src.connect(offline.destination);
+            src.start(0);
+            const rendered = await offline.startRendering();
+            const pcm = rendered.getChannelData(0);
+            const int16 = new Int16Array(pcm.length);
+            for (let i = 0; i < pcm.length; i++) {
+                int16[i] = Math.max(-32768, Math.min(32767, Math.round(pcm[i] * 32767)));
+            }
+            const dataLen = int16.length * 2;
+            const buf = new ArrayBuffer(44 + dataLen);
+            const v = new DataView(buf);
+            const writeStr = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+            writeStr(0, "RIFF");
+            v.setUint32(4, 36 + dataLen, true);
+            writeStr(8, "WAVE");
+            writeStr(12, "fmt ");
+            v.setUint32(16, 16, true);
+            v.setUint16(20, 1, true);
+            v.setUint16(22, 1, true);
+            v.setUint32(24, targetRate, true);
+            v.setUint32(28, targetRate * 2, true);
+            v.setUint16(32, 2, true);
+            v.setUint16(34, 16, true);
+            writeStr(36, "data");
+            v.setUint32(40, dataLen, true);
+            for (let i = 0; i < int16.length; i++) v.setInt16(44 + i * 2, int16[i], true);
+            return new Blob([buf], { type: "audio/wav" });
+        }
+
+        // Microphone recording — converts WebM/Opus to WAV in browser before upload
+        let mediaRecorder = null;
+        let chunks = [];
+        $("recBtn").onclick = async () => {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                // Prefer audio/wav, fall back to whatever the browser supports.
+                let mimeType = "audio/wav";
+                if (!MediaRecorder.isTypeSupported(mimeType)) mimeType = "audio/webm";
+                mediaRecorder = new MediaRecorder(stream, { mimeType });
+                chunks = [];
+                mediaRecorder.ondataavailable = e => chunks.push(e.data);
+                mediaRecorder.onstop = async () => {
+                    stream.getTracks().forEach(t => t.stop());
+                    const rawBlob = new Blob(chunks, { type: mimeType });
+                    $("recStatus").textContent = "converting…";
+                    try {
+                        const wavBlob = await blobToWav8k(rawBlob);
+                        $("recStatus").textContent = "uploading…";
+                        const fd = new FormData();
+                        fd.append("call_id", state.callId);
+                        fd.append("audio", wavBlob, "utterance.wav");
+                        const data = await api("/test/api/say-audio", fd, true);
+                        if (data.transcript) appendMsg("Tenant", data.transcript);
+                        appendMsg("AI", data.response_text);
+                        playAudio(data.audio_wav_b64);
+                        applySession(data);
+                        $("recStatus").textContent = "";
+                        if (data.is_complete) {
+                            state.complete = true;
+                            setStatus("call complete — press End & score", "ok");
+                        }
+                    } catch (e) {
+                        $("recStatus").textContent = "failed: " + e.message;
+                    }
+                };
+                mediaRecorder.start();
+                $("recBtn").disabled = true;
+                $("stopRecBtn").disabled = false;
+                $("recStatus").textContent = "recording…";
+            } catch (e) {
+                $("recStatus").textContent = "mic error: " + e.message;
+            }
+        };
+        $("stopRecBtn").onclick = () => {
+            if (mediaRecorder) mediaRecorder.stop();
+            $("recBtn").disabled = false;
+            $("stopRecBtn").disabled = true;
+        };
+    </script>
+</body>
+
+</html>

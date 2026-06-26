@@ -1,0 +1,34 @@
+#!/bin/sh
+set -e
+
+# Single dispatch point for all container roles so one image serves the web
+# app, the Celery worker, and the Celery beat scheduler.
+ROLE="${1:-web}"
+
+case "$ROLE" in
+  web)
+    echo "[entrypoint] Applying database migrations (alembic upgrade head)..."
+    alembic upgrade head
+    echo "[entrypoint] Starting web server..."
+    # Single uvicorn worker: live call sessions are held in-memory per process.
+    # To scale out, add a shared session store and a sticky load balancer.
+    # Bind to $PORT when present (Render/Heroku inject it); default to 8000.
+    exec uvicorn main:app --host 0.0.0.0 --port "${PORT:-8000}"
+    ;;
+  worker)
+    echo "[entrypoint] Starting Celery worker..."
+    exec celery -A app.core.celery_app.celery_app worker --loglevel=info
+    ;;
+  beat)
+    echo "[entrypoint] Starting Celery beat scheduler..."
+    exec celery -A app.core.celery_app.celery_app beat --loglevel=info
+    ;;
+  migrate)
+    echo "[entrypoint] Running migrations only..."
+    exec alembic upgrade head
+    ;;
+  *)
+    # Fall through to an arbitrary command for debugging.
+    exec "$@"
+    ;;
+esac

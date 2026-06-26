@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Admin Login</title>
+  <style>
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f6f7f9; font-family: system-ui, sans-serif; color: #172033; }
+    form { width: min(380px, calc(100vw - 32px)); background: white; border: 1px solid #d9dee8; border-radius: 8px; padding: 22px; display: grid; gap: 12px; }
+    h1 { font-size: 22px; margin: 0 0 4px; }
+    label { display: grid; gap: 6px; font-size: 13px; color: #667085; }
+    input, button { font: inherit; border-radius: 6px; padding: 10px; border: 1px solid #d9dee8; }
+    button { color: white; background: #2563eb; border-color: #2563eb; font-weight: 700; cursor: pointer; }
+    .error { color: #dc2626; min-height: 20px; }
+  </style>
+</head>
+<body>
+  <form id="login-form">
+    <h1>Admin Login</h1>
+    <label>Email <input name="email" type="email" autocomplete="username" required></label>
+    <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
+    <button type="submit">Sign In</button>
+    <div class="error" id="error"></div>
+    <div style="font-size:12px;color:#667085;">No account yet? <a href="/admin/signup" style="color:#2563eb;">Create one</a>.</div>
+  </form>
+  <script>
+    document.getElementById('login-form').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const form = new FormData(event.currentTarget);
+      const response = await fetch('/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: form.get('email'), password: form.get('password') })
+      });
+      if (response.ok) {
+        window.location.href = '/admin/dashboard';
+      } else {
+        const body = await response.json().catch(() => ({}));
+        document.getElementById('error').textContent = body.detail || 'Login failed';
+      }
+    });
+  </script>
+</body>
+</html>
+

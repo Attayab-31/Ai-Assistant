@@ -1,0 +1,164 @@
+# Render Blueprint — deploy with "New > Blueprint" pointing at this repo.
+#
+# Architecture (see README): one web instance (live call sessions are held
+# in-memory per process, so the web service MUST stay at a single instance),
+# plus a Celery worker and a single Celery beat scheduler, backed by a
+# managed Redis (broker/cache) and an external Postgres (set DATABASE_URL).
+#
+# Secrets marked `sync: false` must be filled in the Render dashboard.
+
+services:
+  # ── Web (FastAPI / uvicorn) ────────────────────────────────────────────────
+  - type: web
+    name: ai-screener-web
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerCommand: /app/docker-entrypoint.sh web
+    plan: starter
+    # CRITICAL: keep this at exactly 1. Live call state is per-process; scaling
+    # the web tier splits sessions across instances and breaks calls.
+    numInstances: 1
+    healthCheckPath: /health
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: DEBUG
+        value: "false"
+      - key: SECRET_KEY
+        generateValue: true
+      - key: ENCRYPTION_KEY
+        sync: false
+      - key: APP_URL
+        sync: false
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: DATABASE_MIGRATION_MODE
+        value: check
+      - key: REDIS_URL
+        fromService:
+          name: ai-screener-redis
+          type: redis
+          property: connectionString
+      - key: CELERY_BROKER_URL
+        fromService:
+          name: ai-screener-redis
+          type: redis
+          property: connectionString
+      - key: CELERY_RESULT_BACKEND
+        fromService:
+          name: ai-screener-redis
+          type: redis
+          property: connectionString
+      - key: TELNYX_API_KEY
+        sync: false
+      - key: TELNYX_PUBLIC_KEY
+        sync: false
+      - key: TELNYX_PHONE_NUMBER
+        sync: false
+      - key: DEEPGRAM_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: EMAIL_FROM
+        sync: false
+      - key: EMAIL_FROM_NAME
+        sync: false
+
+  # ── Celery worker (emails, CRM webhooks) ────────────────────────────────────
+  - type: worker
+    name: ai-screener-worker
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerCommand: /app/docker-entrypoint.sh worker
+    plan: starter
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: SECRET_KEY
+        fromService:
+          name: ai-screener-web
+          type: web
+          envVarKey: SECRET_KEY
+      - key: ENCRYPTION_KEY
+        sync: false
+      - key: APP_URL
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        fromService:
+          name: ai-screener-redis
+          type: redis
+          property: connectionString
+      - key: CELERY_BROKER_URL
+        fromService:
+          name: ai-screener-redis
+          type: redis
+          property: connectionString
+      - key: CELERY_RESULT_BACKEND
+        fromService:
+          name: ai-screener-redis
+          type: redis
+          property: connectionString
+      - key: RESEND_API_KEY
+        sync: false
+      - key: EMAIL_FROM
+        sync: false
+      - key: EMAIL_FROM_NAME
+        sync: false
+
+  # ── Celery beat (scheduler — MUST be a single instance) ─────────────────────
+  - type: worker
+    name: ai-screener-beat
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerCommand: /app/docker-entrypoint.sh beat
+    plan: starter
+    numInstances: 1
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: SECRET_KEY
+        fromService:
+          name: ai-screener-web
+          type: web
+          envVarKey: SECRET_KEY
+      - key: ENCRYPTION_KEY
+        sync: false
+      - key: APP_URL
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        fromService:
+          name: ai-screener-redis
+          type: redis
+          property: connectionString
+      - key: CELERY_BROKER_URL
+        fromService:
+          name: ai-screener-redis
+          type: redis
+          property: connectionString
+      - key: CELERY_RESULT_BACKEND
+        fromService:
+          name: ai-screener-redis
+          type: redis
+          property: connectionString
+
+  # ── Managed Redis (broker + cache + idempotency) ────────────────────────────
+  # noeviction so the Celery broker never silently drops queued tasks.
+  - type: redis
+    name: ai-screener-redis
+    plan: starter
+    maxmemoryPolicy: noeviction
+    ipAllowList: []

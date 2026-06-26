@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block head %}
+<style>
+  .settings-nav { display: flex; gap: 2px; border-bottom: 2px solid var(--line); margin-bottom: 24px; flex-wrap: wrap; }
+  .settings-nav a { 
+    padding: 11px 14px; 
+    border-bottom: 3px solid transparent; 
+    margin-bottom: -2px;
+    color: var(--muted); 
+    font-weight: 500;
+    white-space: nowrap;
+  }
+  .settings-nav a.active { 
+    border-bottom-color: var(--accent); 
+    color: var(--ink);
+  }
+  .settings-nav a:hover { color: var(--ink); }
+  .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
+  .form-section { background: var(--panel); padding: 20px; border-radius: 8px; border: 1px solid var(--line); }
+  .form-group { margin-bottom: 16px; }
+  .form-group label { display: block; font-weight: 500; margin-bottom: 6px; }
+  .form-group input, .form-group select, .form-group textarea { 
+    width: 100%; 
+    padding: 10px; 
+    border: 1px solid var(--line); 
+    border-radius: 6px; 
+    font-size: 14px; 
+  }
+  .form-group textarea { resize: vertical; min-height: 100px; }
+  .form-actions { display: flex; gap: 8px; margin-top: 24px; flex-wrap: wrap; }
+  .btn { padding: 10px 20px; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 14px; }
+  .btn-primary { background: var(--accent); color: white; }
+  .btn-secondary { background: var(--line); color: var(--ink); }
+  .btn-danger { background: #dc2626; color: white; }
+  .btn:hover { opacity: 0.9; }
+  .alert { padding: 12px 16px; margin-bottom: 16px; border-radius: 6px; }
+  .alert-success { background: #d1fae5; color: #065f46; border: 1px solid #a7f3d0; }
+  .alert-error { background: #fee2e2; color: #991b1b; border: 1px solid #fca5a5; }
+  .text-muted { color: var(--muted); font-size: 13px; }
+
+  /* Friendly helpers shared across settings pages */
+  details.adv { margin-top: 12px; border: 1px dashed var(--line); border-radius: 8px; padding: 0 12px; background: #fbfcfe; }
+  details.adv > summary { cursor: pointer; font-weight: 600; color: var(--muted); font-size: 13px; padding: 10px 0; list-style: none; }
+  details.adv > summary::-webkit-details-marker { display: none; }
+  details.adv > summary::before { content: "▸ "; }
+  details.adv[open] > summary::before { content: "▾ "; }
+  details.adv[open] { padding-bottom: 12px; }
+  .req { color: #dc2626; }
+  .var-chip { display: inline-block; background: var(--accent-soft); color: var(--accent); border: 1px solid #cdddff; border-radius: 6px; padding: 2px 8px; font-size: 12px; font-family: ui-monospace, monospace; cursor: pointer; margin: 2px 2px 0 0; }
+  .var-chip:hover { filter: brightness(0.97); }
+  .status-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 11px 0; border-bottom: 1px solid var(--line-soft); }
+  .status-row:last-child { border-bottom: none; }
+  .engine-name { font-weight: 700; }
+  .engine-desc { color: var(--muted); font-size: 13px; margin: 2px 0 10px; }
+  .warn-note { background: #fffbeb; border: 1px solid #fde68a; color: #92400e; border-radius: 8px; padding: 8px 10px; font-size: 12px; margin-top: 8px; }
+</style>
+{% endblock %}
+{% block content %}
+<div id="msg"></div>
+
+<div class="settings-nav">
+  <a class="{{ 'active' if section == 'general' else '' }}" href="/admin/settings/general">General</a>
+  <a class="{{ 'active' if section == 'providers' else '' }}" href="/admin/settings/providers">AI &amp; Voice</a>
+  <a class="{{ 'active' if section == 'questions' else '' }}" href="/admin/settings/questions">Questions</a>
+  <a class="{{ 'active' if section == 'faqs' else '' }}" href="/admin/settings/faqs">Caller FAQs</a>
+  <a class="{{ 'active' if section == 'email' else '' }}" href="/admin/settings/email">Email</a>
+</div>
+
+{% block settings_content %}{% endblock %}
+
+<script>
+  function showMessage(text, isError = false) {
+    const msg = document.getElementById('msg');
+    msg.className = isError ? 'alert alert-error' : 'alert alert-success';
+    msg.textContent = text;
+    setTimeout(() => { msg.textContent = ''; msg.className = ''; }, 5000);
+  }
+</script>
+{% endblock %}

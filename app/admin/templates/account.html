@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Account{% endblock %}
+{% block page_title %}Account{% endblock %}
+{% block content %}
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Email</th><th>Name</th><th>Role</th><th>Active</th></tr></thead>
+  <tbody>
+  {% for item in users %}
+    <tr>
+      <td>{{ item.email }}</td>
+      <td>{{ item.full_name or "-" }}</td>
+      <td>{{ item.role }}</td>
+      <td>{{ item.is_active }}</td>
+    </tr>
+  {% else %}
+    <tr><td colspan="4" class="muted">No users found.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endblock %}
+

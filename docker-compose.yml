@@ -1,0 +1,67 @@
+# Production-style local stack: web + Celery worker + Celery beat + Redis.
+#
+# DATABASE_URL is read from your .env and should point to your Postgres/Supabase
+# instance (this compose file does not run a database). The Redis URLs are
+# overridden below to use the bundled redis service.
+#
+# Usage:
+#   cp .env.example .env   # then fill in real values
+#   docker compose up --build
+
+x-app-env: &app-env
+  REDIS_URL: redis://redis:6379/0
+  CELERY_BROKER_URL: redis://redis:6379/1
+  CELERY_RESULT_BACKEND: redis://redis:6379/2
+
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  web:
+    build: .
+    command: web
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      <<: *app-env
+    ports:
+      - "8000:8000"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+
+  worker:
+    build: .
+    command: worker
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      <<: *app-env
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  beat:
+    build: .
+    command: beat
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      <<: *app-env
+    depends_on:
+      redis:
+        condition: service_healthy

@@ -1,0 +1,126 @@
+"""
+app/providers/tts/deepgram_tts.py — Deepgram Aura-2 TTS (fallback).
+"""
+
+import asyncio
+import logging
+import re
+
+import httpx
+
+from app.providers.base import BaseTTSProvider
+from config import settings
+
+logger = logging.getLogger(__name__)
+
+DEEPGRAM_TTS_URL = "https://api.deepgram.com/v1/speak"
+DEFAULT_VOICE = "aura-2-thalia-en"
+VOICE_NAME_PATTERN = re.compile(r"^aura(?:-2)?-[a-z0-9-]+-[a-z]{2}$")
+
+# Bound (rather than fully serialize) concurrent Deepgram TTS requests. The old
+# DECRYPTION_FAILED_OR_BAD_RECORD_MAC / silent-audio bug came from a *shared*
+# httpx client being closed mid-flight; each synthesize() now opens and closes
+# its own client, so concurrent calls are safe. We still cap concurrency to avoid
+# opening unbounded TLS connections under many simultaneous calls.
+_DEEPGRAM_TTS_MAX_CONCURRENCY = 8
+_DEEPGRAM_TTS_SEMAPHORE = asyncio.Semaphore(_DEEPGRAM_TTS_MAX_CONCURRENCY)
+
+AVAILABLE_VOICES = [
+    "aura-2-thalia-en",  # Female, clear and energetic
+    "aura-2-andromeda-en",  # Female, expressive
+    "aura-2-helena-en",  # Female, caring and natural
+    "aura-2-apollo-en",  # Male, confident
+    "aura-2-arcas-en",  # Male, smooth and clear
+    "aura-2-aries-en",  # Male, warm
+    "aura-2-asteria-en",  # Female, clear and knowledgeable
+    # Older Aura-1 names are still accepted for existing settings.
+    "aura-asteria-en",
+    "aura-luna-en",
+    "aura-stella-en",
+    "aura-zeus-en",
+    "aura-orpheus-en",
+    "aura-angus-en",
+    "aura-helios-en",
+]
+
+
+class DeepgramTTSProvider(BaseTTSProvider):
+    """Deepgram Aura-2 TTS. Used as fallback when Google TTS is unavailable."""
+
+    provider_name = "deepgram"
+
+    def __init__(self, voice: str = DEFAULT_VOICE) -> None:
+        self.voice = self._normalize_voice(voice)
+        logger.info("DeepgramTTSProvider initialized: voice=%s", self.voice)
+
+    @staticmethod
+    def _normalize_voice(voice: str) -> str:
+        clean_voice = (voice or DEFAULT_VOICE).strip().lower()
+        if clean_voice in AVAILABLE_VOICES or VOICE_NAME_PATTERN.match(clean_voice):
+            return clean_voice
+        logger.warning(
+            "Unsupported Deepgram TTS voice '%s', using %s", voice, DEFAULT_VOICE
+        )
+        return DEFAULT_VOICE
+
+    async def close(self) -> None:
+        """No persistent client — kept for provider interface compatibility."""
+        return None
+
+    async def synthesize(
+        self,
+        text: str,
+        voice: str | None = None,
+        speed: float = 1.0,
+    ) -> bytes:
+        """
+        Synthesize speech via Deepgram Aura-2 REST API.
+        Returns mulaw 8kHz audio bytes.
+
+        Args:
+            text: Text to synthesize
+            voice: Voice name override
+            speed: Speaking rate (ignored for Deepgram, kept for compatibility)
+        """
+        if not settings.deepgram_api_key:
+            raise ValueError("DEEPGRAM_API_KEY not set")
+
+        active_voice = voice or self.voice
+        params = {
+            "model": active_voice,
+            "encoding": "mulaw",
+            "sample_rate": 8000,
+            "container": "none",
+        }
+
+        headers = {
+            "Authorization": f"Token {settings.deepgram_api_key}",
+            "Content-Type": "application/json",
+        }
+
+        async with _DEEPGRAM_TTS_SEMAPHORE:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                try:
+                    response = await client.post(
+                        DEEPGRAM_TTS_URL,
+                        json={"text": text},
+                        params=params,
+                        headers=headers,
+                    )
+                    response.raise_for_status()
+                    logger.debug(
+                        "Deepgram TTS: %d chars → %d bytes",
+                        len(text),
+                        len(response.content),
+                    )
+                    return response.content
+                except httpx.HTTPStatusError as e:
+                    logger.error(
+                        "Deepgram TTS HTTP error %s: %s",
+                        e.response.status_code,
+                        e.response.text,
+                    )
+                    raise
+                except Exception as e:
+                    logger.error("Deepgram TTS error: %s", e)
+                    raise

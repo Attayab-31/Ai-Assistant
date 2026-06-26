@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Audit Log{% endblock %}
+{% block page_title %}Audit Log{% endblock %}
+{% block content %}
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Action</th><th>User</th><th>Entity</th><th>Date</th></tr></thead>
+  <tbody>
+  {% for log in logs %}
+    <tr>
+      <td>{{ log.action }}</td>
+      <td>{{ user_map.get(log.admin_user_id|string, "-") }}</td>
+      <td>{{ log.entity_type or "-" }}</td>
+      <td>{{ log.created_at|time_ago }}</td>
+    </tr>
+  {% else %}
+    <tr><td colspan="4" class="muted">No audit entries.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+<p class="muted">Page {{ page }} of {{ total_pages }} | {{ total }} entries</p>
+{% endblock %}
+

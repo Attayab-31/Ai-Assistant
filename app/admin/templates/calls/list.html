@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Calls{% endblock %}
+{% block page_title %}Calls{% endblock %}
+{% block content %}
+<form class="toolbar" method="get">
+  <input name="phone" value="{{ filters.phone or '' }}" placeholder="Phone">
+  <select name="status">
+    <option value="">Any status</option>
+    {% for item in ["initiated", "in_progress", "completed", "failed", "abandoned"] %}
+      <option value="{{ item }}" {{ "selected" if filters.status == item else "" }}>{{ item }}</option>
+    {% endfor %}
+  </select>
+  <select name="qualification">
+    <option value="">Any qualification</option>
+    {% for item in ["qualified", "review", "unqualified"] %}
+      <option value="{{ item }}" {{ "selected" if filters.qualification == item else "" }}>{{ item }}</option>
+    {% endfor %}
+  </select>
+  <button type="submit">Filter</button>
+</form>
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Phone</th><th>Status</th><th>Qualification</th><th>Duration</th><th>Date</th></tr></thead>
+  <tbody>
+  {% for call in calls %}
+    <tr>
+      <td><a href="/admin/calls/{{ call.id }}">{{ call.phone_number|phone_display }}</a></td>
+      <td><span class="badge" style="background: {{ call.status|status_color }}">{{ call.status }}</span></td>
+      <td>{% if call.tenant %}<span class="badge" style="background: {{ call.tenant.qualification_status|status_color }}">{{ call.tenant.qualification_status }}</span>{% else %}-{% endif %}</td>
+      <td>{{ call.duration_seconds|duration }}</td>
+      <td>{{ call.created_at|time_ago }}</td>
+    </tr>
+  {% else %}
+    <tr><td colspan="5" class="muted">No calls found.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+<p class="muted">Page {{ page }} of {{ total_pages }} | {{ total }} calls</p>
+{% endblock %}
+
