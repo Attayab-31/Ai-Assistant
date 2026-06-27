@@ -34,6 +34,9 @@ CALL_SETTINGS_KEYS = (
     "tts_voice_deepgram",
     "tts_speed",
     "auto_fallback_enabled",
+    "llm_fallback_provider",
+    "stt_fallback_provider",
+    "tts_fallback_provider",
     "ai_agent_name",
     "property_name",
     "screening_questions",
@@ -64,6 +67,9 @@ class CallSettingsSnapshot:
     tts_voice: str
     tts_speed: float
     auto_fallback_enabled: bool
+    llm_fallback_provider: str
+    stt_fallback_provider: str
+    tts_fallback_provider: str
     agent_name: str
     property_name: str
     questions: list
@@ -86,6 +92,9 @@ class CallProviderBundle:
     tts_name: str
     auto_fallback_enabled: bool
     tts_speed: float = 1.0
+    llm_fallback_provider: str = "auto"
+    stt_fallback_provider: str = "auto"
+    tts_fallback_provider: str = "auto"
 
 
 def _parse_setting(key: str, raw: Any, default: Any) -> Any:
@@ -148,6 +157,9 @@ def snapshot_from_map(values: dict[str, Any]) -> CallSettingsSnapshot:
         auto_fallback_enabled=_parse_setting(
             "auto_fallback_enabled", values.get("auto_fallback_enabled"), True
         ),
+        llm_fallback_provider=str(values.get("llm_fallback_provider") or "auto").lower(),
+        stt_fallback_provider=str(values.get("stt_fallback_provider") or "auto").lower(),
+        tts_fallback_provider=str(values.get("tts_fallback_provider") or "auto").lower(),
         agent_name=str(values.get("ai_agent_name") or env_settings.default_agent_name),
         property_name=str(
             values.get("property_name") or env_settings.default_property_name
@@ -241,4 +253,7 @@ def build_call_provider_bundle(snapshot: CallSettingsSnapshot) -> CallProviderBu
         tts_name=tts_name,
         auto_fallback_enabled=snapshot.auto_fallback_enabled,
         tts_speed=snapshot.tts_speed,
+        llm_fallback_provider=snapshot.llm_fallback_provider,
+        stt_fallback_provider=snapshot.stt_fallback_provider,
+        tts_fallback_provider=snapshot.tts_fallback_provider,
     )

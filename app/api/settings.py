@@ -796,6 +796,9 @@ async def update_general_settings(
 
     registry_keys = {
         "auto_fallback_enabled",
+        "llm_fallback_provider",
+        "stt_fallback_provider",
+        "tts_fallback_provider",
         "ai_agent_name",
         "property_name",
         "silence_timeout_seconds",

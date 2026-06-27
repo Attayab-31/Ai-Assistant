@@ -111,6 +111,43 @@
       <option value="true" {% if settings.get('auto_fallback_enabled', 'true')|string|lower == 'true' %}selected{% endif %}>Yes — keep calls running (recommended)</option>
       <option value="false" {% if settings.get('auto_fallback_enabled', 'true')|string|lower != 'true' %}selected{% endif %}>No — use only the chosen engine</option>
     </select>
+
+    {% set cur_llm_fb = settings.get('llm_fallback_provider', 'auto')|string|lower %}
+    {% set cur_stt_fb = settings.get('stt_fallback_provider', 'auto')|string|lower %}
+    {% set cur_tts_fb = settings.get('tts_fallback_provider', 'auto')|string|lower %}
+
+    <div class="form-group" style="margin-top: 14px;">
+      <label>🧠 Backup AI brain</label>
+      <select id="llm_fallback_provider">
+        <option value="auto" {% if cur_llm_fb == 'auto' %}selected{% endif %}>Automatic — try any available (recommended)</option>
+        <option value="groq" {% if cur_llm_fb == 'groq' %}selected{% endif %}>Groq</option>
+        <option value="openai" {% if cur_llm_fb == 'openai' %}selected{% endif %}>OpenAI</option>
+        <option value="openrouter" {% if cur_llm_fb == 'openrouter' %}selected{% endif %}>OpenRouter</option>
+        <option value="none" {% if cur_llm_fb == 'none' %}selected{% endif %}>No backup</option>
+      </select>
+      <p class="text-muted" style="margin: 4px 0 0;">Used only if the main AI brain fails. Needs that provider's API key to be set.</p>
+    </div>
+
+    <div class="form-group" style="margin-top: 12px;">
+      <label>🎧 Backup ears (Speech-to-Text)</label>
+      <select id="stt_fallback_provider">
+        <option value="auto" {% if cur_stt_fb == 'auto' %}selected{% endif %}>Automatic — try any available (recommended)</option>
+        <option value="deepgram" {% if cur_stt_fb == 'deepgram' %}selected{% endif %}>Deepgram</option>
+        <option value="groq" {% if cur_stt_fb == 'groq' %}selected{% endif %}>Groq Whisper</option>
+        <option value="none" {% if cur_stt_fb == 'none' %}selected{% endif %}>No backup</option>
+      </select>
+    </div>
+
+    <div class="form-group" style="margin-top: 12px;">
+      <label>🔊 Backup voice (Text-to-Speech)</label>
+      <select id="tts_fallback_provider">
+        <option value="auto" {% if cur_tts_fb == 'auto' %}selected{% endif %}>Automatic — try any available (recommended)</option>
+        <option value="deepgram" {% if cur_tts_fb == 'deepgram' %}selected{% endif %}>Deepgram</option>
+        <option value="google" {% if cur_tts_fb == 'google' %}selected{% endif %}>Google</option>
+        <option value="none" {% if cur_tts_fb == 'none' %}selected{% endif %}>No backup</option>
+      </select>
+    </div>
+
     <div style="margin-top: 12px;"><button type="button" class="btn btn-primary" onclick="saveReliability()">Save</button></div>
   </div>
 </div>
@@ -152,6 +189,9 @@
   async function saveReliability() {
     const data = {
       auto_fallback_enabled: document.getElementById('auto_fallback_enabled').value === 'true',
+      llm_fallback_provider: document.getElementById('llm_fallback_provider').value,
+      stt_fallback_provider: document.getElementById('stt_fallback_provider').value,
+      tts_fallback_provider: document.getElementById('tts_fallback_provider').value,
     };
     try {
       const r = await fetch('/api/settings/general', {

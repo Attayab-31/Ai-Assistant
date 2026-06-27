@@ -369,6 +369,30 @@ DEFAULT_SYSTEM_SETTINGS = [
         "is_sensitive": False,
     },
     {
+        "key": "llm_fallback_provider",
+        "value": "auto",
+        "value_type": "string",
+        "description": "Backup AI brain when the main one fails "
+        "(auto = try all others, or pick one, or none)",
+        "is_sensitive": False,
+    },
+    {
+        "key": "stt_fallback_provider",
+        "value": "auto",
+        "value_type": "string",
+        "description": "Backup speech-to-text when the main one fails "
+        "(auto = try all others, or pick one, or none)",
+        "is_sensitive": False,
+    },
+    {
+        "key": "tts_fallback_provider",
+        "value": "auto",
+        "value_type": "string",
+        "description": "Backup voice when the main one fails "
+        "(auto = try all others, or pick one, or none)",
+        "is_sensitive": False,
+    },
+    {
         "key": "score_weight_income",
         "value": "35",
         "value_type": "integer",
@@ -557,6 +581,9 @@ class ProviderRegistry:
             cls._instance._llm_name = ""
             cls._instance._tts_name = ""
             cls._instance._auto_fallback_enabled = True
+            cls._instance._llm_fallback_provider = "auto"
+            cls._instance._stt_fallback_provider = "auto"
+            cls._instance._tts_fallback_provider = "auto"
         return cls._instance
 
     async def initialize(self) -> None:
@@ -595,6 +622,9 @@ class ProviderRegistry:
             "tts_voice_google",
             "tts_voice_deepgram",
             "auto_fallback_enabled",
+            "llm_fallback_provider",
+            "stt_fallback_provider",
+            "tts_fallback_provider",
             "groq_api_key_encrypted",
             "openai_api_key_encrypted",
             "openrouter_api_key_encrypted",
@@ -611,6 +641,15 @@ class ProviderRegistry:
         stt = str(values.get("active_stt_provider") or settings.active_stt_provider)
         tts = str(values.get("active_tts_provider") or settings.active_tts_provider)
         self._auto_fallback_enabled = bool(values.get("auto_fallback_enabled", True))
+        self._llm_fallback_provider = str(
+            values.get("llm_fallback_provider") or "auto"
+        ).lower()
+        self._stt_fallback_provider = str(
+            values.get("stt_fallback_provider") or "auto"
+        ).lower()
+        self._tts_fallback_provider = str(
+            values.get("tts_fallback_provider") or "auto"
+        ).lower()
 
         model_by_llm = {
             "groq": values.get("active_groq_model") or settings.active_groq_model,
@@ -750,6 +789,18 @@ class ProviderRegistry:
     def auto_fallback_enabled(self) -> bool:
         return self._auto_fallback_enabled
 
+    @property
+    def llm_fallback_provider(self) -> str:
+        return self._llm_fallback_provider
+
+    @property
+    def stt_fallback_provider(self) -> str:
+        return self._stt_fallback_provider
+
+    @property
+    def tts_fallback_provider(self) -> str:
+        return self._tts_fallback_provider
+
     def get_status(self) -> dict:
         """Return current provider status summary."""
         return {
@@ -757,6 +808,9 @@ class ProviderRegistry:
             "stt": self._stt_name,
             "tts": self._tts_name,
             "auto_fallback_enabled": self._auto_fallback_enabled,
+            "llm_fallback_provider": self._llm_fallback_provider,
+            "stt_fallback_provider": self._stt_fallback_provider,
+            "tts_fallback_provider": self._tts_fallback_provider,
             "initialized": all([self._llm, self._stt, self._tts]),
         }
 

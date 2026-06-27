@@ -178,6 +178,7 @@ async def transcribe_buffer(
             stt_name=provider_registry.stt_name,
             tts_name=provider_registry.tts_name,
             auto_fallback_enabled=provider_registry.auto_fallback_enabled,
+            stt_fallback_provider=provider_registry.stt_fallback_provider,
         )
 
     duration_sec = audio_duration_seconds(audio_bytes, input_format)
@@ -212,24 +213,54 @@ async def transcribe_buffer(
     if not providers.auto_fallback_enabled:
         return ""
 
+    # Admin-chosen backup ears: "none" disables, "auto" uses the other provider,
+    # or a specific one is forced. Only Groq and Deepgram exist for STT.
+    pref = (getattr(providers, "stt_fallback_provider", "auto") or "auto").lower()
+    if pref == "none":
+        return ""
+
     try:
+        from app.providers.stt.deepgram_stt import DeepgramSTTProvider
         from app.providers.stt.groq_stt import GroqSTTProvider
 
-        if not isinstance(providers.stt, GroqSTTProvider) and settings.groq_api_key:
+        primary_is_groq = isinstance(providers.stt, GroqSTTProvider)
+        groq_ok = not primary_is_groq and bool(settings.groq_api_key)
+        deepgram_ok = not isinstance(providers.stt, DeepgramSTTProvider) and bool(
+            settings.deepgram_api_key
+        )
+
+        if pref == "groq" and groq_ok:
+            chosen = "groq"
+        elif pref == "deepgram" and deepgram_ok:
+            chosen = "deepgram"
+        elif groq_ok:  # "auto" default prefers Groq Whisper for buffered audio
+            chosen = "groq"
+        elif deepgram_ok:
+            chosen = "deepgram"
+        else:
+            chosen = ""
+
+        if chosen:
             mulaw = (
                 audio_bytes
                 if input_format == "mulaw"
                 else any_audio_to_mulaw(audio_bytes)
             )
+            if chosen == "groq":
+                fallback_stt = _get_groq_stt_fallback()
+            else:
+                fallback_stt = DeepgramSTTProvider(model=settings.deepgram_model)
             transcript = await asyncio.wait_for(
-                _get_groq_stt_fallback().transcribe_chunk(mulaw),
+                fallback_stt.transcribe_chunk(mulaw),
                 timeout=timeout,
             )
             if transcript.strip():
-                logger.info("Groq STT fallback: %r", transcript[:80])
+                logger.info("%s STT fallback: %r", chosen, transcript[:80])
+                if session is not None:
+                    session.stt_provider = chosen
                 return transcript
     except TimeoutError:
-        logger.error("Groq STT fallback timed out")
+        logger.error("STT fallback timed out")
     except Exception as e:
         logger.error("Fallback STT also failed: %s", e)
 

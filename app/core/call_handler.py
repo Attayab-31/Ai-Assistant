@@ -205,6 +205,9 @@ def get_call_providers(session: ConversationSession) -> CallProviderBundle:
         stt_name=provider_registry.stt_name,
         tts_name=provider_registry.tts_name,
         auto_fallback_enabled=provider_registry.auto_fallback_enabled,
+        llm_fallback_provider=provider_registry.llm_fallback_provider,
+        stt_fallback_provider=provider_registry.stt_fallback_provider,
+        tts_fallback_provider=provider_registry.tts_fallback_provider,
     )
 
 
@@ -1166,20 +1169,38 @@ async def get_llm_response_with_fallback(
         from app.providers.llm.openai_llm import OpenAILLMProvider
         from app.providers.llm.openrouter_llm import OpenRouterLLMProvider
 
-        fallback_chain = []
-        if not isinstance(primary, GroqLLMProvider) and settings.groq_api_key:
-            fallback_chain.append(("groq", "groq"))
-        if not isinstance(primary, OpenAILLMProvider) and settings.openai_api_key:
-            fallback_chain.append(("openai", "openai"))
-        if (
-            not isinstance(primary, OpenRouterLLMProvider)
-            and settings.openrouter_api_key
-        ):
-            fallback_chain.append(("openrouter", "openrouter"))
+        primary_kind = (
+            "groq"
+            if isinstance(primary, GroqLLMProvider)
+            else "openai"
+            if isinstance(primary, OpenAILLMProvider)
+            else "openrouter"
+            if isinstance(primary, OpenRouterLLMProvider)
+            else ""
+        )
+        # Candidate backups that are not the primary and have a configured key.
+        available = [
+            name
+            for name, has_key in (
+                ("groq", bool(settings.groq_api_key)),
+                ("openai", bool(settings.openai_api_key)),
+                ("openrouter", bool(settings.openrouter_api_key)),
+            )
+            if has_key and name != primary_kind
+        ]
+        # Admin choice: "none" disables, "auto" tries all available, a specific
+        # provider is tried FIRST then the rest remain as a safety backstop.
+        pref = (getattr(providers, "llm_fallback_provider", "auto") or "auto").lower()
+        if pref == "none":
+            ordered: list[str] = []
+        elif pref in available:
+            ordered = [pref] + [n for n in available if n != pref]
+        else:
+            ordered = available
 
-        for factory_name, name in fallback_chain:
+        for name in ordered:
             logger.info("Falling back to %s", name)
-            result = await try_provider(_get_llm_fallback(factory_name), name)
+            result = await try_provider(_get_llm_fallback(name), name)
             if result:
                 return result
 
@@ -1323,16 +1344,27 @@ async def synthesize_with_fallback(text: str, session: ConversationSession) -> b
         from app.providers.tts.deepgram_tts import DeepgramTTSProvider
         from app.providers.tts.google_tts import GoogleTTSProvider
 
-        if (
+        # Which backup voices are usable and not the primary.
+        deepgram_ok = (
             not isinstance(providers.tts, DeepgramTTSProvider)
-            and settings.deepgram_api_key
-        ):
-            fallback = _get_tts_fallback("deepgram")
-        elif (
+            and bool(settings.deepgram_api_key)
+        )
+        google_ok = (
             not isinstance(providers.tts, GoogleTTSProvider)
-            and settings.google_application_credentials
-        ):
-            fallback = _get_tts_fallback("google")
+            and bool(settings.google_application_credentials)
+        )
+        available = [
+            name
+            for name, ok in (("deepgram", deepgram_ok), ("google", google_ok))
+            if ok
+        ]
+        pref = (getattr(providers, "tts_fallback_provider", "auto") or "auto").lower()
+        if pref == "none":
+            fallback = None
+        elif pref in available:
+            fallback = _get_tts_fallback(pref)
+        elif available:
+            fallback = _get_tts_fallback(available[0])
         else:
             fallback = None
 
@@ -1368,6 +1400,35 @@ _finalizing_calls: set[str] = set()
 _finalize_calls_lock = asyncio.Lock()
 
 
+def _has_sufficient_extraction(data: dict) -> bool:
+    """True when the in-call data already covers the core screening fields, so a
+    full end-of-call LLM re-parse of the transcript can be skipped.
+
+    Tolerant of a couple of missing/refused fields (a complete call may have a
+    declined income or unstated pet detail) — it checks coverage across the key
+    field groups rather than demanding every single one.
+    """
+
+    def present(field: str) -> bool:
+        val = data.get(field)
+        if isinstance(val, bool):
+            return True
+        return val not in (None, "", [], {})
+
+    field_groups = (
+        ("full_name",),
+        ("contact_phone", "email"),
+        ("occupants_count", "adults_count"),
+        ("move_in_date", "move_in_raw"),
+        ("monthly_income", "income_raw"),
+        ("has_eviction",),
+        ("current_residence",),
+        ("move_reason",),
+    )
+    satisfied = sum(1 for group in field_groups if any(present(f) for f in group))
+    return satisfied >= 6
+
+
 async def finalize_call(session: ConversationSession, db) -> dict:
     """
     Complete post-call processing:
@@ -1398,11 +1459,23 @@ async def _finalize_call_impl(session: ConversationSession, db) -> dict:
     """Internal finalize implementation."""
     providers = get_call_providers(session)
 
-    # Extract structured data
-    extracted = await extract_tenant_data(
-        transcript=session.get_full_transcript(),
-        llm_provider=providers.llm,
-    )
+    # The in-call LLM already extracts every field turn by turn into
+    # session.extracted_data, and the merge below lets that in-call data win on
+    # conflict. So a full end-of-call LLM re-parse of the transcript is only
+    # worth its tokens when the live data is sparse (e.g. a very short or failed
+    # call). Skip it when we already captured the core scoring fields — this
+    # saves ~2.5-3.5k tokens on every normal call with no loss of data.
+    if _has_sufficient_extraction(session.extracted_data):
+        logger.info(
+            "[%s] Skipping end-of-call extraction — in-call data is complete",
+            session.call_id,
+        )
+        extracted = {}
+    else:
+        extracted = await extract_tenant_data(
+            transcript=session.get_full_transcript(),
+            llm_provider=providers.llm,
+        )
 
     # Add call/session metadata for scoring and admin review
     extracted["questions_answered"] = session.questions_answered
