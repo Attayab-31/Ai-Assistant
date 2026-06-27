@@ -7,6 +7,7 @@ Google AI Studio free tier has a more generous quota than Groq's daily wall.
 """
 
 import logging
+import re
 
 from openai import AsyncOpenAI
 
@@ -24,6 +25,32 @@ AVAILABLE_MODELS = [
     "gemini-2.0-flash",
     "gemini-1.5-flash",
 ]
+
+# Floor for JSON responses. Gemini tends to be verbose and the screening
+# contract (response_text + extracted_data + flags) can run long; too small a
+# budget truncates the JSON mid-string. Generous here is cheap because thinking
+# is disabled (see reasoning_effort below).
+_JSON_MIN_MAX_TOKENS = 768
+
+
+def _extract_json(text: str) -> str:
+    """Best-effort salvage of a single JSON object from a model reply.
+
+    Strips ```json fences and any prose around the object so the caller's
+    json.loads never trips on stray text. Returns the original string when no
+    object is found (so the caller still sees a meaningful parse error).
+    """
+    if not text:
+        return text
+    s = text.strip()
+    if s.startswith("```"):
+        s = re.sub(r"^```(?:json)?\s*", "", s)
+        s = re.sub(r"\s*```$", "", s).strip()
+    start = s.find("{")
+    end = s.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        return s[start : end + 1].strip()
+    return s
 
 
 class GeminiLLMProvider(BaseLLMProvider):
@@ -56,18 +83,31 @@ class GeminiLLMProvider(BaseLLMProvider):
         max_tokens: int = 500,
     ) -> str:
         all_messages = [{"role": "system", "content": system_prompt}] + messages
+
+        # Gemini 2.5 models "think" by default, and on the OpenAI-compatible
+        # endpoint those reasoning tokens are billed against max_tokens. With a
+        # small budget they consume it entirely and the body comes back empty or
+        # truncated (the JSON parse failures seen in production). Disabling
+        # thinking returns the budget to the actual answer and slashes latency.
+        effective_max = max(max_tokens, _JSON_MIN_MAX_TOKENS) if json_mode else max_tokens
         kwargs = {
             "model": self.model,
             "messages": all_messages,
             "temperature": temperature,
-            "max_tokens": max_tokens,
+            "max_tokens": effective_max,
         }
         if json_mode:
             kwargs["response_format"] = {"type": "json_object"}
+        # "none" is only valid for 2.5 models; older flash models aren't thinking
+        # models, so we skip it there to avoid a 400.
+        if self.model.startswith("gemini-2.5"):
+            kwargs["reasoning_effort"] = "none"
 
         try:
             response = await self.client.chat.completions.create(**kwargs)
             content = response.choices[0].message.content or ""
+            if json_mode:
+                content = _extract_json(content)
             logger.debug(f"Gemini response: {content[:100]}...")
             return content
         except Exception as e:
