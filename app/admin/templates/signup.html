@@ -10,8 +10,10 @@
     h1 { font-size: 22px; margin: 0 0 4px; }
     label { display: grid; gap: 6px; font-size: 13px; color: #667085; }
     input, button { font: inherit; border-radius: 6px; padding: 10px; border: 1px solid #d9dee8; }
-    button { color: white; background: #2563eb; border-color: #2563eb; font-weight: 700; cursor: pointer; }
+    button { color: white; background: #2563eb; border-color: #2563eb; font-weight: 700; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
     button:disabled { opacity: .6; cursor: progress; }
+    .spinner { width: 15px; height: 15px; border: 2px solid currentColor; border-top-color: transparent; border-radius: 50%; display: inline-block; animation: spin .6s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
     .error { color: #dc2626; min-height: 20px; }
     .ok { color: #16a34a; min-height: 20px; }
     .hint { font-size: 12px; color: #667085; }
@@ -39,7 +41,10 @@
       const ok = document.getElementById('ok');
       err.textContent = '';
       ok.textContent = '';
+      const originalBtn = btn.innerHTML;
+      let redirecting = false;
       btn.disabled = true;
+      btn.innerHTML = '<span class="spinner"></span> Creating account\u2026';
       const data = new FormData(event.currentTarget);
       try {
         const response = await fetch('/auth/signup', {
@@ -53,7 +58,9 @@
         });
         const body = await response.json().catch(() => ({}));
         if (response.ok) {
+          redirecting = true;
           ok.textContent = 'Account created. Redirecting…';
+          btn.innerHTML = '<span class="spinner"></span> Redirecting\u2026';
           window.location.href = '/admin/dashboard';
         } else {
           err.textContent = body.detail || 'Sign up failed';
@@ -61,7 +68,10 @@
       } catch (e) {
         err.textContent = 'Network error. Please try again.';
       } finally {
-        btn.disabled = false;
+        if (!redirecting) {
+          btn.disabled = false;
+          btn.innerHTML = originalBtn;
+        }
       }
     });
   </script>

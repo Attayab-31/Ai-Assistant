@@ -20,9 +20,9 @@
     <div id="callMsg"></div>
     <div style="display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap;">
       {% if tenant %}
-      <button type="button" class="btn btn-primary" onclick="resendEmail()">📧 Resend result email</button>
+      <button type="button" class="btn btn-primary" onclick="withBtnLoading(this, resendEmail, 'Sending\u2026')">📧 Resend result email</button>
       {% endif %}
-      <button type="button" class="btn btn-danger" onclick="deleteCall()">🗑️ Delete call</button>
+      <button type="button" class="btn btn-danger" onclick="withBtnLoading(this, deleteCall, 'Deleting\u2026')">🗑️ Delete call</button>
     </div>
   </section>
 

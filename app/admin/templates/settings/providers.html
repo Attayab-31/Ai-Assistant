@@ -24,7 +24,7 @@
   <div class="form-section">
     <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;">
       <h3 style="margin: 0;">Is everything working?</h3>
-      <button type="button" class="btn btn-primary" onclick="checkHealth()">✅ Check now</button>
+      <button type="button" class="btn btn-primary" onclick="withBtnLoading(this, checkHealth, 'Checking\u2026')">✅ Check now</button>
     </div>
     <div id="healthOutput" style="margin-top: 14px; display: none;"></div>
   </div>
@@ -50,7 +50,7 @@
         <input type="password" id="llm_api_key" placeholder="Only if you're rotating the key" autocomplete="new-password" />
       </div>
     </details>
-    <div style="margin-top: 12px;"><button type="button" class="btn btn-primary" onclick="switchProvider('llm')">Save AI brain</button></div>
+    <div style="margin-top: 12px;"><button type="button" class="btn btn-primary" onclick="withBtnLoading(this, () => switchProvider('llm'), 'Saving\u2026')">Save AI brain</button></div>
   </div>
 
   <!-- Ears (STT) -->
@@ -74,7 +74,7 @@
         <input type="password" id="stt_api_key" placeholder="Only if you're rotating the key" autocomplete="new-password" />
       </div>
     </details>
-    <div style="margin-top: 12px;"><button type="button" class="btn btn-primary" onclick="switchProvider('stt')">Save ears</button></div>
+    <div style="margin-top: 12px;"><button type="button" class="btn btn-primary" onclick="withBtnLoading(this, () => switchProvider('stt'), 'Saving\u2026')">Save ears</button></div>
   </div>
 
   <!-- Voice (TTS) -->
@@ -99,7 +99,7 @@
         <input type="text" id="tts_voice" placeholder="Leave blank for the recommended default" />
       </div>
     </details>
-    <div style="margin-top: 12px;"><button type="button" class="btn btn-primary" onclick="switchProvider('tts')">Save voice</button></div>
+    <div style="margin-top: 12px;"><button type="button" class="btn btn-primary" onclick="withBtnLoading(this, () => switchProvider('tts'), 'Saving\u2026')">Save voice</button></div>
   </div>
 
   <!-- API Keys (all providers) -->
@@ -132,7 +132,7 @@
       <div style="display:flex; gap:8px; flex-wrap:wrap;">
         <input type="password" id="apikey_{{ pid }}" autocomplete="new-password" style="flex:1; min-width:200px;"
                placeholder="{% if provider_keys.get(pid) %}Enter a new key to rotate (or leave blank){% else %}Paste the API key{% endif %}" />
-        <button type="button" class="btn btn-primary" onclick="saveApiKey('{{ pid }}', '{{ pname }}')">Save key</button>
+        <button type="button" class="btn btn-primary" onclick="withBtnLoading(this, () => saveApiKey('{{ pid }}', '{{ pname }}'), 'Saving\u2026')">Save key</button>
       </div>
     </div>
     {% endfor %}
@@ -190,7 +190,7 @@
       </select>
     </div>
 
-    <div style="margin-top: 12px;"><button type="button" class="btn btn-primary" onclick="saveReliability()">Save</button></div>
+    <div style="margin-top: 12px;"><button type="button" class="btn btn-primary" onclick="withBtnLoading(this, saveReliability, 'Saving\u2026')">Save</button></div>
   </div>
 </div>
 

@@ -86,6 +86,15 @@
     .btn-danger { background: var(--bad); border-color: var(--bad); }
     .btn-sm { padding: 6px 10px; font-size: 13px; }
 
+    /* Button loading state (shared across all admin pages) */
+    button.is-loading, .btn.is-loading { cursor: progress; pointer-events: none; }
+    .btn-spinner {
+      width: 14px; height: 14px; flex: none; display: inline-block;
+      border: 2px solid currentColor; border-top-color: transparent;
+      border-radius: 50%; animation: btnspin .6s linear infinite;
+    }
+    @keyframes btnspin { to { transform: rotate(360deg); } }
+
     /* Layout shell */
     .shell { min-height: 100vh; display: grid; grid-template-columns: 248px 1fr; }
     .sidebar { background: var(--sidebar-bg); color: #cbd5e1; padding: 18px 14px; display: flex; flex-direction: column; gap: 6px; position: sticky; top: 0; height: 100vh; overflow-y: auto; }
@@ -253,6 +262,50 @@
       if (e) e.preventDefault();
       try { await fetch('/auth/logout', { method: 'POST' }); } catch (err) { /* ignore */ }
       window.location.href = '/admin/login';
+    }
+
+    // ── Button loading states ─────────────────────────────────────────────
+    // Show a spinner + disable a button while an async action runs, then
+    // restore it. Used everywhere via withBtnLoading / withFormLoading.
+    function setBtnLoading(btn, loading, text) {
+      if (!btn) return;
+      if (loading) {
+        if (btn.dataset.loading === '1') return;
+        btn.dataset.loading = '1';
+        btn.dataset.originalHtml = btn.innerHTML;
+        if (!btn.style.minWidth) btn.style.minWidth = btn.offsetWidth + 'px';
+        btn.classList.add('is-loading');
+        btn.setAttribute('aria-busy', 'true');
+        btn.disabled = true;
+        const label = text || btn.dataset.loadingText || 'Working\u2026';
+        btn.innerHTML = '<span class="btn-spinner" aria-hidden="true"></span><span>' + label + '</span>';
+      } else {
+        if (btn.dataset.loading !== '1') return;
+        btn.disabled = false;
+        btn.classList.remove('is-loading');
+        btn.removeAttribute('aria-busy');
+        if (btn.dataset.originalHtml !== undefined) btn.innerHTML = btn.dataset.originalHtml;
+        delete btn.dataset.loading;
+        delete btn.dataset.originalHtml;
+      }
+    }
+
+    // Wrap an async onclick handler:  onclick="withBtnLoading(this, () => doThing(arg))"
+    async function withBtnLoading(btn, fn, text) {
+      setBtnLoading(btn, true, text);
+      try { return await fn(); }
+      finally { setBtnLoading(btn, false); }
+    }
+
+    // Wrap a form submit:  onsubmit="withFormLoading(event, saveThing)"
+    // fn receives the original event (so it can still call preventDefault()).
+    async function withFormLoading(event, fn, text) {
+      const form = event.currentTarget || event.target;
+      const btn = event.submitter
+        || (form.querySelector && form.querySelector('button[type="submit"], button:not([type])'));
+      setBtnLoading(btn, true, text);
+      try { return await fn(event); }
+      finally { setBtnLoading(btn, false); }
     }
   </script>
   {% block scripts %}{% endblock %}

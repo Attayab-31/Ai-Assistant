@@ -53,7 +53,7 @@
   <section class="card">
     <h2>Edit Tenant Information</h2>
     <div id="msg"></div>
-    <form class="edit-form" onsubmit="saveTenant(event)">
+    <form class="edit-form" onsubmit="withFormLoading(event, saveTenant, 'Saving\u2026')">
       <div class="form-group">
         <label>Full name</label>
         <input type="text" id="fullName" value="{{ tenant.full_name or '' }}" />

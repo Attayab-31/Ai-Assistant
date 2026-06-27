@@ -8,7 +8,7 @@
   <span>This controls the email you receive after each screening call. Set where results go and what the email says, then use <strong>Send test email</strong> to make sure it arrives.</span>
 </div>
 
-<form onsubmit="saveEmailSettings(event)" class="stack">
+<form onsubmit="withFormLoading(event, saveEmailSettings, 'Saving\u2026')" class="stack">
   <div class="form-grid">
     <div class="form-section">
       <h3 style="margin-top: 0;">Where results go</h3>
@@ -91,7 +91,7 @@
 
   <div class="form-actions">
     <button type="submit" class="btn btn-primary">💾 Save email settings</button>
-    <button type="button" onclick="testEmail()" class="btn btn-secondary">📧 Send test email</button>
+    <button type="button" onclick="withBtnLoading(this, testEmail, 'Sending\u2026')" class="btn btn-secondary">📧 Send test email</button>
     <button type="button" onclick="location.reload()" class="btn btn-secondary">↺ Undo changes</button>
   </div>
 </form>

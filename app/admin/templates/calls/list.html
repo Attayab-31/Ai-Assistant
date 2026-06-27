@@ -2,7 +2,7 @@
 {% block title %}Calls{% endblock %}
 {% block page_title %}Calls{% endblock %}
 {% block content %}
-<form class="toolbar" method="get">
+<form class="toolbar" method="get" onsubmit="setBtnLoading(event.submitter, true, 'Filtering\u2026')">
   <input name="phone" value="{{ filters.phone or '' }}" placeholder="Phone">
   <select name="status">
     <option value="">Any status</option>

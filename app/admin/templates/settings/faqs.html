@@ -26,8 +26,8 @@
   </div>
 
   <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-    <button type="button" onclick="saveAllFaqs()" class="btn btn-primary">💾 Save all changes</button>
-    <button type="button" onclick="resetFaqs()" class="btn btn-secondary">↻ Reset to defaults</button>
+    <button type="button" onclick="withBtnLoading(this, saveAllFaqs, 'Saving\u2026')" class="btn btn-primary">💾 Save all changes</button>
+    <button type="button" onclick="withBtnLoading(this, resetFaqs, 'Resetting\u2026')" class="btn btn-secondary">↻ Reset to defaults</button>
   </div>
 
   {% if faqs %}

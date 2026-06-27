@@ -3,7 +3,7 @@
 {% block page_title %}General Settings{% endblock %}
 {% block settings_content %}
 
-<form onsubmit="saveSettings(event)" class="stack">
+<form onsubmit="withFormLoading(event, saveSettings, 'Saving\u2026')" class="stack">
   <div class="form-grid">
     <div class="form-section">
       <h3 style="margin-top: 0;">Property Information</h3>
@@ -139,7 +139,7 @@
   <p class="text-muted" style="margin-top: 0;">Calls from these numbers are rejected automatically. Add a number to stop it from reaching the assistant.</p>
   <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px;">
     <input type="text" id="blacklistPhone" placeholder="e.g. +15551234567" style="flex: 1; min-width: 220px;" />
-    <button type="button" class="btn btn-primary" onclick="addBlacklist()">Block number</button>
+    <button type="button" class="btn btn-primary" onclick="withBtnLoading(this, addBlacklist, 'Blocking\u2026')">Block number</button>
   </div>
   <div id="blacklistList"><p class="text-muted">Loading…</p></div>
 </div>
@@ -221,7 +221,7 @@
       box.innerHTML = list.map(num => `
         <div class="status-row" style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line);">
           <span>${num}</span>
-          <button type="button" class="btn btn-secondary" style="padding:4px 10px;font-size:13px;" onclick="removeBlacklist('${encodeURIComponent(num)}')">Unblock</button>
+          <button type="button" class="btn btn-secondary" style="padding:4px 10px;font-size:13px;" onclick="withBtnLoading(this, () => removeBlacklist('${encodeURIComponent(num)}'), 'Unblocking\u2026')">Unblock</button>
         </div>`).join('');
     } catch (e) {
       box.innerHTML = `<p class="text-muted">Couldn't load blocked numbers: ${e.message}</p>`;

@@ -10,7 +10,10 @@
     h1 { font-size: 22px; margin: 0 0 4px; }
     label { display: grid; gap: 6px; font-size: 13px; color: #667085; }
     input, button { font: inherit; border-radius: 6px; padding: 10px; border: 1px solid #d9dee8; }
-    button { color: white; background: #2563eb; border-color: #2563eb; font-weight: 700; cursor: pointer; }
+    button { color: white; background: #2563eb; border-color: #2563eb; font-weight: 700; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
+    button:disabled { opacity: .7; cursor: progress; }
+    .spinner { width: 15px; height: 15px; border: 2px solid currentColor; border-top-color: transparent; border-radius: 50%; display: inline-block; animation: spin .6s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
     .error { color: #dc2626; min-height: 20px; }
   </style>
 </head>
@@ -19,24 +22,42 @@
     <h1>Admin Login</h1>
     <label>Email <input name="email" type="email" autocomplete="username" required></label>
     <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
-    <button type="submit">Sign In</button>
+    <button type="submit" id="submit">Sign In</button>
     <div class="error" id="error"></div>
     <div style="font-size:12px;color:#667085;">No account yet? <a href="/admin/signup" style="color:#2563eb;">Create one</a>.</div>
   </form>
   <script>
     document.getElementById('login-form').addEventListener('submit', async (event) => {
       event.preventDefault();
+      const btn = document.getElementById('submit');
+      const error = document.getElementById('error');
+      error.textContent = '';
+      const original = btn.innerHTML;
+      let redirecting = false;
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner"></span> Signing in\u2026';
       const form = new FormData(event.currentTarget);
-      const response = await fetch('/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: form.get('email'), password: form.get('password') })
-      });
-      if (response.ok) {
-        window.location.href = '/admin/dashboard';
-      } else {
+      try {
+        const response = await fetch('/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: form.get('email'), password: form.get('password') })
+        });
+        if (response.ok) {
+          redirecting = true;
+          btn.innerHTML = '<span class="spinner"></span> Redirecting\u2026';
+          window.location.href = '/admin/dashboard';
+          return;
+        }
         const body = await response.json().catch(() => ({}));
-        document.getElementById('error').textContent = body.detail || 'Login failed';
+        error.textContent = body.detail || 'Login failed';
+      } catch (e) {
+        error.textContent = 'Network error. Please try again.';
+      } finally {
+        if (!redirecting) {
+          btn.disabled = false;
+          btn.innerHTML = original;
+        }
       }
     });
   </script>

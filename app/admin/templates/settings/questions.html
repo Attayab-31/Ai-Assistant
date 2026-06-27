@@ -12,9 +12,9 @@
   </p>
 
   <div style="display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap;">
-    <button type="button" onclick="resetQuestions()" class="btn btn-secondary">↻ Reset to Defaults</button>
-    <button type="button" onclick="previewFlow()" class="btn btn-secondary">👁️ Preview Flow</button>
-    <button type="button" onclick="saveAllQuestions()" class="btn btn-primary">💾 Save All Changes</button>
+    <button type="button" onclick="withBtnLoading(this, resetQuestions, 'Resetting\u2026')" class="btn btn-secondary">↻ Reset to Defaults</button>
+    <button type="button" onclick="withBtnLoading(this, previewFlow, 'Loading\u2026')" class="btn btn-secondary">👁️ Preview Flow</button>
+    <button type="button" onclick="withBtnLoading(this, saveAllQuestions, 'Saving\u2026')" class="btn btn-primary">💾 Save All Changes</button>
   </div>
 
   {% if questions %}
