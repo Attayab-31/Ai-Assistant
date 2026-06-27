@@ -23,6 +23,21 @@ class TTSProviderSwitch(BaseModel):
     speed: float | None = Field(default=None, ge=0.75, le=1.25)
 
 
+class ProviderApiKeyUpdate(BaseModel):
+    """Set or rotate the API key for ANY provider without switching the active one."""
+
+    provider: Literal["groq", "openai", "openrouter", "gemini", "deepgram"]
+    api_key: str = Field(min_length=8, max_length=400)
+
+    @field_validator("api_key")
+    @classmethod
+    def strip_key(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("API key cannot be empty")
+        return value
+
+
 class ProviderTestRequest(BaseModel):
     provider_type: Literal["llm", "stt", "tts"]
     provider: str

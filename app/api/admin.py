@@ -372,8 +372,25 @@ async def settings_providers_page(request: Request, db: AsyncSession = Depends(g
 
     all_settings = await crud.get_all_settings(db)
     from config import provider_registry
+    from config import settings as env_settings
 
     provider_status = provider_registry.get_status()
+
+    # Which providers already have a usable API key — from an env var OR a
+    # key rotated through the admin panel (stored as <provider>_api_key_encrypted).
+    # We expose only booleans, never the key material.
+    def _key_set(provider: str, env_attr: str) -> bool:
+        if (getattr(env_settings, env_attr, "") or "").strip():
+            return True
+        return bool(all_settings.get(f"{provider}_api_key_encrypted"))
+
+    provider_keys = {
+        "groq": _key_set("groq", "groq_api_key"),
+        "openai": _key_set("openai", "openai_api_key"),
+        "openrouter": _key_set("openrouter", "openrouter_api_key"),
+        "gemini": _key_set("gemini", "gemini_api_key"),
+        "deepgram": _key_set("deepgram", "deepgram_api_key"),
+    }
 
     return templates.TemplateResponse(
         "settings/providers.html",
@@ -382,6 +399,7 @@ async def settings_providers_page(request: Request, db: AsyncSession = Depends(g
             "user": user,
             "settings": all_settings,
             "provider_status": provider_status,
+            "provider_keys": provider_keys,
             "active_page": "settings",
             "section": "providers",
         },

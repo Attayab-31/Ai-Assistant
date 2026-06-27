@@ -102,6 +102,47 @@
     <div style="margin-top: 12px;"><button type="button" class="btn btn-primary" onclick="switchProvider('tts')">Save voice</button></div>
   </div>
 
+  <!-- API Keys (all providers) -->
+  <div class="form-section">
+    <div class="engine-name">🔑 API keys</div>
+    <p class="engine-desc">
+      Set or update the key for <strong>any</strong> provider here — including ones you only use as a
+      backup. You don't have to make a provider active to give it a key. Leave a box blank to keep the
+      current key unchanged.
+    </p>
+
+    {% set key_rows = [
+      ("groq", "Groq", "AI brain"),
+      ("openai", "OpenAI", "AI brain"),
+      ("openrouter", "OpenRouter", "AI brain"),
+      ("gemini", "Google Gemini", "AI brain"),
+      ("deepgram", "Deepgram", "Ears + Voice")
+    ] %}
+
+    {% for pid, pname, prole in key_rows %}
+    <div class="form-group" style="margin-bottom: 14px;">
+      <label style="display:flex; align-items:center; gap:8px; justify-content:space-between; flex-wrap:wrap;">
+        <span>{{ pname }} <span class="text-muted">· {{ prole }}</span></span>
+        {% if provider_keys.get(pid) %}
+        <span style="color: var(--ok); font-weight:600; font-size: 0.85em;">✓ Key set</span>
+        {% else %}
+        <span style="color: var(--bad); font-weight:600; font-size: 0.85em;">✗ No key</span>
+        {% endif %}
+      </label>
+      <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        <input type="password" id="apikey_{{ pid }}" autocomplete="new-password" style="flex:1; min-width:200px;"
+               placeholder="{% if provider_keys.get(pid) %}Enter a new key to rotate (or leave blank){% else %}Paste the API key{% endif %}" />
+        <button type="button" class="btn btn-primary" onclick="saveApiKey('{{ pid }}', '{{ pname }}')">Save key</button>
+      </div>
+    </div>
+    {% endfor %}
+
+    <p class="text-muted" style="margin: 4px 0 0;">
+      Google TTS uses a service-account credentials file (set <code>GOOGLE_APPLICATION_CREDENTIALS</code>
+      on the server), so it isn't a simple key here.
+    </p>
+  </div>
+
   <!-- Reliability -->
   <div class="form-section">
     <div class="engine-name">🛟 Automatic backup</div>
@@ -184,6 +225,31 @@
       setTimeout(() => location.reload(), 1200);
     } catch (e) {
       showMessage('✗ Could not switch: ' + e.message, true);
+    }
+  }
+
+  async function saveApiKey(provider, label) {
+    const input = document.getElementById('apikey_' + provider);
+    const key = (input.value || '').trim();
+    if (!key) {
+      showMessage('Enter a key for ' + label + ' first (or leave blank to keep the current one).', true);
+      return;
+    }
+    try {
+      const r = await fetch('/api/settings/api-key', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider, api_key: key }),
+      });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        throw new Error(err.detail || r.statusText);
+      }
+      input.value = '';
+      showMessage('✓ ' + label + ' key saved — new calls will use it right away.');
+      setTimeout(() => location.reload(), 1200);
+    } catch (e) {
+      showMessage('✗ Could not save key: ' + e.message, true);
     }
   }
 

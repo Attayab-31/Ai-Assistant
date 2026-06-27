@@ -20,6 +20,7 @@ from app.schemas.settings import (
     FaqsUpdateRequest,
     GeneralSettingsUpdate,
     LLMProviderSwitch,
+    ProviderApiKeyUpdate,
     ProviderTestRequest,
     ProviderTestResponse,
     QuestionsUpdateRequest,
@@ -193,6 +194,43 @@ async def switch_tts_provider(
         "active_provider": provider_registry.tts_name,
         "previous_provider": old_provider,
     }
+
+
+@router.post("/api-key")
+async def set_provider_api_key(
+    payload: ProviderApiKeyUpdate,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    user: AdminUser = Depends(require_role("super_admin", "admin")),
+):
+    """Set or rotate the API key for ANY provider — even one that is not the
+    active engine (e.g. a backup AI brain).
+
+    The key is encrypted at rest and applied to NEW calls immediately (the live
+    provider registry is reloaded). The active provider selection is unchanged.
+    """
+    key_name = f"{payload.provider}_api_key_encrypted"
+    encrypted = encrypt_value(payload.api_key)
+    await crud.set_setting(db, key_name, encrypted, updated_by=user.id)
+
+    try:
+        await provider_registry.reload_from_db(db)
+    except Exception as e:
+        # Persist the key even if a rebuild fails (e.g. the key is for a backup
+        # provider that isn't active); it still takes effect on the next call.
+        logger.warning("Registry reload after API key update failed: %s", e)
+
+    await crud.create_audit_log(
+        db,
+        action="rotated_provider_api_key",
+        admin_user_id=user.id,
+        entity_type="setting",
+        new_value={"provider": payload.provider, "key": "updated"},
+        ip_address=request.client.host if request.client else None,
+    )
+
+    logger.info(f"API key set/rotated for {payload.provider} by {user.email}")
+    return {"success": True, "provider": payload.provider}
 
 
 # ──────────────────────────────────────────────────────────────────────────────
