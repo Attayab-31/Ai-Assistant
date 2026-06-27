@@ -98,10 +98,13 @@ class GeminiLLMProvider(BaseLLMProvider):
         }
         if json_mode:
             kwargs["response_format"] = {"type": "json_object"}
+        # Disable Gemini 2.5 "thinking" so reasoning tokens don't eat the budget.
+        # Passed via extra_body (raw request body) so it works even on older
+        # openai SDK versions that don't expose reasoning_effort as a kwarg.
         # "none" is only valid for 2.5 models; older flash models aren't thinking
         # models, so we skip it there to avoid a 400.
         if self.model.startswith("gemini-2.5"):
-            kwargs["reasoning_effort"] = "none"
+            kwargs["extra_body"] = {"reasoning_effort": "none"}
 
         try:
             response = await self.client.chat.completions.create(**kwargs)
