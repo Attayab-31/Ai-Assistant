@@ -3,7 +3,7 @@
 {% block page_title %}AI &amp; Voice{% endblock %}
 {% block settings_content %}
 
-{% set llm_names = {"groq": "Groq", "openai": "OpenAI", "openrouter": "OpenRouter"} %}
+{% set llm_names = {"groq": "Groq", "openai": "OpenAI", "openrouter": "OpenRouter", "gemini": "Google Gemini"} %}
 {% set stt_names = {"deepgram": "Deepgram", "groq": "Groq Whisper"} %}
 {% set tts_names = {"google": "Google", "deepgram": "Deepgram"} %}
 {% set cur_llm = provider_status.llm or settings.get('active_llm_provider') %}
@@ -35,7 +35,7 @@
     <p class="engine-desc">Understands what the caller says and decides how to reply. Currently using <strong>{{ llm_names.get(cur_llm, cur_llm) or '—' }}</strong>.</p>
     <label>Change the AI brain</label>
     <select id="llm_provider">
-      {% for p in ["groq", "openai", "openrouter"] %}
+      {% for p in ["groq", "openai", "openrouter", "gemini"] %}
       <option value="{{ p }}" {% if cur_llm == p %}selected{% endif %}>{{ llm_names[p] }}{% if cur_llm == p %} (current){% endif %}</option>
       {% endfor %}
     </select>
@@ -123,6 +123,7 @@
         <option value="groq" {% if cur_llm_fb == 'groq' %}selected{% endif %}>Groq</option>
         <option value="openai" {% if cur_llm_fb == 'openai' %}selected{% endif %}>OpenAI</option>
         <option value="openrouter" {% if cur_llm_fb == 'openrouter' %}selected{% endif %}>OpenRouter</option>
+        <option value="gemini" {% if cur_llm_fb == 'gemini' %}selected{% endif %}>Google Gemini</option>
         <option value="none" {% if cur_llm_fb == 'none' %}selected{% endif %}>No backup</option>
       </select>
       <p class="text-muted" style="margin: 4px 0 0;">Used only if the main AI brain fails. Needs that provider's API key to be set.</p>

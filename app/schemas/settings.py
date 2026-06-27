@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field, field_validator
 
 
 class LLMProviderSwitch(BaseModel):
-    provider: Literal["groq", "openai", "openrouter"]
+    provider: Literal["groq", "openai", "openrouter", "gemini"]
     model: str | None = None
     api_key: str | None = None
 
@@ -108,9 +108,9 @@ class GeneralSettingsUpdate(BaseModel):
     silence_timeout_seconds: int | None = None
     max_retries_per_question: int | None = None
     auto_fallback_enabled: bool | None = None
-    llm_fallback_provider: Literal["auto", "groq", "openai", "openrouter", "none"] | None = (
-        None
-    )
+    llm_fallback_provider: Literal[
+        "auto", "groq", "openai", "openrouter", "gemini", "none"
+    ] | None = None
     stt_fallback_provider: Literal["auto", "deepgram", "groq", "none"] | None = None
     tts_fallback_provider: Literal["auto", "google", "deepgram", "none"] | None = None
     score_weight_income: int | None = None

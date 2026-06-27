@@ -28,6 +28,7 @@ CALL_SETTINGS_KEYS = (
     "active_groq_model",
     "active_openai_model",
     "active_openrouter_model",
+    "active_gemini_model",
     "deepgram_model",
     "groq_stt_model",
     "tts_voice_google",
@@ -139,6 +140,8 @@ def snapshot_from_map(values: dict[str, Any]) -> CallSettingsSnapshot:
         "openai": values.get("active_openai_model") or env_settings.active_openai_model,
         "openrouter": values.get("active_openrouter_model")
         or env_settings.active_openrouter_model,
+        "gemini": values.get("active_gemini_model")
+        or env_settings.active_gemini_model,
     }
     voice_by_tts = {
         "google": values.get("tts_voice_google") or env_settings.tts_voice_google,
@@ -211,6 +214,7 @@ async def load_call_settings_snapshot(db: AsyncSession) -> CallSettingsSnapshot:
 
 def build_call_provider_bundle(snapshot: CallSettingsSnapshot) -> CallProviderBundle:
     """Construct isolated provider instances for one call session."""
+    from app.providers.llm.gemini_llm import GeminiLLMProvider
     from app.providers.llm.groq_llm import GroqLLMProvider
     from app.providers.llm.openai_llm import OpenAILLMProvider
     from app.providers.llm.openrouter_llm import OpenRouterLLMProvider
@@ -223,6 +227,7 @@ def build_call_provider_bundle(snapshot: CallSettingsSnapshot) -> CallProviderBu
         "groq": lambda: GroqLLMProvider(model=snapshot.llm_model),
         "openai": lambda: OpenAILLMProvider(model=snapshot.llm_model),
         "openrouter": lambda: OpenRouterLLMProvider(model=snapshot.llm_model),
+        "gemini": lambda: GeminiLLMProvider(model=snapshot.llm_model),
     }
     stt_factories = {
         "deepgram": lambda: DeepgramSTTProvider(model=snapshot.stt_model),

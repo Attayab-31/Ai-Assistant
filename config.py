@@ -125,6 +125,7 @@ class Settings(BaseSettings):
     groq_api_key: str = ""
     openai_api_key: str = ""
     openrouter_api_key: str = ""
+    gemini_api_key: str = ""
 
     # TTS
     google_application_credentials: str = ""
@@ -150,6 +151,7 @@ class Settings(BaseSettings):
     active_groq_model: str = "llama-3.3-70b-versatile"
     active_openai_model: str = "gpt-4o-mini"
     active_openrouter_model: str = "meta-llama/llama-3.3-70b-instruct:free"
+    active_gemini_model: str = "gemini-2.5-flash"
     deepgram_model: str = "nova-3"
     tts_voice_google: str = "en-US-Wavenet-D"
     tts_voice_deepgram: str = "aura-2-thalia-en"
@@ -268,6 +270,13 @@ DEFAULT_SYSTEM_SETTINGS = [
         "value": settings.active_openrouter_model,
         "value_type": "string",
         "description": "Active OpenRouter model",
+        "is_sensitive": False,
+    },
+    {
+        "key": "active_gemini_model",
+        "value": settings.active_gemini_model,
+        "value_type": "string",
+        "description": "Active Gemini model",
         "is_sensitive": False,
     },
     {
@@ -513,6 +522,7 @@ ENV_BACKED_SYSTEM_SETTING_KEYS = {
     "active_groq_model",
     "active_openai_model",
     "active_openrouter_model",
+    "active_gemini_model",
     "landlord_email",
     "property_name",
     "ai_agent_name",
@@ -532,6 +542,7 @@ _ENCRYPTED_KEY_MAP = {
     "groq_api_key_encrypted": "groq_api_key",
     "openai_api_key_encrypted": "openai_api_key",
     "openrouter_api_key_encrypted": "openrouter_api_key",
+    "gemini_api_key_encrypted": "gemini_api_key",
     "deepgram_api_key_encrypted": "deepgram_api_key",
 }
 
@@ -617,6 +628,7 @@ class ProviderRegistry:
             "active_groq_model",
             "active_openai_model",
             "active_openrouter_model",
+            "active_gemini_model",
             "deepgram_model",
             "groq_stt_model",
             "tts_voice_google",
@@ -628,6 +640,7 @@ class ProviderRegistry:
             "groq_api_key_encrypted",
             "openai_api_key_encrypted",
             "openrouter_api_key_encrypted",
+            "gemini_api_key_encrypted",
             "deepgram_api_key_encrypted",
         )
         values = await fetch_settings_batch(db, keys)
@@ -656,6 +669,7 @@ class ProviderRegistry:
             "openai": values.get("active_openai_model") or settings.active_openai_model,
             "openrouter": values.get("active_openrouter_model")
             or settings.active_openrouter_model,
+            "gemini": values.get("active_gemini_model") or settings.active_gemini_model,
         }
         voice_by_tts = {
             "google": values.get("tts_voice_google") or settings.tts_voice_google,
@@ -674,6 +688,7 @@ class ProviderRegistry:
         """Switch LLM provider without server restart."""
         async with self._lock:
             try:
+                from app.providers.llm.gemini_llm import GeminiLLMProvider
                 from app.providers.llm.groq_llm import GroqLLMProvider
                 from app.providers.llm.openai_llm import OpenAILLMProvider
                 from app.providers.llm.openrouter_llm import OpenRouterLLMProvider
@@ -690,6 +705,10 @@ class ProviderRegistry:
                 elif provider == "openrouter":
                     self._llm = OpenRouterLLMProvider(
                         model=model or settings.active_openrouter_model
+                    )
+                elif provider == "gemini":
+                    self._llm = GeminiLLMProvider(
+                        model=model or settings.active_gemini_model
                     )
                 else:
                     raise ValueError(f"Unknown LLM provider: {provider}")

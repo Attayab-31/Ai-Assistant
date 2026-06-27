@@ -167,6 +167,7 @@ def _split_for_tts(text: str, max_chars: int = 160) -> list[str]:
 
 def _get_llm_fallback(name: str):
     if name not in _llm_fallbacks:
+        from app.providers.llm.gemini_llm import GeminiLLMProvider
         from app.providers.llm.groq_llm import GroqLLMProvider
         from app.providers.llm.openai_llm import OpenAILLMProvider
         from app.providers.llm.openrouter_llm import OpenRouterLLMProvider
@@ -175,6 +176,7 @@ def _get_llm_fallback(name: str):
             "groq": GroqLLMProvider,
             "openai": OpenAILLMProvider,
             "openrouter": OpenRouterLLMProvider,
+            "gemini": GeminiLLMProvider,
         }
         _llm_fallbacks[name] = factories[name]()
     return _llm_fallbacks[name]
@@ -1165,6 +1167,7 @@ async def get_llm_response_with_fallback(
 
     # Auto-fallback (honours per-call snapshot)
     if providers.auto_fallback_enabled:
+        from app.providers.llm.gemini_llm import GeminiLLMProvider
         from app.providers.llm.groq_llm import GroqLLMProvider
         from app.providers.llm.openai_llm import OpenAILLMProvider
         from app.providers.llm.openrouter_llm import OpenRouterLLMProvider
@@ -1176,6 +1179,8 @@ async def get_llm_response_with_fallback(
             if isinstance(primary, OpenAILLMProvider)
             else "openrouter"
             if isinstance(primary, OpenRouterLLMProvider)
+            else "gemini"
+            if isinstance(primary, GeminiLLMProvider)
             else ""
         )
         # Candidate backups that are not the primary and have a configured key.
@@ -1185,6 +1190,7 @@ async def get_llm_response_with_fallback(
                 ("groq", bool(settings.groq_api_key)),
                 ("openai", bool(settings.openai_api_key)),
                 ("openrouter", bool(settings.openrouter_api_key)),
+                ("gemini", bool(settings.gemini_api_key)),
             )
             if has_key and name != primary_kind
         ]

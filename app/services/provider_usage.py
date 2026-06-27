@@ -5,7 +5,7 @@ Two complementary sources, because vendors expose very different things:
 1. LIVE vendor balance/credits — only where the provider has a usable API:
    - OpenRouter: remaining credits via ``/api/v1/credits`` (or ``/api/v1/key``).
    - Deepgram: remaining project balance via ``/v1/projects/{id}/balances``.
-   Groq, OpenAI and Google do not expose a real-time "remaining quota" number,
+   Groq, OpenAI, Gemini and Google do not expose a real-time "remaining quota" number,
    so those are reported honestly as "no usage API" rather than faked.
 
 2. INTERNAL usage rollup — computed from our own ``calls`` table (always
@@ -274,6 +274,13 @@ async def get_provider_overview(db, days: int = 30) -> dict[str, Any]:
             "name": "OpenAI",
             "role": "AI brain (LLM)",
             "configured": bool((settings.openai_api_key or "").strip()),
+            "balance": no_api,
+        },
+        {
+            "key": "gemini",
+            "name": "Google Gemini",
+            "role": "AI brain (LLM)",
+            "configured": bool((settings.gemini_api_key or "").strip()),
             "balance": no_api,
         },
     ]

@@ -254,6 +254,7 @@ async def test_provider(
 
 
 def _get_llm_instance(provider: str):
+    from app.providers.llm.gemini_llm import GeminiLLMProvider
     from app.providers.llm.groq_llm import GroqLLMProvider
     from app.providers.llm.openai_llm import OpenAILLMProvider
     from app.providers.llm.openrouter_llm import OpenRouterLLMProvider
@@ -262,6 +263,7 @@ def _get_llm_instance(provider: str):
         "groq": GroqLLMProvider,
         "openai": OpenAILLMProvider,
         "openrouter": OpenRouterLLMProvider,
+        "gemini": GeminiLLMProvider,
     }
     cls = mapping.get(provider)
     if not cls:
