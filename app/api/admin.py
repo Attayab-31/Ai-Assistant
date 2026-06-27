@@ -502,12 +502,14 @@ async def account_page(request: Request, db: AsyncSession = Depends(get_db)):
         return RedirectResponse(url="/admin/login")
 
     users = await crud.list_users(db)
+    super_admin_count = await crud.count_active_super_admins(db)
     return templates.TemplateResponse(
         "account.html",
         {
             "request": request,
             "user": user,
             "users": users,
+            "super_admin_count": super_admin_count,
             "active_page": "account",
         },
     )
@@ -1122,3 +1124,57 @@ async def _rescore_tenant(db: AsyncSession, tenant_id: uuid.UUID) -> dict:
         disqualify_reasons=reasons if reasons else None,
     )
     return {"qualification_score": score, "qualification_status": status}
+
+
+@router.delete("/api/users/{user_id}")
+async def api_delete_user(
+    user_id: uuid.UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    user: AdminUser = Depends(require_role("super_admin")),
+):
+    """Delete an admin account (super admin only).
+
+    Guard rails:
+    - You cannot delete your own account (avoid locking yourself out mid-session).
+    - You cannot delete the last active super admin (avoid orphaning the system).
+    The deleted user's audit-log entries and setting changes are kept — those
+    foreign keys are ON DELETE SET NULL, so the history survives, just shown as
+    an unnamed user.
+    """
+    target = await crud.get_user_by_id(db, user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if target.id == user.id:
+        raise HTTPException(
+            status_code=400,
+            detail="You can't delete your own account while signed in.",
+        )
+
+    if target.role == "super_admin":
+        remaining = await crud.count_active_super_admins(db)
+        # If this target is the only active super admin, block the delete.
+        if remaining <= 1:
+            raise HTTPException(
+                status_code=400,
+                detail="Can't delete the last super admin. Promote another "
+                "account to super admin first.",
+            )
+
+    deleted_email = target.email
+    await crud.delete_user(db, user_id)
+
+    await crud.create_audit_log(
+        db,
+        action="deleted_admin_user",
+        admin_user_id=user.id,
+        entity_type="admin_user",
+        entity_id=user_id,
+        old_value={"email": deleted_email, "role": target.role},
+        new_value={},
+        ip_address=request.client.host if request.client else None,
+    )
+
+    logger.info("Admin user %s deleted by %s", deleted_email, user.email)
+    return {"success": True, "deleted": deleted_email}

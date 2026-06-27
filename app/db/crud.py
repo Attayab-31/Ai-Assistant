@@ -444,6 +444,31 @@ async def update_user_password(
     await db.commit()
 
 
+async def count_active_super_admins(db: AsyncSession) -> int:
+    """Number of active super_admins — used to prevent deleting the last one."""
+    result = await db.execute(
+        select(func.count())
+        .select_from(AdminUser)
+        .where(AdminUser.role == "super_admin", AdminUser.is_active == True)  # noqa: E712
+    )
+    return int(result.scalar() or 0)
+
+
+async def delete_user(db: AsyncSession, user_id: uuid.UUID) -> bool:
+    """Delete an admin user.
+
+    The audit_log.admin_user_id and system_settings.updated_by foreign keys use
+    ON DELETE SET NULL, so the user's connected history is preserved (those rows
+    remain, just no longer attributed to a named user) rather than cascade-deleted.
+    """
+    user = await get_user_by_id(db, user_id)
+    if not user:
+        return False
+    await db.delete(user)
+    await db.commit()
+    return True
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # System Settings CRUD
 # ──────────────────────────────────────────────────────────────────────────────

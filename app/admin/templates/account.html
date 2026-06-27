@@ -2,9 +2,33 @@
 {% block title %}Account{% endblock %}
 {% block page_title %}Account{% endblock %}
 {% block content %}
+<style>
+  .alert { padding: 12px 16px; margin-bottom: 16px; border-radius: 6px; }
+  .alert-success { background: #d1fae5; color: #065f46; border: 1px solid #a7f3d0; }
+  .alert-error { background: #fee2e2; color: #991b1b; border: 1px solid #fca5a5; }
+  .text-muted { color: var(--muted); font-size: 13px; }
+</style>
+<div id="acctMsg"></div>
+
+{% if user.role == 'super_admin' %}
+<div class="callout" style="margin-bottom:16px;">
+  <span>👥</span>
+  <span>
+    You're a <strong>super admin</strong>, so you can remove other accounts here.
+    Deleting an account keeps its past activity in the Activity Log (it just shows as
+    an unnamed user). You can't delete your own account or the last super admin.
+  </span>
+</div>
+{% endif %}
+
 <div class="table-wrap">
 <table>
-  <thead><tr><th>Email</th><th>Name</th><th>Role</th><th>Active</th></tr></thead>
+  <thead>
+    <tr>
+      <th>Email</th><th>Name</th><th>Role</th><th>Active</th>
+      {% if user.role == 'super_admin' %}<th style="text-align:right;">Actions</th>{% endif %}
+    </tr>
+  </thead>
   <tbody>
   {% for item in users %}
     <tr>
@@ -12,12 +36,51 @@
       <td>{{ item.full_name or "-" }}</td>
       <td>{{ item.role }}</td>
       <td>{{ item.is_active }}</td>
+      {% if user.role == 'super_admin' %}
+      <td style="text-align:right;">
+        {% if item.id == user.id %}
+          <span class="text-muted" title="This is you">You</span>
+        {% elif item.role == 'super_admin' and super_admin_count <= 1 %}
+          <span class="text-muted" title="Last super admin can't be deleted">Protected</span>
+        {% else %}
+          <button type="button" class="btn btn-danger btn-sm"
+            onclick="withBtnLoading(this, () => deleteUser('{{ item.id }}', '{{ item.email|e }}'), 'Deleting\u2026')">
+            🗑️ Delete
+          </button>
+        {% endif %}
+      </td>
+      {% endif %}
     </tr>
   {% else %}
-    <tr><td colspan="4" class="muted">No users found.</td></tr>
+    <tr><td colspan="5" class="muted">No users found.</td></tr>
   {% endfor %}
   </tbody>
 </table>
 </div>
-{% endblock %}
 
+<script>
+  function showAcctMsg(text, isError) {
+    const el = document.getElementById('acctMsg');
+    el.className = isError ? 'alert alert-error' : 'alert alert-success';
+    el.textContent = text;
+    setTimeout(() => { el.textContent = ''; el.className = ''; }, 5000);
+  }
+
+  async function deleteUser(userId, email) {
+    if (!confirm('Delete the account for ' + email + '?\nTheir past activity stays in the Activity Log, shown as an unnamed user.')) {
+      return;
+    }
+    try {
+      const r = await fetch('/admin/api/users/' + userId, { method: 'DELETE' });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        throw new Error(err.detail || r.statusText);
+      }
+      showAcctMsg('✓ Account deleted: ' + email);
+      setTimeout(() => location.reload(), 1000);
+    } catch (e) {
+      showAcctMsg('✗ ' + e.message, true);
+    }
+  }
+</script>
+{% endblock %}
