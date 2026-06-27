@@ -394,7 +394,7 @@
                     style="margin:0 0 8px;font-size:13px;color:var(--accent-2);text-transform:uppercase;letter-spacing:.5px;">
                     Transcript</h3>
                 <div id="transcript" class="transcript"></div>
-                <audio id="audioPlayer" controls></audio>
+                <audio id="audioPlayer" controls playsinline webkit-playsinline></audio>
             </div>
         </section>
 
@@ -456,6 +456,27 @@
         ];
 
         const $ = (id) => document.getElementById(id);
+
+        // Unlock mobile audio output on first user gesture (iOS/Android autoplay policy).
+        const SILENT_WAV =
+            "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAAAAAA==";
+
+        function unlockAudioPlayback() {
+            const player = $("audioPlayer");
+            if (!player || player.dataset.audioUnlocked === "1") return;
+            player.src = SILENT_WAV;
+            player.volume = 0.001;
+            const p = player.play();
+            if (p && typeof p.then === "function") {
+                p.then(() => {
+                    player.dataset.audioUnlocked = "1";
+                    try { player.pause(); player.currentTime = 0; } catch (e) {}
+                    player.removeAttribute("src");
+                    try { player.load(); } catch (e) {}
+                    player.volume = 0.85;
+                }).catch(() => {});
+            }
+        }
         let state = { callId: null, complete: false, ws: null, voiceActive: false };
 
         /**
@@ -808,6 +829,7 @@
         }
 
         $("voiceStartBtn").onclick = async () => {
+            unlockAudioPlayback();
             if (state.ws) stopVoiceCall();
             $("transcript").innerHTML = "";
             $("finalResult").textContent = "—";
@@ -921,6 +943,7 @@
         };
 
         $("startBtn").onclick = async () => {
+            unlockAudioPlayback();
             stopVoiceCall();
             $("transcript").innerHTML = "";
             $("finalResult").textContent = "—";
@@ -968,6 +991,7 @@
         }
 
         $("sendBtn").onclick = async () => {
+            unlockAudioPlayback();
             const text = $("userText").value;
             $("userText").value = "";
             await sendText(text);
@@ -978,6 +1002,7 @@
         });
 
         $("quickStartBtn").onclick = async () => {
+            unlockAudioPlayback();
             for (const line of SCRIPTED) {
                 await sendText(line);
                 if (state.complete) break;
@@ -1078,6 +1103,7 @@
         let mediaRecorder = null;
         let chunks = [];
         $("recBtn").onclick = async () => {
+            unlockAudioPlayback();
             try {
                 const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
                 // Prefer audio/wav, fall back to whatever the browser supports.

@@ -121,11 +121,33 @@
     <div class="caption" id="caption">Tap to talk with our assistant</div>
   </div>
 
-  <audio id="audioPlayer" style="display:none"></audio>
+  <audio id="audioPlayer" playsinline webkit-playsinline style="display:none"></audio>
 
   <script>
     const $ = (id) => document.getElementById(id);
     const APP_URL = {{ app_url|tojson }};
+
+    // Minimal silent WAV — played synchronously on tap so mobile browsers allow
+    // later WebSocket-driven audio.play() calls (iOS/Android autoplay policy).
+    const SILENT_WAV =
+      "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAAAAAA==";
+
+    function unlockAudioPlayback() {
+      const player = $("audioPlayer");
+      if (!player || player.dataset.audioUnlocked === "1") return;
+      player.src = SILENT_WAV;
+      player.volume = 0.001;
+      const p = player.play();
+      if (p && typeof p.then === "function") {
+        p.then(() => {
+          player.dataset.audioUnlocked = "1";
+          try { player.pause(); player.currentTime = 0; } catch (e) {}
+          player.removeAttribute("src");
+          try { player.load(); } catch (e) {}
+          player.volume = 0.9;
+        }).catch(() => {});
+      }
+    }
 
     // call lifecycle: idle | connecting | live | ended
     let phase = "idle";
@@ -344,6 +366,7 @@
     }
 
     $("orb").addEventListener("click", () => {
+      unlockAudioPlayback();
       if (phase === "idle" || phase === "ended") startCall();
       else if (phase === "live") endCall("Call ended.");
       // ignore taps while connecting
