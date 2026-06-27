@@ -1,61 +1,145 @@
 {% extends "base.html" %}
-{% block title %}Account{% endblock %}
-{% block page_title %}Account{% endblock %}
+{% block title %}Team Accounts{% endblock %}
+{% block page_title %}Team Accounts{% endblock %}
 {% block content %}
 <style>
   .alert { padding: 12px 16px; margin-bottom: 16px; border-radius: 6px; }
   .alert-success { background: #d1fae5; color: #065f46; border: 1px solid #a7f3d0; }
   .alert-error { background: #fee2e2; color: #991b1b; border: 1px solid #fca5a5; }
   .text-muted { color: var(--muted); font-size: 13px; }
+  .role-badge { display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px; font-weight:700; background:var(--line-soft); color:var(--ink-soft); }
+  .role-badge.super_admin { background:#fef3c7; color:#92400e; }
+  .role-badge.admin { background:#dbeafe; color:#1e40af; }
+  .role-badge.staff { background:#d1fae5; color:#065f46; }
+  .role-badge.viewer { background:#f3f4f6; color:#374151; }
+  .scope-tag { display:inline-block; font-size:11px; padding:2px 7px; border-radius:4px; background:var(--accent-soft); color:#1e40af; margin:2px 2px 0 0; }
+  .scope-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(180px,1fr)); gap:8px; margin-top:8px; }
+  .scope-grid label { display:flex; align-items:center; gap:8px; font-weight:500; cursor:pointer; padding:8px 10px; border:1px solid var(--line); border-radius:var(--radius-sm); background:#fff; }
+  .scope-grid label:has(input:checked) { border-color:var(--accent); background:var(--accent-soft); }
+  .scope-grid input { width:auto; max-width:none; margin:0; }
+  .form-grid { display:grid; gap:12px; max-width:520px; }
+  .form-grid input, .form-grid select { max-width:100%; }
+  .actions { display:flex; gap:6px; justify-content:flex-end; flex-wrap:wrap; }
+  .inactive-row { opacity:.55; }
 </style>
+
 <div id="acctMsg"></div>
 
-{% if user.role == 'super_admin' %}
 <div class="callout" style="margin-bottom:16px;">
-  <span>👥</span>
+  <span>🔑</span>
   <span>
-    You're a <strong>super admin</strong>, so you can remove other accounts here.
-    Deleting an account keeps its past activity in the Activity Log (it just shows as
-    an unnamed user). You can't delete your own account or the last super admin.
+    You are the <strong>super admin</strong> (set via <code>ADMIN_EMAIL</code> in your environment).
+    Create team accounts here and choose what each person can see and do.
+    <strong>Admin</strong> = full panel access. <strong>Staff</strong> = custom areas, can edit.
+    <strong>Viewer</strong> = custom areas, read-only.
   </span>
 </div>
-{% endif %}
+
+<div class="card" style="margin-bottom:20px;">
+  <h2 style="margin:0 0 14px;">➕ Create account</h2>
+  <form id="createForm" class="form-grid" onsubmit="return withFormLoading(event, createUser, 'Creating\u2026')">
+    <label>Full name <input name="full_name" required placeholder="Jane Smith"></label>
+    <label>Email <input name="email" type="email" required autocomplete="off" placeholder="jane@company.com"></label>
+    <label>Password <input name="password" type="password" required minlength="8" autocomplete="new-password" placeholder="Min. 8 characters"></label>
+    <label>Access level
+      <select name="role" id="createRole" onchange="toggleScopePanel('create')">
+        <option value="admin">Admin — full access (except team management)</option>
+        <option value="staff" selected>Staff — custom areas, can edit</option>
+        <option value="viewer">Viewer — custom areas, read-only</option>
+      </select>
+    </label>
+    <div id="createScopes">
+      <div class="hint" style="margin-bottom:6px;">Which areas can this person access?</div>
+      <div class="scope-grid">
+        {% for key, label in permission_scopes.items() %}
+        <label><input type="checkbox" name="scope" value="{{ key }}" checked> {{ label }}</label>
+        {% endfor %}
+      </div>
+    </div>
+    <div><button type="submit">Create account</button></div>
+  </form>
+</div>
 
 <div class="table-wrap">
 <table>
   <thead>
     <tr>
-      <th>Email</th><th>Name</th><th>Role</th><th>Active</th>
-      {% if user.role == 'super_admin' %}<th style="text-align:right;">Actions</th>{% endif %}
+      <th>Email</th><th>Name</th><th>Access</th><th>Areas</th><th>Active</th><th style="text-align:right;">Actions</th>
     </tr>
   </thead>
   <tbody>
   {% for item in users %}
-    <tr>
+    <tr class="{{ '' if item.is_active else 'inactive-row' }}" id="row-{{ item.id }}">
       <td>{{ item.email }}</td>
       <td>{{ item.full_name or "-" }}</td>
-      <td>{{ item.role }}</td>
-      <td>{{ item.is_active }}</td>
-      {% if user.role == 'super_admin' %}
-      <td style="text-align:right;">
-        {% if item.id == user.id %}
-          <span class="text-muted" title="This is you">You</span>
-        {% elif item.role == 'super_admin' and super_admin_count <= 1 %}
-          <span class="text-muted" title="Last super admin can't be deleted">Protected</span>
+      <td><span class="role-badge {{ item.role }}">{{ item.role|replace('_',' ')|title }}</span></td>
+      <td>
+        {% if item.role in ('super_admin', 'admin') %}
+          <span class="text-muted">All areas</span>
         {% else %}
-          <button type="button" class="btn btn-danger btn-sm"
-            onclick="withBtnLoading(this, () => deleteUser('{{ item.id }}', '{{ item.email|e }}'), 'Deleting\u2026')">
-            🗑️ Delete
-          </button>
+          {% for s in item.effective_scopes %}
+            <span class="scope-tag">{{ permission_scopes.get(s, s) }}</span>
+          {% else %}
+            <span class="text-muted">None</span>
+          {% endfor %}
         {% endif %}
       </td>
-      {% endif %}
+      <td>{{ "Yes" if item.is_active else "No" }}</td>
+      <td class="actions">
+        {% if item.id == user.id %}
+          <span class="text-muted" title="This is you">You</span>
+        {% elif item.role == 'super_admin' %}
+          <span class="text-muted" title="Managed via environment variables">Env account</span>
+        {% else %}
+          <button type="button" class="btn btn-secondary btn-sm edit-btn"
+            data-id="{{ item.id }}"
+            data-email="{{ item.email }}"
+            data-name="{{ item.full_name or '' }}"
+            data-role="{{ item.role }}"
+            data-scopes="{{ item.effective_scopes|join(',') }}"
+            data-active="{{ 'true' if item.is_active else 'false' }}">✏️ Edit</button>
+          <button type="button" class="btn btn-danger btn-sm"
+            onclick="withBtnLoading(this, () => deleteUser('{{ item.id }}', '{{ item.email|e }}'), 'Deleting\u2026')">🗑️</button>
+        {% endif %}
+      </td>
     </tr>
   {% else %}
-    <tr><td colspan="5" class="muted">No users found.</td></tr>
+    <tr><td colspan="6" class="muted">No users found.</td></tr>
   {% endfor %}
   </tbody>
 </table>
+</div>
+
+<!-- Edit panel -->
+<div id="editPanel" class="card" style="display:none; margin-top:20px;">
+  <h2 style="margin:0 0 14px;">✏️ Edit account</h2>
+  <form id="editForm" class="form-grid" onsubmit="return withFormLoading(event, saveEdit, 'Saving\u2026')">
+    <input type="hidden" id="editId">
+    <p class="text-muted" id="editEmail" style="margin:0;"></p>
+    <label>Full name <input id="editName" required></label>
+    <label>Access level
+      <select id="editRole" onchange="toggleScopePanel('edit')">
+        <option value="admin">Admin — full access</option>
+        <option value="staff">Staff — custom areas, can edit</option>
+        <option value="viewer">Viewer — custom areas, read-only</option>
+      </select>
+    </label>
+    <div id="editScopes">
+      <div class="hint" style="margin-bottom:6px;">Which areas can this person access?</div>
+      <div class="scope-grid" id="editScopeGrid">
+        {% for key, label in permission_scopes.items() %}
+        <label><input type="checkbox" class="edit-scope" value="{{ key }}"> {{ label }}</label>
+        {% endfor %}
+      </div>
+    </div>
+    <label style="display:flex;align-items:center;gap:8px;font-weight:500;">
+      <input type="checkbox" id="editActive" style="width:auto;max-width:none;"> Account is active
+    </label>
+    <div style="display:flex;gap:8px;">
+      <button type="submit">Save changes</button>
+      <button type="button" class="btn btn-secondary" onclick="closeEdit()">Cancel</button>
+    </div>
+  </form>
 </div>
 
 <script>
@@ -66,21 +150,106 @@
     setTimeout(() => { el.textContent = ''; el.className = ''; }, 5000);
   }
 
+  function toggleScopePanel(mode) {
+    const role = document.getElementById(mode === 'create' ? 'createRole' : 'editRole').value;
+    const panel = document.getElementById(mode === 'create' ? 'createScopes' : 'editScopes');
+    panel.style.display = (role === 'staff' || role === 'viewer') ? 'block' : 'none';
+  }
+
+  function collectScopes(formId) {
+    const boxes = document.querySelectorAll('#' + formId + ' input[name="scope"]:checked, #' + formId + ' .edit-scope:checked');
+    return Array.from(boxes).map(b => b.value);
+  }
+
+  async function createUser(event) {
+    event.preventDefault();
+    const form = event.target;
+    const role = form.role.value;
+    const body = {
+      email: form.email.value,
+      password: form.password.value,
+      full_name: form.full_name.value,
+      role: role,
+      scopes: (role === 'staff' || role === 'viewer') ? collectScopes('createForm') : [],
+    };
+    try {
+      const r = await fetch('/admin/api/users', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || r.statusText); }
+      showAcctMsg('✓ Account created: ' + body.email);
+      setTimeout(() => location.reload(), 900);
+    } catch (e) { showAcctMsg('✗ ' + e.message, true); }
+  }
+
+  function openEditFromBtn(btn) {
+    openEdit(btn.dataset.id, {
+      email: btn.dataset.email,
+      full_name: btn.dataset.name,
+      role: btn.dataset.role,
+      scopes: btn.dataset.scopes ? btn.dataset.scopes.split(',').filter(Boolean) : [],
+      is_active: btn.dataset.active === 'true',
+    });
+  }
+
+  function openEdit(id, data) {
+    document.getElementById('editId').value = id;
+    document.getElementById('editEmail').textContent = data.email;
+    document.getElementById('editName').value = data.full_name;
+    document.getElementById('editRole').value = data.role;
+    document.getElementById('editActive').checked = data.is_active;
+    document.querySelectorAll('.edit-scope').forEach(cb => {
+      cb.checked = data.scopes.includes(cb.value);
+    });
+    toggleScopePanel('edit');
+    document.getElementById('editPanel').style.display = 'block';
+    document.getElementById('editPanel').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+
+  function closeEdit() {
+    document.getElementById('editPanel').style.display = 'none';
+  }
+
+  async function saveEdit(event) {
+    event.preventDefault();
+    const id = document.getElementById('editId').value;
+    const role = document.getElementById('editRole').value;
+    const body = {
+      full_name: document.getElementById('editName').value,
+      role: role,
+      is_active: document.getElementById('editActive').checked,
+      scopes: (role === 'staff' || role === 'viewer')
+        ? Array.from(document.querySelectorAll('.edit-scope:checked')).map(cb => cb.value)
+        : [],
+    };
+    try {
+      const r = await fetch('/admin/api/users/' + id, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || r.statusText); }
+      showAcctMsg('✓ Account updated');
+      setTimeout(() => location.reload(), 900);
+    } catch (e) { showAcctMsg('✗ ' + e.message, true); }
+  }
+
   async function deleteUser(userId, email) {
-    if (!confirm('Delete the account for ' + email + '?\nTheir past activity stays in the Activity Log, shown as an unnamed user.')) {
-      return;
-    }
+    if (!confirm('Delete the account for ' + email + '?\nTheir past activity stays in the Activity Log.')) return;
     try {
       const r = await fetch('/admin/api/users/' + userId, { method: 'DELETE' });
-      if (!r.ok) {
-        const err = await r.json().catch(() => ({}));
-        throw new Error(err.detail || r.statusText);
-      }
+      if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || r.statusText); }
       showAcctMsg('✓ Account deleted: ' + email);
-      setTimeout(() => location.reload(), 1000);
-    } catch (e) {
-      showAcctMsg('✗ ' + e.message, true);
-    }
+      setTimeout(() => location.reload(), 900);
+    } catch (e) { showAcctMsg('✗ ' + e.message, true); }
   }
+
+  toggleScopePanel('create');
+
+  document.querySelectorAll('.edit-btn').forEach(btn => {
+    btn.addEventListener('click', () => openEditFromBtn(btn));
+  });
 </script>
 {% endblock %}

@@ -27,7 +27,7 @@ from app.schemas.settings import (
     STTProviderSwitch,
     TTSProviderSwitch,
 )
-from app.utils.dependencies import get_current_user, require_role
+from app.utils.dependencies import require_scope
 from app.utils.security import encrypt_value
 from config import provider_registry
 
@@ -45,7 +45,7 @@ async def switch_llm_provider(
     payload: LLMProviderSwitch,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    user: AdminUser = Depends(require_role("super_admin", "admin")),
+    user: AdminUser = Depends(require_scope("settings", edit=True)),
 ):
     """
     Hot-swap the active LLM provider (Groq/OpenAI/OpenRouter).
@@ -100,7 +100,7 @@ async def switch_stt_provider(
     payload: STTProviderSwitch,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    user: AdminUser = Depends(require_role("super_admin", "admin")),
+    user: AdminUser = Depends(require_scope("settings", edit=True)),
 ):
     """Hot-swap the active STT provider (Deepgram/Groq Whisper)."""
     old_provider = provider_registry.stt_name
@@ -153,7 +153,7 @@ async def switch_tts_provider(
     payload: TTSProviderSwitch,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    user: AdminUser = Depends(require_role("super_admin", "admin")),
+    user: AdminUser = Depends(require_scope("settings", edit=True)),
 ):
     """Hot-swap the active TTS provider (Google WaveNet/Deepgram Aura-2)."""
     old_provider = provider_registry.tts_name
@@ -201,7 +201,7 @@ async def set_provider_api_key(
     payload: ProviderApiKeyUpdate,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    user: AdminUser = Depends(require_role("super_admin", "admin")),
+    user: AdminUser = Depends(require_scope("settings", edit=True)),
 ):
     """Set or rotate the API key for ANY provider — even one that is not the
     active engine (e.g. a backup AI brain).
@@ -241,7 +241,7 @@ async def set_provider_api_key(
 @router.post("/test", response_model=ProviderTestResponse)
 async def test_provider(
     payload: ProviderTestRequest,
-    user: AdminUser = Depends(get_current_user),
+    user: AdminUser = Depends(require_scope("settings")),
 ):
     """
     Test a provider by sending a sample request and measuring latency.
@@ -337,13 +337,13 @@ def _get_stt_instance(provider: str):
 
 
 @router.get("/status")
-async def get_provider_status(user: AdminUser = Depends(get_current_user)):
+async def get_provider_status(user: AdminUser = Depends(require_scope("settings"))):
     """Get current active provider status for the admin dashboard panel."""
     return provider_registry.get_status()
 
 
 @router.get("/health")
-async def check_provider_health(user: AdminUser = Depends(get_current_user)):
+async def check_provider_health(user: AdminUser = Depends(require_scope("settings"))):
     """Ping all active providers and return health/latency info."""
     results = {}
 
@@ -382,7 +382,7 @@ async def check_provider_health(user: AdminUser = Depends(get_current_user)):
 @router.get("/questions")
 async def get_questions(
     db: AsyncSession = Depends(get_db),
-    user: AdminUser = Depends(get_current_user),
+    user: AdminUser = Depends(require_scope("settings")),
 ):
     """Get current screening questions configuration."""
     from app.core.screening_flow import FLOW_STATE_VALUES, normalize_questions
@@ -400,7 +400,7 @@ async def update_questions(
     payload: QuestionsUpdateRequest,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    user: AdminUser = Depends(require_role("super_admin", "admin")),
+    user: AdminUser = Depends(require_scope("settings", edit=True)),
 ):
     """Update screening question wording while preserving the canonical flow states."""
     from app.core.screening_flow import validate_questions_for_save
@@ -434,7 +434,7 @@ async def update_questions(
 async def reset_questions_to_defaults(
     request: Request,
     db: AsyncSession = Depends(get_db),
-    user: AdminUser = Depends(require_role("super_admin", "admin")),
+    user: AdminUser = Depends(require_scope("settings", edit=True)),
 ):
     """Reset screening questions to system defaults."""
     from config import DEFAULT_QUESTIONS
@@ -457,7 +457,7 @@ async def reset_questions_to_defaults(
 @router.post("/questions/preview")
 async def preview_conversation_flow(
     db: AsyncSession = Depends(get_db),
-    user: AdminUser = Depends(get_current_user),
+    user: AdminUser = Depends(require_scope("settings")),
 ):
     """Simulate the conversation flow through active questions for preview."""
     from app.core.screening_flow import (
@@ -536,7 +536,7 @@ async def preview_conversation_flow(
 @router.get("/faqs")
 async def get_faqs(
     db: AsyncSession = Depends(get_db),
-    user: AdminUser = Depends(get_current_user),
+    user: AdminUser = Depends(require_scope("settings")),
 ):
     """Get current screening FAQ configuration."""
     from app.core.screening_flow import FAQ_TOPIC_VALUES, normalize_faqs
@@ -554,7 +554,7 @@ async def update_faqs(
     payload: FaqsUpdateRequest,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    user: AdminUser = Depends(require_role("super_admin", "admin")),
+    user: AdminUser = Depends(require_scope("settings", edit=True)),
 ):
     """Update FAQ wording and match patterns while preserving canonical topics."""
     from app.core.screening_flow import validate_faqs_for_save
@@ -588,7 +588,7 @@ async def update_faqs(
 async def reset_faqs_to_defaults(
     request: Request,
     db: AsyncSession = Depends(get_db),
-    user: AdminUser = Depends(require_role("super_admin", "admin")),
+    user: AdminUser = Depends(require_scope("settings", edit=True)),
 ):
     """Reset screening FAQs to system defaults."""
     from config import DEFAULT_FAQS
@@ -615,7 +615,7 @@ async def reset_faqs_to_defaults(
 @router.get("/email")
 async def get_email_settings(
     db: AsyncSession = Depends(get_db),
-    user: AdminUser = Depends(get_current_user),
+    user: AdminUser = Depends(require_scope("settings")),
 ):
     """Get current email configuration."""
     keys = [
@@ -641,7 +641,7 @@ async def update_email_settings(
     payload: EmailSettingsUpdate,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    user: AdminUser = Depends(require_role("super_admin", "admin")),
+    user: AdminUser = Depends(require_scope("settings", edit=True)),
 ):
     """Update email notification settings."""
     updates = payload.model_dump(exclude_none=True)
@@ -663,7 +663,7 @@ async def update_email_settings(
 async def send_test_email(
     payload: dict,
     db: AsyncSession = Depends(get_db),
-    user: AdminUser = Depends(get_current_user),
+    user: AdminUser = Depends(require_scope("settings")),
 ):
     """Send a test email using the SAVED sender identity (not just env)."""
     import resend
@@ -712,7 +712,7 @@ async def post_email_settings(
     payload: dict,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    user: AdminUser = Depends(require_role("super_admin", "admin")),
+    user: AdminUser = Depends(require_scope("settings", edit=True)),
 ):
     """POST alias for updating email configuration (for HTML forms)."""
     bool_fields = [
@@ -750,7 +750,7 @@ async def post_email_settings(
 @router.get("/general")
 async def get_general_settings(
     db: AsyncSession = Depends(get_db),
-    user: AdminUser = Depends(get_current_user),
+    user: AdminUser = Depends(require_scope("settings")),
 ):
     """Get all general settings."""
     return await crud.get_all_settings(db)
@@ -761,7 +761,7 @@ async def update_general_settings(
     payload: GeneralSettingsUpdate,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    user: AdminUser = Depends(require_role("super_admin", "admin")),
+    user: AdminUser = Depends(require_scope("settings", edit=True)),
 ):
     """Update general application settings (property, scoring, call config)."""
     updates = payload.model_dump(exclude_none=True)
@@ -867,7 +867,7 @@ async def add_to_blacklist(
     payload: dict,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    user: AdminUser = Depends(require_role("super_admin", "admin")),
+    user: AdminUser = Depends(require_scope("settings", edit=True)),
 ):
     """Add a phone number to the Do Not Call blacklist."""
     from app.utils.helpers import sanitize_phone_number
@@ -899,7 +899,7 @@ async def remove_from_blacklist(
     phone_number: str,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    user: AdminUser = Depends(require_role("super_admin", "admin")),
+    user: AdminUser = Depends(require_scope("settings", edit=True)),
 ):
     """Remove a phone number from the blacklist."""
     blacklist = await crud.get_setting_value(db, "blacklisted_numbers", [])
@@ -923,7 +923,7 @@ async def remove_from_blacklist(
 @router.get("/blacklist")
 async def get_blacklist(
     db: AsyncSession = Depends(get_db),
-    user: AdminUser = Depends(get_current_user),
+    user: AdminUser = Depends(require_scope("settings")),
 ):
     """Get current blacklisted numbers."""
     blacklist = await crud.get_setting_value(db, "blacklisted_numbers", [])

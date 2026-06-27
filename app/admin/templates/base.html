@@ -205,18 +205,32 @@
       <div class="brand"><span class="logo">🏠</span> Tenant Screener</div>
       <nav class="nav">
         <a class="{{ 'active' if active_page == 'dashboard' else '' }}" href="/admin/dashboard"><span class="ico">🏡</span> Home</a>
+        {% if user.can('monitor') %}
         <a class="{{ 'active' if active_page == 'monitor' else '' }}" href="/admin/monitor"><span class="ico">📡</span> Live Monitor</a>
+        {% endif %}
 
         <div class="nav-group-label">People &amp; Calls</div>
+        {% if user.can('calls') %}
         <a class="{{ 'active' if active_page == 'calls' else '' }}" href="/admin/calls"><span class="ico">📞</span> Calls</a>
+        {% endif %}
+        {% if user.can('tenants') %}
         <a class="{{ 'active' if active_page == 'tenants' else '' }}" href="/admin/tenants"><span class="ico">👤</span> Applicants</a>
+        {% endif %}
+        {% if user.can('analytics') %}
         <a class="{{ 'active' if active_page == 'analytics' else '' }}" href="/admin/analytics"><span class="ico">📊</span> Analytics</a>
+        {% endif %}
 
         <div class="nav-group-label">Configuration</div>
+        {% if user.can('settings') %}
         <a class="{{ 'active' if active_page == 'settings' else '' }}" href="/admin/settings/providers"><span class="ico">⚙️</span> Settings</a>
         <a href="/test/call" target="_blank" rel="noopener"><span class="ico">📞</span> Client Call</a>
+        {% endif %}
+        {% if user.can('audit') %}
         <a class="{{ 'active' if active_page == 'audit_log' else '' }}" href="/admin/audit-log"><span class="ico">📝</span> Activity Log</a>
-        <a class="{{ 'active' if active_page == 'account' else '' }}" href="/admin/account"><span class="ico">🔑</span> Account</a>
+        {% endif %}
+        {% if user.can('accounts') %}
+        <a class="{{ 'active' if active_page == 'account' else '' }}" href="/admin/account"><span class="ico">🔑</span> Team Accounts</a>
+        {% endif %}
       </nav>
       <div class="sidebar-foot">AI Tenant Screener · v1.0</div>
     </aside>
@@ -238,6 +252,12 @@
           </span>
         {% endif %}
       </div>
+      {% if user and not user.can_edit %}
+      <div class="callout" style="margin-bottom:16px;">
+        <span>👁️</span>
+        <span>Your account is <strong>read-only</strong>. You can view this area but can't make changes.</span>
+      </div>
+      {% endif %}
       {% block content %}{% endblock %}
     </main>
   </div>

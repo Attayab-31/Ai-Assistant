@@ -409,16 +409,28 @@ async def list_users(db: AsyncSession) -> list[AdminUser]:
     return result.scalars().all()
 
 
+def _encode_permissions(scopes: list[str] | None) -> str | None:
+    """Persist a scope list as a comma-separated string (or None)."""
+    if not scopes:
+        return None
+    return ",".join(sorted(set(scopes)))
+
+
 async def create_user(
     db: AsyncSession,
     email: str,
     hashed_password: str,
     full_name: str,
     role: str = "admin",
+    permissions: list[str] | None = None,
 ) -> AdminUser:
     """Create a new admin user."""
     user = AdminUser(
-        email=email, hashed_password=hashed_password, full_name=full_name, role=role
+        email=email,
+        hashed_password=hashed_password,
+        full_name=full_name,
+        role=role,
+        permissions=_encode_permissions(permissions),
     )
     db.add(user)
     await db.commit()
@@ -467,6 +479,34 @@ async def delete_user(db: AsyncSession, user_id: uuid.UUID) -> bool:
     await db.delete(user)
     await db.commit()
     return True
+
+
+async def update_user(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    *,
+    full_name: str | None = None,
+    role: str | None = None,
+    permissions: list[str] | None = None,
+    is_active: bool | None = None,
+) -> AdminUser | None:
+    """Update an admin user's profile, role, scopes, or active status."""
+    user = await get_user_by_id(db, user_id)
+    if not user:
+        return None
+
+    if full_name is not None:
+        user.full_name = full_name.strip() or user.email
+    if role is not None:
+        user.role = role
+    if permissions is not None:
+        user.permissions = _encode_permissions(permissions)
+    if is_active is not None:
+        user.is_active = is_active
+
+    await db.commit()
+    await db.refresh(user)
+    return user
 
 
 # ──────────────────────────────────────────────────────────────────────────────

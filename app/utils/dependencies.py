@@ -121,6 +121,39 @@ def require_role(*allowed_roles: str):
 require_staff = require_role("super_admin", "admin")
 
 
+def require_scope(scope: str, *, edit: bool = False):
+    """Dependency factory: require access to a feature-area scope.
+
+    Usage:
+        Depends(require_scope("calls"))             # any access to Calls
+        Depends(require_scope("calls", edit=True))  # must also be able to edit
+
+    super_admin / admin always have every scope. staff / viewer are limited to
+    the scopes granted on their account. When edit=True, read-only viewers are
+    rejected even if they can see the area.
+    """
+
+    async def _check_scope(user: AdminUser = Depends(get_current_user)) -> AdminUser:
+        if not user.can(scope):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Your account doesn't have access to {scope}.",
+            )
+        if edit and not user.can_edit:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Your account is read-only.",
+            )
+        return user
+
+    return _check_scope
+
+
+def invalidate_user_cache(user_id: uuid.UUID) -> None:
+    """Drop a cached user row so role/scope changes take effect immediately."""
+    _user_cache.pop(user_id, None)
+
+
 async def get_current_user_optional(
     request: Request,
     db: AsyncSession = Depends(get_db),

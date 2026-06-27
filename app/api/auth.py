@@ -22,7 +22,6 @@ from app.core.ratelimit import (
 from app.db import crud
 from app.db.crud import create_audit_log, get_user_by_email, update_last_login
 from app.db.database import AsyncSessionLocal, get_db
-from app.utils.dependencies import get_current_user_optional
 from app.utils.security import (
     MAX_BCRYPT_PASSWORD_BYTES,
     create_access_token,
@@ -38,7 +37,6 @@ router = APIRouter()
 
 COOKIE_NAME = "access_token"
 MIN_PASSWORD_LENGTH = 8
-VALID_ROLES = {"super_admin", "admin", "viewer"}
 
 
 class LoginRequest(BaseModel):
@@ -50,13 +48,6 @@ class LoginResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     user: dict
-
-
-class SignupRequest(BaseModel):
-    email: EmailStr
-    password: str
-    full_name: str
-    role: str | None = None
 
 
 def _cookie_secure(request: Request) -> bool:
@@ -181,103 +172,6 @@ async def login(
     )
 
     logger.info("Login successful: %s", mask_email(user.email))
-
-    return LoginResponse(
-        access_token=token,
-        user={
-            "id": str(user.id),
-            "email": user.email,
-            "full_name": user.full_name,
-            "role": user.role,
-        },
-    )
-
-
-@router.post(
-    "/signup", response_model=LoginResponse, status_code=status.HTTP_201_CREATED
-)
-async def signup(
-    request: Request,
-    response: Response,
-    payload: SignupRequest,
-    db: AsyncSession = Depends(get_db),
-):
-    """Create an admin account.
-
-    Security model:
-    - If no users exist yet, the first signup bootstraps a super_admin and is
-      auto-logged-in (so a fresh deployment can be set up).
-    - Otherwise, only an authenticated super_admin may create new accounts.
-    """
-    check_auth_rate_limit(request)
-
-    _validate_password(payload.password)
-
-    email = payload.email.lower().strip()
-    if await get_user_by_email(db, email):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="An account with this email already exists",
-        )
-
-    user_count = await crud.count_users(db)
-    # In production the first super_admin is seeded at startup from
-    # ADMIN_EMAIL/ADMIN_PASSWORD, so anonymous self-bootstrap is never allowed —
-    # this closes the "first signup wins super_admin" race on fresh deploys.
-    bootstrap = user_count == 0 and not settings.is_production
-
-    if bootstrap:
-        role = "super_admin"
-        creator = None
-    else:
-        creator = await get_current_user_optional(request, db)
-        if not creator or creator.role != "super_admin":
-            record_auth_failure(request)
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Only a super admin can create new accounts",
-            )
-        role = (payload.role or "admin").strip().lower()
-        if role not in VALID_ROLES:
-            role = "admin"
-
-    user = await crud.create_user(
-        db,
-        email=email,
-        hashed_password=hash_password(payload.password),
-        full_name=payload.full_name.strip() or email,
-        role=role,
-    )
-
-    await create_audit_log(
-        db,
-        action="admin_signup",
-        admin_user_id=creator.id if creator else user.id,
-        entity_type="admin_user",
-        entity_id=user.id,
-        ip_address=request.client.host if request.client else None,
-        user_agent=request.headers.get("user-agent"),
-    )
-
-    token = ""
-    if bootstrap:
-        # Auto-login the very first account.
-        token = create_access_token(
-            data={"sub": str(user.id), "email": user.email, "role": user.role},
-            expires_delta=timedelta(hours=8),
-        )
-        response.set_cookie(
-            key=COOKIE_NAME,
-            value=token,
-            httponly=True,
-            secure=_cookie_secure(request),
-            samesite="lax",
-            max_age=8 * 3600,
-        )
-
-        logger.info(
-            "Signup successful: %s (role=%s, bootstrap=%s)", user.email, role, bootstrap
-        )
 
     return LoginResponse(
         access_token=token,
