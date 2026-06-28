@@ -82,7 +82,7 @@
     <div class="engine-name">🔊 Voice (Text-to-Speech) <span class="dot ok" title="active"></span></div>
     <p class="engine-desc">Gives the assistant its spoken voice on the call. Currently using <strong>{{ tts_names.get(cur_tts, cur_tts) or '—' }}</strong>.</p>
     <label>Change the voice</label>
-    <select id="tts_provider">
+    <select id="tts_provider" onchange="updateSpeedState()">
       {% for p in ["google", "deepgram"] %}
       <option value="{{ p }}" {% if cur_tts == p %}selected{% endif %}>{{ tts_names[p] }}{% if cur_tts == p %} (current){% endif %}</option>
       {% endfor %}
@@ -90,7 +90,8 @@
     <div class="form-group" style="margin-top: 12px;">
       <label>Speaking speed</label>
       <input type="number" id="tts_speed" min="0.75" max="1.25" step="0.05" value="{{ settings.get('tts_speed', '1.0') }}" />
-      <p class="text-muted" style="margin: 4px 0 0;">1.0 is normal. Lower is slower, higher is faster (between 0.75 and 1.25). Applies to Google TTS; Deepgram voices use a fixed natural pace and ignore this.</p>
+      <p class="text-muted" id="speedHelp" style="margin: 4px 0 0;">1.0 is normal. Lower is slower, higher is faster (between 0.75 and 1.25).</p>
+      <div id="speedDisabledNote" class="warn-note" style="display:none; margin-top:6px;">⚠️ The Deepgram voice plays at a fixed natural pace and ignores speed. Switch the voice to <strong>Google</strong> to control speaking speed.</div>
     </div>
     <details class="adv">
       <summary>Advanced options</summary>
@@ -197,6 +198,21 @@
 <script>
   const ENGINE_LABELS = { llm: '🧠 AI Brain', stt: '🎧 Ears', tts: '🔊 Voice' };
 
+  // Speaking speed only applies to Google TTS. Deepgram ignores it, so grey the
+  // field out and explain why when Deepgram is the selected voice.
+  function updateSpeedState() {
+    const provider = document.getElementById('tts_provider').value;
+    const speed = document.getElementById('tts_speed');
+    const help = document.getElementById('speedHelp');
+    const note = document.getElementById('speedDisabledNote');
+    const isDeepgram = provider === 'deepgram';
+    speed.disabled = isDeepgram;
+    speed.style.opacity = isDeepgram ? '0.5' : '';
+    speed.style.cursor = isDeepgram ? 'not-allowed' : '';
+    help.style.display = isDeepgram ? 'none' : '';
+    note.style.display = isDeepgram ? 'block' : 'none';
+  }
+
   async function switchProvider(kind) {
     const provider = document.getElementById(`${kind}_provider`).value;
     const body = { provider };
@@ -299,5 +315,8 @@
       out.innerHTML = `<div class="alert alert-error" style="margin:0;">Couldn't run the check: ${e.message}</div>`;
     }
   }
+
+  // Set the speed field's enabled/disabled state to match the current voice.
+  updateSpeedState();
 </script>
 {% endblock %}
