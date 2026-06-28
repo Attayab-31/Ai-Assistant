@@ -75,6 +75,20 @@ class AdminUser(Base):
         return self.role == "super_admin"
 
     @property
+    def is_env_account(self) -> bool:
+        """True only for the permanent super admin defined by ADMIN_EMAIL.
+
+        This is the single protected account (it is re-seeded from the
+        environment). Any *other* account — including a leftover super admin
+        from a previous ADMIN_EMAIL value — can be edited or deleted by a
+        super admin.
+        """
+        from config import settings
+
+        admin_email = (settings.admin_email or "").strip().lower()
+        return bool(admin_email) and (self.email or "").strip().lower() == admin_email
+
+    @property
     def can_edit(self) -> bool:
         """Whether this account may modify data (vs. read-only viewer)."""
         return self.role in EDIT_ROLES

@@ -1260,7 +1260,7 @@ async def api_update_user(
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
 
-    if target.role == "super_admin":
+    if target.is_env_account:
         raise HTTPException(
             status_code=400,
             detail="The super admin account is managed via environment variables "
@@ -1346,7 +1346,9 @@ async def api_delete_user(
 
     Guard rails:
     - You cannot delete your own account (avoid locking yourself out mid-session).
-    - You cannot delete the last active super admin (avoid orphaning the system).
+    - You cannot delete the env-managed super admin (set by ADMIN_EMAIL); it is
+      re-seeded from the environment anyway. Every other account, including a
+      leftover super admin from a previous ADMIN_EMAIL, can be removed.
     The deleted user's audit-log entries and setting changes are kept — those
     foreign keys are ON DELETE SET NULL, so the history survives, just shown as
     an unnamed user.
@@ -1361,15 +1363,16 @@ async def api_delete_user(
             detail="You can't delete your own account while signed in.",
         )
 
-    if target.role == "super_admin":
-        remaining = await crud.count_active_super_admins(db)
-        # If this target is the only active super admin, block the delete.
-        if remaining <= 1:
-            raise HTTPException(
-                status_code=400,
-                detail="Can't delete the last super admin. Promote another "
-                "account to super admin first.",
-            )
+    # Only the env-managed super admin is protected. Any other account —
+    # including a leftover super admin from a previous ADMIN_EMAIL — can be
+    # removed by a super admin.
+    if target.is_env_account:
+        raise HTTPException(
+            status_code=400,
+            detail="The super admin account is set by ADMIN_EMAIL in your "
+            "environment and can't be deleted here. Change ADMIN_EMAIL to move "
+            "it to a different account.",
+        )
 
     deleted_email = target.email
     await crud.delete_user(db, user_id)

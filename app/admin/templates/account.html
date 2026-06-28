@@ -86,11 +86,12 @@
       </td>
       <td>{{ "Yes" if item.is_active else "No" }}</td>
       <td class="actions">
-        {% if item.id == user.id %}
+        {% if item.is_env_account %}
+          <span class="text-muted" title="The permanent super admin, set by ADMIN_EMAIL in your environment">Env account</span>
+        {% elif item.id == user.id %}
           <span class="text-muted" title="This is you">You</span>
-        {% elif item.role == 'super_admin' %}
-          <span class="text-muted" title="Managed via environment variables">Env account</span>
         {% else %}
+          {% if item.role != 'super_admin' %}
           <button type="button" class="btn btn-secondary btn-sm edit-btn"
             data-id="{{ item.id }}"
             data-email="{{ item.email }}"
@@ -98,6 +99,7 @@
             data-role="{{ item.role }}"
             data-scopes="{{ item.effective_scopes|join(',') }}"
             data-active="{{ 'true' if item.is_active else 'false' }}">✏️ Edit</button>
+          {% endif %}
           <button type="button" class="btn btn-danger btn-sm"
             onclick="withBtnLoading(this, () => deleteUser('{{ item.id }}', '{{ item.email|e }}'), 'Deleting\u2026')">🗑️</button>
         {% endif %}
