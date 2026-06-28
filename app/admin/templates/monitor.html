@@ -221,7 +221,20 @@
     }
   }
 
-  refresh();
-  setInterval(refresh, 4000);
+  // Poll every 4s, but only while the tab is visible. A backgrounded monitor
+  // tab otherwise hammers the DB (stats query every 4s) forever for nothing.
+  let pollTimer = null;
+  function startPolling() {
+    if (pollTimer) return;
+    refresh();
+    pollTimer = setInterval(refresh, 4000);
+  }
+  function stopPolling() {
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  }
+  document.addEventListener('visibilitychange', () => {
+    document.hidden ? stopPolling() : startPolling();
+  });
+  startPolling();
 </script>
 {% endblock %}

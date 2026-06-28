@@ -195,10 +195,17 @@
       th, td { padding: 9px 10px; }
       .user-chip .who { display: none; }
     }
+    /* Top navigation progress bar — gives instant feedback the moment a
+       link is clicked, so multi-page navigation never feels frozen. */
+    #navbar { position: fixed; top: 0; left: 0; height: 3px; width: 0; z-index: 10000;
+      background: linear-gradient(90deg,#3b82f6,#6366f1); box-shadow: 0 0 8px rgba(59,130,246,.6);
+      opacity: 0; transition: width .2s ease, opacity .3s ease; pointer-events: none; }
+    #navbar.go { opacity: 1; }
   </style>
   {% block head %}{% endblock %}
 </head>
 <body>
+  <div id="navbar"></div>
   <div class="shell">
     <div class="scrim" id="scrim" onclick="toggleNav(false)"></div>
     <aside class="sidebar" id="sidebar">
@@ -327,6 +334,60 @@
       try { return await fn(event); }
       finally { setBtnLoading(btn, false); }
     }
+
+    // ── Instant navigation: hover-prefetch + top progress bar ─────────────
+    // Speculatively prefetch internal admin pages on hover/touch so the HTML
+    // (and a warm DB connection) is ready before the click lands, then show a
+    // progress bar immediately on navigation for snappy perceived performance.
+    (function () {
+      const prefetched = new Set();
+      function isInternalNav(a) {
+        if (!a || !a.href) return false;
+        if (a.target === '_blank' || a.hasAttribute('download')) return false;
+        if (a.getAttribute('href').startsWith('#')) return false;
+        if (a.dataset.noPrefetch !== undefined) return false;
+        try {
+          const u = new URL(a.href, location.href);
+          return u.origin === location.origin && u.pathname.startsWith('/admin/') && u.pathname !== location.pathname;
+        } catch (_) { return false; }
+      }
+      function prefetch(a) {
+        if (!isInternalNav(a) || prefetched.has(a.href)) return;
+        prefetched.add(a.href);
+        const link = document.createElement('link');
+        link.rel = 'prefetch';
+        link.href = a.href;
+        link.as = 'document';
+        document.head.appendChild(link);
+      }
+      // Warm on intent (hover / touch start), capped to avoid bursts.
+      document.addEventListener('pointerenter', (e) => {
+        const a = e.target.closest && e.target.closest('a');
+        if (a) prefetch(a);
+      }, { capture: true, passive: true });
+      document.addEventListener('touchstart', (e) => {
+        const a = e.target.closest && e.target.closest('a');
+        if (a) prefetch(a);
+      }, { capture: true, passive: true });
+
+      // Progress bar on actual navigation.
+      const bar = document.getElementById('navbar');
+      let timer = null;
+      function startBar() {
+        if (!bar) return;
+        bar.classList.add('go');
+        bar.style.width = '18%';
+        clearInterval(timer);
+        let w = 18;
+        timer = setInterval(() => { w = Math.min(w + (90 - w) * 0.18, 90); bar.style.width = w + '%'; }, 240);
+      }
+      document.addEventListener('click', (e) => {
+        if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+        const a = e.target.closest && e.target.closest('a');
+        if (isInternalNav(a)) startBar();
+      }, true);
+      window.addEventListener('pageshow', () => { if (bar) { clearInterval(timer); bar.style.width = '0'; bar.classList.remove('go'); } });
+    })();
   </script>
   {% block scripts %}{% endblock %}
 </body>

@@ -645,18 +645,23 @@ async def list_audit_logs(
     date_to: datetime | None = None,
 ) -> tuple[list[AuditLog], int]:
     """List audit logs with filters and pagination."""
-    query = select(AuditLog)
+    filters = []
     if admin_user_id:
-        query = query.where(AuditLog.admin_user_id == admin_user_id)
+        filters.append(AuditLog.admin_user_id == admin_user_id)
     if action:
-        query = query.where(AuditLog.action.ilike(f"%{action}%"))
+        filters.append(AuditLog.action.ilike(f"%{action}%"))
     if date_from:
-        query = query.where(AuditLog.created_at >= date_from)
+        filters.append(AuditLog.created_at >= date_from)
     if date_to:
-        query = query.where(AuditLog.created_at <= date_to)
+        filters.append(AuditLog.created_at <= date_to)
 
-    # Get total count - OPTIMIZED: direct count without subquery
-    count_result = await db.execute(select(func.count(AuditLog.id)))
+    query = select(AuditLog)
+    count_query = select(func.count(AuditLog.id))
+    if filters:
+        query = query.where(*filters)
+        count_query = count_query.where(*filters)
+
+    count_result = await db.execute(count_query)
     total = count_result.scalar() or 0
 
     query = (
