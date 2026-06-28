@@ -636,14 +636,13 @@ async def get_email_settings(
     return result
 
 
-@router.put("/email")
-async def update_email_settings(
+async def _persist_email_settings(
+    db: AsyncSession,
     payload: EmailSettingsUpdate,
+    user: AdminUser,
     request: Request,
-    db: AsyncSession = Depends(get_db),
-    user: AdminUser = Depends(require_scope("settings", edit=True)),
-):
-    """Update email notification settings."""
+) -> dict[str, str | bool]:
+    """Shared save path for PUT and POST email settings."""
     updates = payload.model_dump(exclude_none=True)
     for key, value in updates.items():
         await crud.set_setting(db, key, str(value), updated_by=user.id)
@@ -656,6 +655,18 @@ async def update_email_settings(
         new_value=updates,
         ip_address=request.client.host if request.client else None,
     )
+    return updates
+
+
+@router.put("/email")
+async def update_email_settings(
+    payload: EmailSettingsUpdate,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    user: AdminUser = Depends(require_scope("settings", edit=True)),
+):
+    """Update email notification settings."""
+    updates = await _persist_email_settings(db, payload, user, request)
     return {"success": True, "updated": list(updates.keys())}
 
 
@@ -709,36 +720,13 @@ async def send_test_email(
 
 @router.post("/email")
 async def post_email_settings(
-    payload: dict,
+    payload: EmailSettingsUpdate,
     request: Request,
     db: AsyncSession = Depends(get_db),
     user: AdminUser = Depends(require_scope("settings", edit=True)),
 ):
-    """POST alias for updating email configuration (for HTML forms)."""
-    bool_fields = [
-        "email_notifications_enabled",
-        "email_qualified_only",
-        "email_include_transcript",
-    ]
-    updates = {}
-
-    for key, value in payload.items():
-        if key in bool_fields:
-            updates[key] = str(value).lower() in ("true", "1", "yes")
-        else:
-            updates[key] = str(value) if value else ""
-
-    for key, value in updates.items():
-        await crud.set_setting(db, key, str(value), updated_by=user.id)
-
-    await crud.create_audit_log(
-        db,
-        action="updated_email_settings",
-        admin_user_id=user.id,
-        entity_type="setting",
-        new_value=updates,
-        ip_address=request.client.host if request.client else None,
-    )
+    """POST alias for updating email configuration (used by the admin HTML form)."""
+    updates = await _persist_email_settings(db, payload, user, request)
     return {"success": True, "updated": list(updates.keys())}
 
 

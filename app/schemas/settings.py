@@ -2,7 +2,9 @@
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, EmailStr, Field, TypeAdapter, field_validator
+
+_email_adapter = TypeAdapter(EmailStr)
 
 
 class LLMProviderSwitch(BaseModel):
@@ -101,7 +103,7 @@ class FaqsUpdateRequest(BaseModel):
 
 
 class EmailSettingsUpdate(BaseModel):
-    landlord_email: str | None = None
+    landlord_email: EmailStr | None = None
     email_from_name: str | None = None
     email_from_address: str | None = None
     email_subject_template: str | None = None
@@ -111,6 +113,48 @@ class EmailSettingsUpdate(BaseModel):
     email_notifications_enabled: bool | None = None
     email_qualified_only: bool | None = None
     email_include_transcript: bool | None = None
+
+    @field_validator("landlord_email", mode="before")
+    @classmethod
+    def strip_landlord_email(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                return None
+        return value
+
+    @field_validator("email_from_address", mode="before")
+    @classmethod
+    def normalize_from_address(cls, value: Any) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return value.strip()  # "" clears the admin override (falls back to env)
+        return value
+
+    @field_validator("email_from_address")
+    @classmethod
+    def validate_from_address(cls, value: str | None) -> str | None:
+        if not value:
+            return ""
+        _email_adapter.validate_python(value)
+        return value
+
+    @field_validator(
+        "email_from_name",
+        "email_subject_template",
+        "email_body_template",
+        "cc_emails",
+        "bcc_emails",
+        mode="before",
+    )
+    @classmethod
+    def strip_optional_text(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        return value.strip() if isinstance(value, str) else value
 
 
 class GeneralSettingsUpdate(BaseModel):
