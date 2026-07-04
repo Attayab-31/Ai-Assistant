@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import logging
 import re
+import time
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -555,8 +556,6 @@ def generate_stream_token(call_id: str, secret: str) -> str:
     secret. It is appended to the stream URL we hand to Telnyx so that only a
     connection initiated by us (with this exact URL) can drive the call's audio.
     """
-    import time
-
     ts = str(int(time.time()))
     msg = f"{call_id}:{ts}".encode()
     sig = hmac.new(secret.encode(), msg, hashlib.sha256).hexdigest()
@@ -571,8 +570,6 @@ def verify_stream_token(
     Returns False if malformed, expired (older than ``max_age`` seconds), or the
     signature does not match. Uses a constant-time comparison.
     """
-    import time
-
     if not token or "." not in token:
         return False
     ts_str, _, sig = token.partition(".")

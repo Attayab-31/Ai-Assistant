@@ -1,11 +1,5 @@
-"""
-app/utils/dependencies.py — FastAPI dependency functions for auth & RBAC.
+"""FastAPI dependency functions for auth and RBAC."""
 
-Provides get_current_user() and role-checking dependencies used to
-protect all admin routes.
-"""
-
-import logging
 import time
 import uuid
 
@@ -18,7 +12,6 @@ from app.models.user import AdminUser
 from app.utils.security import decode_access_token
 from config import settings
 
-logger = logging.getLogger(__name__)
 ACCESS_TOKEN_COOKIE_NAME = "access_token"
 
 # Short-lived cache of authenticated users so back-to-back admin requests don't
