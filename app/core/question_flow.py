@@ -507,7 +507,6 @@ def is_question_answered_for_def(
         return False
 
     answer_type = str(q.get("answer_type") or "text")
-    fields = list(q.get("extract_fields") or [])
     primary = _primary_field(q)
 
     if answer_type == "yes_no":

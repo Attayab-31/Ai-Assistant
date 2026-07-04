@@ -379,7 +379,6 @@ def test_scoring_skips_inactive_questions():
 def test_skipped_conditional_is_not_counted_answered():
     from app.core.question_flow import (
         build_flow_rows,
-        count_answered_questions,
         is_question_answered_for_def,
     )
 

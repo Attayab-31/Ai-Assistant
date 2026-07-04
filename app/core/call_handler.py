@@ -66,7 +66,6 @@ from app.core.question_flow import (
     next_unanswered_state,
     normalize_questions,
     primary_name_field,
-    questions_index,
     readback_prompt_for_state,
     repair_prompt_for_state,
     screening_complete,
@@ -2563,7 +2562,13 @@ async def _finalize_call_impl(session: ConversationSession, db) -> dict:
             reasons.append(review_reason)
 
     # Update call in DB
-    from app.db.crud import create_call, create_tenant, get_call_by_call_id, update_call
+    from app.db.crud import (
+        create_call,
+        create_tenant,
+        get_all_settings,
+        get_call_by_call_id,
+        update_call,
+    )
 
     call = await get_call_by_call_id(db, session.call_id)
     db_persisted = False
@@ -2708,6 +2713,8 @@ async def _finalize_call_impl(session: ConversationSession, db) -> dict:
             )
 
         if send_side_effects:
+            all_settings = await get_all_settings(db)
+
             # Send email notification (background task)
             email_notifications = all_settings.get(
                 "email_notifications_enabled", "true"

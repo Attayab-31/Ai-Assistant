@@ -1048,25 +1048,29 @@ def _render_question_slots(
         any_filled = any(
             _slot_value_present(data, f, answer_type=answer_type) for f in required
         )
-        for field in required:
-            if _slot_value_present(data, field, answer_type=answer_type):
-                filled.append(f'{labels.get(field, field)}="{data.get(field)}"')
+        for field_key in required:
+            if _slot_value_present(data, field_key, answer_type=answer_type):
+                filled.append(
+                    f'{labels.get(field_key, field_key)}="{data.get(field_key)}"'
+                )
         if not any_filled:
             missing.append(
                 " or ".join(labels.get(f, f) for f in required)
                 + " (at least one with a clear value)"
             )
     else:
-        for field in required:
-            label = labels.get(field, field)
-            if _slot_value_present(data, field, answer_type=answer_type):
-                filled.append(f'{label}="{data.get(field)}"')
+        for field_key in required:
+            label = labels.get(field_key, field_key)
+            if _slot_value_present(data, field_key, answer_type=answer_type):
+                filled.append(f'{label}="{data.get(field_key)}"')
             else:
                 missing.append(label)
 
-    for field in optional:
-        if _slot_value_present(data, field, answer_type=answer_type):
-            filled.append(f'{labels.get(field, field)}="{data.get(field)}" (optional)')
+    for field_key in optional:
+        if _slot_value_present(data, field_key, answer_type=answer_type):
+            filled.append(
+                f'{labels.get(field_key, field_key)}="{data.get(field_key)}" (optional)'
+            )
 
     lines = []
     if filled:

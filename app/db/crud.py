@@ -8,7 +8,7 @@ records across all models. Used by API routes and background tasks.
 import json
 import logging
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import and_, delete, desc, func, or_, select, update
