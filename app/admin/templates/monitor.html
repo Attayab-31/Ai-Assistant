@@ -1,12 +1,12 @@
 {% extends "base.html" %}
-{% block title %}Live Monitor{% endblock %}
-{% block page_title %}Live Monitor{% endblock %}
+{% block title %}Live monitor{% endblock %}
+{% block page_title %}Live monitor{% endblock %}
 {% block page_sub %}<div class="sub">Watch live calls and check that the system is healthy.</div>{% endblock %}
 
 {% block content %}
 <div class="toolbar" style="justify-content: space-between;">
   <span class="pill" id="liveStatus"><span class="dot live"></span> Live · refreshing every 4s</span>
-  <span class="muted" id="lastUpdated">Loading…</span>
+  <span class="muted" id="lastUpdated"><span class="loading-placeholder" aria-hidden="true"></span></span>
 </div>
 
 <!-- Live-only stat (historical KPIs live on Home + Analytics) -->
@@ -32,8 +32,10 @@
   <!-- System health -->
   <div class="card">
     <div class="card-head"><h2>System health</h2></div>
-    <div id="health" class="stack" style="gap: 10px;">
-      <div class="muted">Loading…</div>
+    <div id="health" class="stack" style="gap: 10px;" aria-busy="true" aria-label="Loading system health">
+      <span class="loading-placeholder" style="width:100%;"></span>
+      <span class="loading-placeholder" style="width:85%;"></span>
+      <span class="loading-placeholder" style="width:70%;"></span>
     </div>
   </div>
 </section>
@@ -52,8 +54,8 @@
     <span class="muted">Last 30 days · <a href="/admin/analytics">full analytics</a></span>
   </div>
   <p class="muted" style="margin-top: 0;">Time from when the caller stops speaking to when the assistant starts replying. For day-to-day monitoring, focus on live calls above; open this when troubleshooting slow replies.</p>
-  <div id="latencyRollup">
-    <div class="muted">Loading…</div>
+  <div id="latencyRollup" aria-busy="true" aria-label="Loading latency data">
+    <span class="loading-placeholder" style="width:100%;"></span>
   </div>
 </section>
 
@@ -64,8 +66,8 @@
     <span class="muted">Last 30 days</span>
   </div>
   <p class="muted" style="margin-top: 0;">These numbers come from your call records. See <a href="/admin/analytics">Analytics</a> for trends over time.</p>
-  <div class="grid" id="usageRollup" style="grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));">
-    <div class="muted">Loading…</div>
+  <div class="grid" id="usageRollup" style="grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));" aria-busy="true" aria-label="Loading usage summary">
+    <span class="loading-placeholder" style="width:100%;"></span>
   </div>
 </section>
 
@@ -79,8 +81,8 @@
     Groq, OpenAI, and Google often do not support this here — check their dashboards for spend.
     A green status dot means the engine is connected and working, even when no balance is shown.
   </div>
-  <div class="grid" id="balances" style="grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));">
-    <div class="muted">Loading…</div>
+  <div class="grid" id="balances" style="grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));" aria-busy="true" aria-label="Loading provider balances">
+    <span class="loading-placeholder" style="width:100%;"></span>
   </div>
 </section>
 
@@ -323,6 +325,11 @@
       renderHealth(data.health || {});
       renderUsage(data.usage || {});
       renderLatency((data.usage && data.usage.usage) || {});
+
+      ['health', 'latencyRollup', 'usageRollup', 'balances'].forEach((id) => {
+        const el = $(id);
+        if (el) el.removeAttribute('aria-busy');
+      });
 
       $('lastUpdated').textContent = 'Updated ' + new Date().toLocaleTimeString();
     } catch (err) {

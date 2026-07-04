@@ -4,7 +4,7 @@ import hashlib
 import hmac
 import logging
 import re
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -490,6 +490,46 @@ def pagination_url(path: str, page: int, params: dict[str, Any] | None = None) -
             q[str(key)] = text
     q["page"] = str(max(1, page))
     return f"{path}?{urlencode(q)}"
+
+
+def list_filter_url(
+    path: str,
+    filters: dict[str, Any] | None = None,
+    **overrides: Any,
+) -> str:
+    """Build a list-page filter URL (resets to page 1). Pass overrides as kwargs."""
+    q: dict[str, str] = {}
+    for key, value in (filters or {}).items():
+        if key == "page" or value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            q[str(key)] = text
+    for key, value in overrides.items():
+        if value is None or (isinstance(value, str) and not str(value).strip()):
+            q.pop(str(key), None)
+            continue
+        q[str(key)] = str(value)
+    q["page"] = "1"
+    return f"{path}?{urlencode(q)}"
+
+
+def date_range_from_days(days: int | None) -> tuple[datetime | None, datetime | None]:
+    """Return UTC (date_from, date_to) for a rolling window; all time if days unset."""
+    if not days or days <= 0:
+        return None, None
+    now = datetime.now(UTC)
+    return now - timedelta(days=days), None
+
+
+def tenant_display_name(tenant: Any) -> str:
+    """Primary label for an applicant in lists and breadcrumbs."""
+    if not tenant:
+        return "—"
+    name = (getattr(tenant, "full_name", None) or "").strip()
+    if name:
+        return name
+    return format_phone_display(getattr(tenant, "phone_number", None))
 
 
 def status_badge_color(status: str | None) -> str:

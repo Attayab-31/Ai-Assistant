@@ -5,23 +5,16 @@
 {% block page_sub %}<div class="sub">Trends and breakdowns for screening calls over the selected period.</div>{% endblock %}
 {% block head %}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-<style>
-  .chart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px; margin-top: 14px; }
-  .chart-card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; }
-  .chart-card h3 { margin: 0 0 12px; font-size: 14px; }
-  .chart-wrap { position: relative; height: 260px; }
-  .range-bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-  .range-bar a { padding: 6px 12px; border-radius: 6px; border: 1px solid var(--line); color: var(--ink); }
-  .range-bar a.active { background: var(--accent); color: white; border-color: var(--accent); }
-</style>
 {% endblock %}
 {% block content %}
-<div class="range-bar" style="margin-bottom: 14px;">
-  <span class="muted">Range:</span>
-  {% for d in [7, 30, 90] %}
-    <a href="/admin/analytics?days={{ d }}" class="{{ 'active' if days == d else '' }}">{{ d }} days</a>
-  {% endfor %}
-  <a href="/admin/api/analytics/export?days={{ days }}" class="btn btn-secondary btn-sm" style="margin-left:auto;">Export CSV</a>
+<div class="filter-toolbar toolbar" style="margin-bottom: 14px;">
+  <div class="filter-pills" role="group" aria-label="Date range">
+    <span class="muted" style="align-self:center;">Range:</span>
+    {% for d in [7, 30, 90] %}
+      <a href="/admin/analytics?days={{ d }}" class="{{ 'active' if days == d else '' }}">{{ d }} days</a>
+    {% endfor %}
+  </div>
+  <a href="/admin/api/analytics/export?days={{ days }}" class="btn btn-secondary btn-sm">Export CSV</a>
 </div>
 
 <div class="grid stats">
@@ -32,7 +25,7 @@
 </div>
 
 <div class="chart-grid">
-  <div class="chart-card" style="grid-column: 1 / -1;">
+  <div class="chart-card span-full">
     <h3>Calls per day (last {{ days }} days)</h3>
     <div class="chart-wrap"><canvas id="callsByDay"></canvas></div>
   </div>

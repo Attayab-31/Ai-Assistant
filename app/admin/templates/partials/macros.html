@@ -18,13 +18,34 @@
 {% endmacro %}
 
 {# Previous / next controls for filtered list pages #}
-{% macro list_pagination(path, page, total_pages, filters={}, total=0, noun='items') %}
+{% macro list_pagination(path, page, total_pages, filters={}, total=0, noun='items', show_pages=true) %}
 {% if total_pages > 1 %}
 <nav class="pagination" aria-label="Page navigation">
   {% if page > 1 %}
   <a class="btn btn-secondary btn-sm" href="{{ path|pagination_url(page - 1, filters) }}">Previous</a>
   {% else %}
   <span class="btn btn-secondary btn-sm" aria-disabled="true" style="opacity:.45;pointer-events:none;">Previous</span>
+  {% endif %}
+  {% if show_pages and total_pages <= 9 %}
+  <div class="pagination-pages" aria-label="Pages">
+    {% for p in range(1, total_pages + 1) %}
+      {% if p == page %}
+      <span class="current" aria-current="page">{{ p }}</span>
+      {% else %}
+      <a href="{{ path|pagination_url(p, filters) }}">{{ p }}</a>
+      {% endif %}
+    {% endfor %}
+  </div>
+  {% elif show_pages and total_pages > 9 %}
+  <div class="pagination-pages" aria-label="Pages">
+    {% if page > 1 %}<a href="{{ path|pagination_url(1, filters) }}">1</a>{% else %}<span class="current" aria-current="page">1</span>{% endif %}
+    {% if page > 3 %}<span aria-hidden="true">…</span>{% endif %}
+    {% for p in range([page - 1, 2]|max, [page + 1, total_pages - 1]|min + 1) %}
+      {% if p == page %}<span class="current" aria-current="page">{{ p }}</span>{% else %}<a href="{{ path|pagination_url(p, filters) }}">{{ p }}</a>{% endif %}
+    {% endfor %}
+    {% if page < total_pages - 2 %}<span aria-hidden="true">…</span>{% endif %}
+    {% if page < total_pages %}<a href="{{ path|pagination_url(total_pages, filters) }}">{{ total_pages }}</a>{% else %}<span class="current" aria-current="page">{{ total_pages }}</span>{% endif %}
+  </div>
   {% endif %}
   <span class="pagination-meta muted">Page {{ page }} of {{ total_pages }} · {{ total }} {{ noun }}</span>
   {% if page < total_pages %}
@@ -36,4 +57,43 @@
 {% else %}
 <p class="muted pagination-meta">Page {{ page }} of {{ total_pages }} · {{ total }} {{ noun }}</p>
 {% endif %}
+{% endmacro %}
+
+{# Date-range pills for list pages (7 / 30 / 90 days + all time) #}
+{% macro list_date_pills(path, filters) %}
+<nav class="filter-pills list-date-pills" aria-label="Date range" style="margin-bottom: 12px;">
+  <span class="muted" style="align-self:center;">When:</span>
+  <a href="{{ list_filter_url(path, filters) }}" class="{{ 'active' if not filters.days else '' }}">All time</a>
+  {% for d in [7, 30, 90] %}
+  <a href="{{ list_filter_url(path, filters, days=d) }}" class="{{ 'active' if filters.days == d else '' }}">{{ d }} days</a>
+  {% endfor %}
+</nav>
+{% endmacro %}
+
+{# Prev/next links on applicant review queue #}
+{% macro review_queue_nav(prev_id, next_id, queue='unreviewed') %}
+{% if prev_id or next_id %}
+<nav class="review-queue-nav" aria-label="Review queue navigation">
+  {% if prev_id %}
+  <a class="btn btn-secondary btn-sm" href="/admin/tenants/{{ prev_id }}">← Previous</a>
+  {% endif %}
+  {% if next_id %}
+  <a class="btn btn-primary btn-sm" href="/admin/tenants/{{ next_id }}">Next unreviewed →</a>
+  {% endif %}
+</nav>
+{% endif %}
+{% endmacro %}
+
+{# Breadcrumb trail for detail pages #}
+{% macro breadcrumbs(items) %}
+<nav class="breadcrumbs" aria-label="Breadcrumb">
+  {% for item in items %}
+    {% if not loop.last %}
+    <a href="{{ item.href }}">{{ item.label }}</a>
+    <span class="breadcrumb-sep" aria-hidden="true">/</span>
+    {% else %}
+    <span aria-current="page">{{ item.label }}</span>
+    {% endif %}
+  {% endfor %}
+</nav>
 {% endmacro %}

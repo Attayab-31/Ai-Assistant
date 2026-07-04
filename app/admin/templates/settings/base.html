@@ -18,6 +18,8 @@
   }
   .settings-nav a:hover { color: var(--ink); text-decoration: none; }
   .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
+  .form-grid label { display: block; font-weight: 600; font-size: 13px; margin-bottom: 0; }
+  .form-grid input, .form-grid select, .form-grid textarea { max-width: 100%; margin-top: 4px; }
   .form-section {
     background: var(--panel);
     padding: 20px;
@@ -164,12 +166,6 @@
   <a class="{{ 'active' if section == 'faqs' else '' }}" href="/admin/settings/faqs">Caller FAQs</a>
   <a class="{{ 'active' if section == 'email' else '' }}" href="/admin/settings/email">Email</a>
 </div>
-
-{% if settings_readonly %}
-<div class="callout" style="margin-bottom: 16px;" role="status">
-  Settings are <strong>read-only</strong> for your account. You can review configuration but cannot save changes.
-</div>
-{% endif %}
 
 {% block settings_content %}{% endblock %}
 

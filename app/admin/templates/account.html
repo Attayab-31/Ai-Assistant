@@ -1,25 +1,8 @@
 {% extends "base.html" %}
-{% block title %}Team Accounts{% endblock %}
-{% block page_title %}Team Accounts{% endblock %}
+{% block title %}Team accounts{% endblock %}
+{% block page_title %}Team accounts{% endblock %}
 {% block page_sub %}<div class="sub">Create accounts and control who can view or change each area of the panel.</div>{% endblock %}
 {% block content %}
-<style>
-  .text-muted { color: var(--muted); font-size: 13px; }
-  .role-badge { display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px; font-weight:700; background:var(--line-soft); color:var(--ink-soft); }
-  .role-badge.super_admin { background:#fef3c7; color:#92400e; }
-  .role-badge.admin { background:#dbeafe; color:#1e40af; }
-  .role-badge.staff { background:#d1fae5; color:#065f46; }
-  .role-badge.viewer { background:#f3f4f6; color:#374151; }
-  .scope-tag { display:inline-block; font-size:11px; padding:2px 7px; border-radius:4px; background:var(--accent-soft); color:#1e40af; margin:2px 2px 0 0; }
-  .scope-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(180px,1fr)); gap:8px; margin-top:8px; }
-  .scope-grid label { display:flex; align-items:center; gap:8px; font-weight:500; cursor:pointer; padding:8px 10px; border:1px solid var(--line); border-radius:var(--radius-sm); background:#fff; }
-  .scope-grid label:has(input:checked) { border-color:var(--accent); background:var(--accent-soft); }
-  .scope-grid input { width:auto; max-width:none; margin:0; }
-  .form-grid { display:grid; gap:12px; max-width:520px; }
-  .form-grid input, .form-grid select { max-width:100%; }
-  .actions { display:flex; gap:6px; justify-content:flex-end; flex-wrap:wrap; }
-  .inactive-row { opacity:.55; }
-</style>
 
 <div class="callout" style="margin-bottom:16px;">
   You are the <strong>super admin</strong> for this installation.
@@ -230,10 +213,15 @@
   }
 
   async function deleteUser(userId, email) {
-    if (!confirm('Delete the account for ' + email + '?\nTheir past activity stays in the Activity Log.')) return;
+    const ok = await confirmAction({
+      title: 'Delete this account?',
+      message: 'Delete the account for ' + email + '? Their past activity stays in the activity log.',
+      confirmLabel: 'Delete account',
+      danger: true,
+    });
+    if (!ok) return;
     try {
-      const r = await fetch('/admin/api/users/' + userId, { method: 'DELETE' });
-      if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || r.statusText); }
+      await apiFetch('/admin/api/users/' + userId, { method: 'DELETE' });
       showMessage('Account deleted: ' + email);
       setTimeout(() => location.reload(), 900);
     } catch (e) { showMessage(e.message, true); }

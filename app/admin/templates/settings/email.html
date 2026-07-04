@@ -1,6 +1,6 @@
 {% extends "settings/base.html" %}
-{% block title %}Email Settings{% endblock %}
-{% block page_title %}Email Settings{% endblock %}
+{% block title %}Email settings{% endblock %}
+{% block page_title %}Email settings{% endblock %}
 {% block settings_page_sub %}<div class="sub">Where screening results are emailed after each call, and what the message says.</div>{% endblock %}
 {% block settings_content %}
 
@@ -95,7 +95,7 @@
     <button type="submit" class="btn btn-primary settings-save">Save email settings</button>
     <button type="button" onclick="withBtnLoading(this, testEmail, 'Sending\u2026')" class="btn btn-secondary settings-edit-only">Send test email</button>
     <button type="button" onclick="withBtnLoading(this, resetEmailDefaults, 'Resetting\u2026')" class="btn btn-secondary settings-edit-only">Reset templates</button>
-    <button type="button" onclick="location.reload()" class="btn btn-secondary">Undo changes</button>
+    <button type="button" onclick="location.reload()" class="btn btn-secondary">Discard changes</button>
   </div>
 </form>
 

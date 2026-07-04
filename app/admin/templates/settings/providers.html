@@ -71,15 +71,6 @@
     Only switch an engine if support asked you to, or if one stops working.
   </div>
 
-  <!-- Check everything works -->
-  <div class="form-section">
-    <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;">
-      <h3 style="margin: 0;">Is everything working?</h3>
-      <button type="button" class="btn btn-primary" onclick="withBtnLoading(this, checkHealth, 'Checking\u2026')">Run health check</button>
-    </div>
-    <div id="healthOutput" style="margin-top: 14px; display: none;"></div>
-  </div>
-
   <!-- AI Brain (LLM) -->
   <div class="form-section">
     <div class="engine-name">AI assistant <span class="dot ok" title="active"></span></div>
@@ -439,9 +430,8 @@
   }
 
   async function checkHealth() {
-    const out = document.getElementById('healthOutput');
     const outSimple = document.getElementById('healthOutputSimple');
-    const targets = [out, outSimple].filter(Boolean);
+    const targets = [outSimple].filter(Boolean);
     targets.forEach((el) => { el.style.display = 'block'; el.innerHTML = '<span class="text-muted">Checking…</span>'; });
     try {
       const r = await fetch('/api/settings/health');

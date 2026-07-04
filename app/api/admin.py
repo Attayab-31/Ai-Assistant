@@ -14,7 +14,7 @@ import csv
 import io
 import logging
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -48,9 +48,12 @@ from app.utils.helpers import (
     glossary_tip,
     localtime,
     pagination_url,
+    list_filter_url,
     score_color,
     status_badge_color,
+    tenant_display_name,
     time_ago,
+    date_range_from_days,
 )
 
 logger = logging.getLogger(__name__)
@@ -77,6 +80,47 @@ templates.env.filters["friendly_provider"] = friendly_provider_name
 templates.env.filters["friendly_audit_action"] = friendly_audit_action
 templates.env.filters["friendly_audit_entity"] = friendly_audit_entity
 templates.env.filters["pagination_url"] = pagination_url
+templates.env.filters["list_filter_url"] = list_filter_url
+templates.env.globals["list_filter_url"] = list_filter_url
+templates.env.filters["tenant_display"] = tenant_display_name
+
+# Contextual in-app help links (href, label)
+PAGE_HELP: dict[str, tuple[str, str]] = {
+    "dashboard": ("/admin/settings/questions/guide", "How screening works"),
+    "calls": ("/admin/settings/questions/guide", "How screening works"),
+    "tenants": ("/admin/settings/questions/guide", "How screening works"),
+    "settings": ("/admin/settings/questions/guide", "Questions guide"),
+    "analytics": ("/admin/analytics", "Analytics"),
+    "monitor": ("/admin/monitor", "Live monitor"),
+    "audit_log": ("/admin/audit-log", "Activity log"),
+    "account": ("/admin/account", "Team accounts"),
+}
+
+
+async def _render_admin_page(
+    db: AsyncSession,
+    request: Request,
+    template_name: str,
+    user: AdminUser | None,
+    **context,
+):
+    """Render an admin template with shared nav context."""
+    needs_review_count = 0
+    if user and user.can("tenants"):
+        needs_review_count = await crud.count_tenants_needing_review(db)
+    active = context.get("active_page")
+    help_href, help_label = PAGE_HELP.get(active or "", ("", ""))
+    return templates.TemplateResponse(
+        template_name,
+        {
+            "request": request,
+            "user": user,
+            "needs_review_count": needs_review_count,
+            "page_help_href": help_href,
+            "page_help_label": help_label,
+            **context,
+        },
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -172,24 +216,22 @@ async def dashboard_page(
             can_tenants=can_tenants,
         )
 
-    return templates.TemplateResponse(
+    return await _render_admin_page(
+        db,
+        request,
         "dashboard.html",
-        {
-            "request": request,
-            "user": user,
-            "stats": stats,
-            "recent_calls": recent_calls,
-            "active_count": active_count,
-            "needs_review_count": needs_review_count,
-            "analytics_preview": analytics_preview,
-            "onboarding": onboarding,
-            "can_calls": can_calls,
-            "can_monitor": can_monitor,
-            "can_tenants": can_tenants,
-            "can_analytics": can_analytics,
-            "can_settings": can_settings,
-            "active_page": "dashboard",
-        },
+        user,
+        stats=stats,
+        recent_calls=recent_calls,
+        active_count=active_count,
+        analytics_preview=analytics_preview,
+        onboarding=onboarding,
+        can_calls=can_calls,
+        can_monitor=can_monitor,
+        can_tenants=can_tenants,
+        can_analytics=can_analytics,
+        can_settings=can_settings,
+        active_page="dashboard",
     )
 
 
@@ -201,36 +243,43 @@ async def calls_list_page(
     status_filter: str | None = Query(None, alias="status"),
     qualification: str | None = None,
     phone: str | None = None,
+    q: str | None = None,
+    days: int | None = None,
 ):
     """Render the all calls list page."""
     user = await get_current_user_optional(request, db)
     if guard := _guard_page(user, "calls"):
         return guard
 
+    date_from, date_to = date_range_from_days(days)
+    search = (q or phone or "").strip() or None
     calls, total = await crud.list_calls(
         db,
         page=page,
         per_page=20,
         status=status_filter,
         qualification_status=qualification,
-        phone_search=phone,
+        text_search=search,
+        date_from=date_from,
+        date_to=date_to,
     )
 
-    return templates.TemplateResponse(
+    return await _render_admin_page(
+        db,
+        request,
         "calls/list.html",
-        {
-            "request": request,
-            "user": user,
-            "calls": calls,
-            "total": total,
-            "page": page,
-            "total_pages": max(1, (total + 19) // 20),
-            "active_page": "calls",
-            "filters": {
-                "status": status_filter,
-                "qualification": qualification,
-                "phone": phone,
-            },
+        user,
+        calls=calls,
+        total=total,
+        page=page,
+        total_pages=max(1, (total + 19) // 20),
+        active_page="calls",
+        filters={
+            "status": status_filter,
+            "qualification": qualification,
+            "phone": phone,
+            "q": q,
+            "days": days,
         },
     )
 
@@ -321,29 +370,39 @@ async def call_detail_page(
     turn_traces = error_log.get("turn_traces") or []
     trace_errors = error_log.get("errors") or []
 
-    return templates.TemplateResponse(
+    nav_prev_id = nav_next_id = None
+    if tenant:
+        queue_ids = await crud.list_tenant_ids_for_navigation(db, review_filter="unreviewed")
+        if tenant.id in queue_ids:
+            idx = queue_ids.index(tenant.id)
+            nav_prev_id = queue_ids[idx - 1] if idx > 0 else None
+            nav_next_id = queue_ids[idx + 1] if idx < len(queue_ids) - 1 else None
+
+    return await _render_admin_page(
+        db,
+        request,
         "calls/detail.html",
-        {
-            "request": request,
-            "user": user,
-            "call": call,
-            "tenant": tenant,
-            "score_breakdown": score_breakdown,
-            "active_question_count": active_question_count,
-            "custom_fields": custom_fields,
-            "field_labels": field_labels,
-            "flow_rows": flow_rows,
-            "flow_from_snapshot": questions_snapshot_from_tenant(tenant) is not None,
-            "using_legacy_question_config": tenant is not None
-            and questions_snapshot_from_tenant(tenant) is None,
-            "transcript_lines": parse_transcript_lines(call.full_transcript),
-            "turn_traces": turn_traces,
-            "trace_errors": trace_errors,
-            "summary_rows": build_applicant_summary_rows(tenant, snapshot)
-            if tenant
-            else [],
-            "active_page": "calls",
-        },
+        user,
+        call=call,
+        tenant=tenant,
+        score_breakdown=score_breakdown,
+        active_question_count=active_question_count,
+        custom_fields=custom_fields,
+        field_labels=field_labels,
+        flow_rows=flow_rows,
+        flow_from_snapshot=questions_snapshot_from_tenant(tenant) is not None,
+        using_legacy_question_config=tenant is not None
+        and questions_snapshot_from_tenant(tenant) is None,
+        transcript_lines=parse_transcript_lines(call.full_transcript),
+        turn_traces=turn_traces,
+        trace_errors=trace_errors,
+        summary_rows=build_applicant_summary_rows(tenant, snapshot)
+        if tenant
+        else [],
+        active_page="calls",
+        nav_prev_id=nav_prev_id,
+        nav_next_id=nav_next_id,
+        nav_queue="unreviewed",
     )
 
 
@@ -354,7 +413,9 @@ async def tenants_list_page(
     page: int = 1,
     qualification: str | None = None,
     phone: str | None = None,
+    q: str | None = None,
     review: str | None = None,
+    days: int | None = None,
 ):
     """Render the all tenants list page."""
     user = await get_current_user_optional(request, db)
@@ -362,29 +423,36 @@ async def tenants_list_page(
         return guard
 
     review_filter = review if review in ("unreviewed", "reviewed") else None
+    date_from, date_to = date_range_from_days(days)
+    search = (q or phone or "").strip() or None
 
     tenants, total = await crud.list_tenants(
         db,
         page=page,
         per_page=20,
         qualification_status=qualification,
-        phone_search=phone,
+        text_search=search,
         review_filter=review_filter,
+        date_from=date_from,
+        date_to=date_to,
     )
-    needs_review_count = await crud.count_tenants_needing_review(db)
 
-    return templates.TemplateResponse(
+    return await _render_admin_page(
+        db,
+        request,
         "tenants/list.html",
-        {
-            "request": request,
-            "user": user,
-            "tenants": tenants,
-            "total": total,
-            "page": page,
-            "total_pages": max(1, (total + 19) // 20),
-            "active_page": "tenants",
-            "needs_review_count": needs_review_count,
-            "filters": {"qualification": qualification, "phone": phone, "review": review_filter},
+        user,
+        tenants=tenants,
+        total=total,
+        page=page,
+        total_pages=max(1, (total + 19) // 20),
+        active_page="tenants",
+        filters={
+            "qualification": qualification,
+            "phone": phone,
+            "q": q,
+            "review": review_filter,
+            "days": days,
         },
     )
 
@@ -440,25 +508,34 @@ async def tenant_detail_page(
     if tenant.call_id:
         linked_call = await crud.get_call_by_uuid(db, tenant.call_id)
 
-    return templates.TemplateResponse(
+    nav_prev_id = nav_next_id = None
+    queue_ids = await crud.list_tenant_ids_for_navigation(db, review_filter="unreviewed")
+    if tenant.id in queue_ids:
+        idx = queue_ids.index(tenant.id)
+        nav_prev_id = queue_ids[idx - 1] if idx > 0 else None
+        nav_next_id = queue_ids[idx + 1] if idx < len(queue_ids) - 1 else None
+
+    return await _render_admin_page(
+        db,
+        request,
         "tenants/detail.html",
-        {
-            "request": request,
-            "user": user,
-            "tenant": tenant,
-            "linked_call": linked_call,
-            "active_question_count": active_question_count,
-            "history_calls": history_calls,
-            "custom_fields": custom_fields,
-            "field_labels": field_labels,
-            "flow_rows": flow_rows,
-            "flow_from_snapshot": has_snapshot,
-            "using_legacy_question_config": not has_snapshot,
-            "summary_rows": build_applicant_summary_rows(tenant, snapshot)
-            if snapshot
-            else [],
-            "active_page": "tenants",
-        },
+        user,
+        tenant=tenant,
+        linked_call=linked_call,
+        active_question_count=active_question_count,
+        history_calls=history_calls,
+        custom_fields=custom_fields,
+        field_labels=field_labels,
+        flow_rows=flow_rows,
+        flow_from_snapshot=has_snapshot,
+        using_legacy_question_config=not has_snapshot,
+        summary_rows=build_applicant_summary_rows(tenant, snapshot)
+        if snapshot
+        else [],
+        active_page="tenants",
+        nav_prev_id=nav_prev_id,
+        nav_next_id=nav_next_id,
+        nav_queue="unreviewed",
     )
 
 
@@ -485,16 +562,15 @@ async def analytics_page(
         "avg_qualified_score": analytics.get("avg_qualified_score", 0),
     }
 
-    return templates.TemplateResponse(
+    return await _render_admin_page(
+        db,
+        request,
         "analytics.html",
-        {
-            "request": request,
-            "user": user,
-            "analytics": analytics,
-            "range_stats": range_stats,
-            "days": days,
-            "active_page": "analytics",
-        },
+        user,
+        analytics=analytics,
+        range_stats=range_stats,
+        days=days,
+        active_page="analytics",
     )
 
 
@@ -508,13 +584,8 @@ async def monitor_page(
     if guard := _guard_page(user, "monitor"):
         return guard
 
-    return templates.TemplateResponse(
-        "monitor.html",
-        {
-            "request": request,
-            "user": user,
-            "active_page": "monitor",
-        },
+    return await _render_admin_page(
+        db, request, "monitor.html", user, active_page="monitor",
     )
 
 
@@ -534,20 +605,19 @@ async def audit_log_page(
     users = await crud.list_users(db)
     user_map = {str(u.id): u.email for u in users}
 
-    return templates.TemplateResponse(
+    return await _render_admin_page(
+        db,
+        request,
         "audit_log.html",
-        {
-            "request": request,
-            "user": user,
-            "logs": logs,
-            "user_map": user_map,
-            "total": total,
-            "page": page,
-            "total_pages": max(1, (total + 49) // 50),
-            "action_filter": action,
-            "action_choices": audit_action_choices(),
-            "active_page": "audit_log",
-        },
+        user,
+        logs=logs,
+        user_map=user_map,
+        total=total,
+        page=page,
+        total_pages=max(1, (total + 49) // 50),
+        action_filter=action,
+        action_choices=audit_action_choices(),
+        active_page="audit_log",
     )
 
 
@@ -580,17 +650,16 @@ async def settings_providers_page(request: Request, db: AsyncSession = Depends(g
         "deepgram": _key_set("deepgram", "deepgram_api_key"),
     }
 
-    return templates.TemplateResponse(
+    return await _render_admin_page(
+        db,
+        request,
         "settings/providers.html",
-        {
-            "request": request,
-            "user": user,
-            "settings": all_settings,
-            "provider_status": provider_status,
-            "provider_keys": provider_keys,
-            "active_page": "settings",
-            "section": "providers",
-        },
+        user,
+        settings=all_settings,
+        provider_status=provider_status,
+        provider_keys=provider_keys,
+        active_page="settings",
+        section="providers",
     )
 
 
@@ -612,22 +681,21 @@ async def settings_questions_page(request: Request, db: AsyncSession = Depends(g
     )
 
     normalized = normalize_questions(questions)
-    return templates.TemplateResponse(
+    return await _render_admin_page(
+        db,
+        request,
         "settings/questions.html",
-        {
-            "request": request,
-            "user": user,
-            "questions": normalized,
-            "flow_state_count": len(normalized),
-            "active_flow_count": sum(1 for q in normalized if q.get("active", True)),
-            "scoring_points_total": total_enabled_scoring_points(normalized),
-            "save_warnings": question_save_warnings(normalized),
-            "answer_types": sorted(ANSWER_TYPES),
-            "conditional_operators": sorted(CONDITIONAL_OPERATORS),
-            "scoring_rule_types": sorted(SCORING_RULE_TYPES),
-            "active_page": "settings",
-            "section": "questions",
-        },
+        user,
+        questions=normalized,
+        flow_state_count=len(normalized),
+        active_flow_count=sum(1 for q in normalized if q.get("active", True)),
+        scoring_points_total=total_enabled_scoring_points(normalized),
+        save_warnings=question_save_warnings(normalized),
+        answer_types=sorted(ANSWER_TYPES),
+        conditional_operators=sorted(CONDITIONAL_OPERATORS),
+        scoring_rule_types=sorted(SCORING_RULE_TYPES),
+        active_page="settings",
+        section="questions",
     )
 
 
@@ -703,15 +771,14 @@ async def settings_questions_guide_page(
     raw = guide_path.read_text(encoding="utf-8") if guide_path.exists() else ""
     content_html = _markdown_to_html(raw) if raw else "<p class=\"muted\">Guide file not found.</p>"
 
-    return templates.TemplateResponse(
+    return await _render_admin_page(
+        db,
+        request,
         "settings/questions_guide.html",
-        {
-            "request": request,
-            "user": user,
-            "content_html": content_html,
-            "active_page": "settings",
-            "section": "questions",
-        },
+        user,
+        content_html=content_html,
+        active_page="settings",
+        section="questions",
     )
 
 
@@ -726,16 +793,15 @@ async def settings_faqs_page(request: Request, db: AsyncSession = Depends(get_db
     from app.core.screening_flow import normalize_faqs
 
     normalized = normalize_faqs(faqs)
-    return templates.TemplateResponse(
+    return await _render_admin_page(
+        db,
+        request,
         "settings/faqs.html",
-        {
-            "request": request,
-            "user": user,
-            "faqs": normalized,
-            "faq_topic_count": len(normalized),
-            "active_page": "settings",
-            "section": "faqs",
-        },
+        user,
+        faqs=normalized,
+        faq_topic_count=len(normalized),
+        active_page="settings",
+        section="faqs",
     )
 
 
@@ -747,15 +813,14 @@ async def settings_email_page(request: Request, db: AsyncSession = Depends(get_d
         return guard
 
     all_settings = await crud.get_all_settings(db)
-    return templates.TemplateResponse(
+    return await _render_admin_page(
+        db,
+        request,
         "settings/email.html",
-        {
-            "request": request,
-            "user": user,
-            "settings": all_settings,
-            "active_page": "settings",
-            "section": "email",
-        },
+        user,
+        settings=all_settings,
+        active_page="settings",
+        section="email",
     )
 
 
@@ -767,15 +832,14 @@ async def settings_general_page(request: Request, db: AsyncSession = Depends(get
         return guard
 
     all_settings = await crud.get_all_settings(db)
-    return templates.TemplateResponse(
+    return await _render_admin_page(
+        db,
+        request,
         "settings/general.html",
-        {
-            "request": request,
-            "user": user,
-            "settings": all_settings,
-            "active_page": "settings",
-            "section": "general",
-        },
+        user,
+        settings=all_settings,
+        active_page="settings",
+        section="general",
     )
 
 
@@ -790,16 +854,15 @@ async def account_page(request: Request, db: AsyncSession = Depends(get_db)):
     super_admin_count = await crud.count_active_super_admins(db)
     from app.models.user import PERMISSION_SCOPES
 
-    return templates.TemplateResponse(
+    return await _render_admin_page(
+        db,
+        request,
         "account.html",
-        {
-            "request": request,
-            "user": user,
-            "users": users,
-            "super_admin_count": super_admin_count,
-            "permission_scopes": PERMISSION_SCOPES,
-            "active_page": "account",
-        },
+        user,
+        users=users,
+        super_admin_count=super_admin_count,
+        permission_scopes=PERMISSION_SCOPES,
+        active_page="account",
     )
 
 
@@ -1092,6 +1155,8 @@ async def api_override_qualification(
     if new_status not in ("qualified", "review", "unqualified"):
         raise HTTPException(status_code=400, detail="Invalid status")
 
+    reason = (payload.get("reason") or "").strip()
+
     tenant = await crud.get_tenant_by_call(db, call_id)
     if not tenant:
         raise HTTPException(status_code=404, detail="No tenant record for this call")
@@ -1099,12 +1164,16 @@ async def api_override_qualification(
     old_status = tenant.qualification_status
     flags = dict(tenant.control_flags or {})
     flags["qualification_status_overridden"] = True
-    await crud.update_tenant(
-        db,
-        tenant.id,
-        qualification_status=new_status,
-        control_flags=flags,
-    )
+    update_kwargs: dict = {
+        "qualification_status": new_status,
+        "control_flags": flags,
+    }
+    if reason:
+        existing = (tenant.notes or "").strip()
+        line = f"[Manual result override: {old_status} → {new_status}] {reason}"
+        update_kwargs["notes"] = f"{existing}\n\n{line}".strip() if existing else line
+
+    await crud.update_tenant(db, tenant.id, **update_kwargs)
 
     await crud.create_audit_log(
         db,
@@ -1113,10 +1182,54 @@ async def api_override_qualification(
         entity_type="tenant",
         entity_id=tenant.id,
         old_value={"status": old_status},
-        new_value={"status": new_status},
+        new_value={"status": new_status, "reason": reason or None},
         ip_address=request.client.host if request.client else None,
     )
     return {"updated": True, "status": new_status}
+
+
+@router.patch("/api/tenants/{tenant_id}/review")
+async def api_mark_tenant_reviewed(
+    tenant_id: uuid.UUID,
+    payload: dict | None = None,
+    db: AsyncSession = Depends(get_db),
+    user: AdminUser = Depends(require_scope("tenants", edit=True)),
+):
+    """Set reviewed status on an applicant (list inline actions)."""
+    tenant = await crud.get_tenant_by_id(db, tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Applicant not found")
+    payload = payload or {}
+    if "reviewed" in payload:
+        new_status = bool(payload["reviewed"])
+    else:
+        new_status = not tenant.reviewed_by_admin
+    await crud.update_tenant(
+        db,
+        tenant.id,
+        reviewed_by_admin=new_status,
+        reviewed_at=datetime.now(UTC) if new_status else None,
+    )
+    return {"reviewed": new_status, "tenant_id": str(tenant.id)}
+
+
+@router.post("/api/tenants/bulk-review")
+async def api_bulk_mark_reviewed(
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+    user: AdminUser = Depends(require_scope("tenants", edit=True)),
+):
+    """Mark multiple applicants reviewed in one action."""
+    raw_ids = payload.get("tenant_ids") or []
+    reviewed = bool(payload.get("reviewed", True))
+    tenant_ids: list[uuid.UUID] = []
+    for raw in raw_ids:
+        try:
+            tenant_ids.append(uuid.UUID(str(raw)))
+        except ValueError:
+            continue
+    updated = await crud.bulk_set_tenants_reviewed(db, tenant_ids, reviewed=reviewed)
+    return {"updated": updated, "reviewed": reviewed}
 
 
 @router.get("/api/calls/export")

@@ -39,11 +39,13 @@
   </button>
   <div class="reviewer-result-group">
     <label class="muted" for="qualOverride">Change result</label>
-    <select id="qualOverride">
+    <select id="qualOverride" data-current="{{ tenant.qualification_status }}">
       {% for opt in ["qualified", "review", "unqualified"] %}
       <option value="{{ opt }}" {{ "selected" if tenant.qualification_status == opt else "" }}>{{ opt|friendly_qualification }}</option>
       {% endfor %}
     </select>
+    <label class="muted sr-only" for="qualOverrideReason">Reason for change (optional)</label>
+    <input type="text" id="qualOverrideReason" placeholder="Reason (recommended)" style="min-width:180px;max-width:240px;">
     <button type="button" class="btn btn-secondary" onclick="withBtnLoading(this, saveQualification, 'Saving\u2026')">Save result</button>
   </div>
   <button type="button" class="btn btn-secondary" onclick="withBtnLoading(this, resendEmail, 'Sending\u2026')">Resend result email</button>

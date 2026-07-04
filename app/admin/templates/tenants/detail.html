@@ -1,13 +1,15 @@
 {% extends "base.html" %}
 {% from "partials/reviewer_workflow.html" import review_status_strip, reviewer_action_bar %}
+{% from "partials/macros.html" import breadcrumbs, review_queue_nav %}
 {% block title %}Applicant{% endblock %}
 {% block page_title %}Applicant profile{% endblock %}
 {% block page_sub %}<div class="sub">Screening answers, reviewer notes, and edits for this caller.</div>{% endblock %}
 {% block content %}
-<style>
-  .edit-form { max-width: 720px; }
-</style>
-
+{{ breadcrumbs([
+  {'label': 'Applicants', 'href': '/admin/tenants'},
+  {'label': tenant|tenant_display, 'href': ''},
+]) }}
+{{ review_queue_nav(nav_prev_id, nav_next_id) }}
 <div class="stack">
   {{ review_status_strip(tenant, linked_call, active_question_count) }}
   {% if linked_call %}
@@ -107,7 +109,7 @@
         <input type="text" id="moveReason" value="{{ tenant.move_reason or '' }}" placeholder="e.g. Current lease ending" />
       </div>
       <div class="form-group">
-        <label>Employer</label>
+        <label>Employer name</label>
         <input type="text" id="employer" value="{{ tenant.employer or '' }}" />
       </div>
       <div class="form-group">
@@ -173,85 +175,24 @@
 </div>
 
 {% if linked_call and user and user.can_edit %}
-<script>
-  const callId = "{{ linked_call.id }}";
-
-  async function resendEmail() {
-    try {
-      const r = await fetch(`/admin/api/calls/${callId}/resend-email`, { method: 'POST' });
-      if (!r.ok) {
-        const err = await r.json().catch(() => ({}));
-        throw new Error(err.detail || r.statusText);
-      }
-      showMessage('Result email queued — it will arrive shortly.');
-    } catch (e) {
-      showMessage('Could not resend: ' + e.message, true);
-    }
-  }
-
-  async function patchCall(path, body) {
-    const opts = { method: 'PATCH' };
-    if (body !== undefined) {
-      opts.headers = { 'Content-Type': 'application/json' };
-      opts.body = JSON.stringify(body);
-    }
-    const r = await fetch(`/admin/api/calls/${callId}${path}`, opts);
-    if (!r.ok) {
-      const err = await r.json().catch(() => ({}));
-      throw new Error(err.detail || r.statusText);
-    }
-    return r.json().catch(() => ({}));
-  }
-
-  async function saveQualification() {
-    try {
-      const sel = document.getElementById('qualOverride');
-      const status = sel.value;
-      const label = sel.options[sel.selectedIndex].text;
-      await patchCall('/qualification', { status });
-      showMessage('Result updated to ' + label + '.');
-    } catch (e) {
-      showMessage(e.message, true);
-    }
-  }
-
-  async function toggleReviewed() {
-    try {
-      const data = await patchCall('/review');
-      const btn = document.getElementById('reviewBtn');
-      const pill = document.getElementById('reviewStatePill');
-      const reviewed = !!data.reviewed;
-      if (btn) {
-        btn.textContent = reviewed ? 'Mark unreviewed' : 'Mark as reviewed';
-      }
-      if (pill) {
-        pill.className = 'review-chip ' + (reviewed ? 'reviewed' : 'needs-review');
-        pill.innerHTML = reviewed
-          ? '<span class="dot ok" aria-hidden="true"></span> Reviewed'
-          : '<span class="dot warn" aria-hidden="true"></span> Needs your review';
-      }
-      showMessage(reviewed ? 'Marked as reviewed.' : 'Marked as not reviewed.');
-    } catch (e) {
-      showMessage(e.message, true);
-    }
-  }
-
-</script>
+<script src="/static/js/reviewer.js"></script>
+<script>initReviewerWorkflow("{{ linked_call.id }}");</script>
 {% endif %}
 
 <script>
   const tenantId = "{{ tenant.id }}";
 
   async function blacklistTenant() {
-    if (!confirm('Add this number to the do-not-call list? Future calls from it will be declined automatically.')) return;
-    try {
-      const r = await fetch(`/admin/api/tenants/${tenantId}/blacklist`, { method: 'POST' });
-      if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || r.statusText); }
-      showMessage('Added to do-not-call list.');
-      setTimeout(() => location.reload(), 900);
-    } catch (e) {
-      showMessage(e.message, true);
-    }
+    const ok = await confirmAction({
+      title: 'Add to do-not-call list?',
+      message: 'Future calls from this number will be declined automatically.',
+      confirmLabel: 'Add to list',
+      danger: true,
+    });
+    if (!ok) return;
+    await apiFetch(`/admin/api/tenants/${tenantId}/blacklist`, { method: 'POST' });
+    showMessage('Added to do-not-call list.');
+    setTimeout(() => location.reload(), 900);
   }
 
   async function saveTenant(e) {

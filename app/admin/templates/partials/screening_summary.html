@@ -22,7 +22,7 @@
     <tr><td class="muted">Pets</td><td>{% if tenant.has_pets is none %}-{% elif tenant.has_pets %}Yes{% if tenant.pet_type %} — {{ tenant.pet_type }}{% endif %}{% if tenant.pet_breed %}, {{ tenant.pet_breed }}{% endif %}{% if tenant.pet_weight %}, ~{{ tenant.pet_weight }} lbs{% endif %}{% else %}No{% endif %}</td></tr>
     <tr><td class="muted">Eviction history</td><td>{% if tenant.has_eviction is none %}-{% elif tenant.has_eviction %}Yes{% if tenant.eviction_circumstances %} — {{ tenant.eviction_circumstances }}{% endif %}{% else %}No{% endif %}</td></tr>
     <tr><td class="muted">Monthly income</td><td>{{ tenant.monthly_income|currency if tenant.monthly_income else (tenant.income_raw or "-") }}</td></tr>
-    <tr><td class="muted">Employer</td><td>{{ tenant.employer or "-" }}</td></tr>
+    <tr><td class="muted">Employer name</td><td>{{ tenant.employer or "-" }}</td></tr>
     <tr><td class="muted">Employment duration</td><td>{{ tenant.employment_duration or "-" }}</td></tr>
     <tr><td class="muted">Background notes</td><td>{{ tenant.general_notes or "-" }}</td></tr>
     {% if custom_fields %}

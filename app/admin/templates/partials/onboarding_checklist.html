@@ -28,9 +28,24 @@
   </ol>
 </section>
 {% elif onboarding and onboarding.complete and onboarding.total_count %}
-<div class="card onboarding-complete" role="status">
+<div class="card onboarding-complete dismissible" role="status" id="onboardingCompleteBanner">
   <span class="onboarding-check done" aria-hidden="true">✓</span>
   <span><strong>Setup complete.</strong> You are ready to screen applicants by phone.</span>
+  <button type="button" class="onboarding-dismiss" aria-label="Dismiss setup complete message">×</button>
 </div>
+<script>
+  (function () {
+    const key = 'onboardingCompleteDismissed';
+    const el = document.getElementById('onboardingCompleteBanner');
+    if (!el) return;
+    try {
+      if (localStorage.getItem(key) === '1') { el.remove(); return; }
+    } catch (_) {}
+    el.querySelector('.onboarding-dismiss')?.addEventListener('click', function () {
+      el.remove();
+      try { localStorage.setItem(key, '1'); } catch (_) {}
+    });
+  })();
+</script>
 {% endif %}
 {% endmacro %}

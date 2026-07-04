@@ -8,7 +8,7 @@ records across all models. Used by API routes and background tasks.
 import json
 import logging
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import and_, delete, desc, func, or_, select, update
@@ -220,6 +220,8 @@ async def list_calls(
     status: str | None = None,
     qualification_status: str | None = None,
     phone_search: str | None = None,
+    name_search: str | None = None,
+    text_search: str | None = None,
     date_from: datetime | None = None,
     date_to: datetime | None = None,
     llm_provider: str | None = None,
@@ -233,6 +235,21 @@ async def list_calls(
         query = query.where(Call.status == status)
     if phone_search:
         query = query.where(Call.phone_number.ilike(f"%{phone_search}%"))
+    if name_search:
+        query = query.outerjoin(Tenant, Call.id == Tenant.call_id).where(
+            or_(
+                Tenant.full_name.ilike(f"%{name_search}%"),
+                Tenant.email.ilike(f"%{name_search}%"),
+            )
+        )
+    if text_search:
+        query = query.outerjoin(Tenant, Call.id == Tenant.call_id).where(
+            or_(
+                Call.phone_number.ilike(f"%{text_search}%"),
+                Tenant.full_name.ilike(f"%{text_search}%"),
+                Tenant.email.ilike(f"%{text_search}%"),
+            )
+        )
     if date_from:
         query = query.where(Call.created_at >= date_from)
     if date_to:
@@ -249,6 +266,21 @@ async def list_calls(
         count_query = count_query.where(Call.status == status)
     if phone_search:
         count_query = count_query.where(Call.phone_number.ilike(f"%{phone_search}%"))
+    if name_search:
+        count_query = count_query.outerjoin(Tenant, Call.id == Tenant.call_id).where(
+            or_(
+                Tenant.full_name.ilike(f"%{name_search}%"),
+                Tenant.email.ilike(f"%{name_search}%"),
+            )
+        )
+    if text_search:
+        count_query = count_query.outerjoin(Tenant, Call.id == Tenant.call_id).where(
+            or_(
+                Call.phone_number.ilike(f"%{text_search}%"),
+                Tenant.full_name.ilike(f"%{text_search}%"),
+                Tenant.email.ilike(f"%{text_search}%"),
+            )
+        )
     if date_from:
         count_query = count_query.where(Call.created_at >= date_from)
     if date_to:
@@ -562,7 +594,11 @@ async def list_tenants(
     per_page: int = 20,
     qualification_status: str | None = None,
     phone_search: str | None = None,
+    name_search: str | None = None,
+    text_search: str | None = None,
     review_filter: str | None = None,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
 ) -> tuple[list[Tenant], int]:
     """List tenants with pagination and filters.
 
@@ -582,6 +618,25 @@ async def list_tenants(
         query = query.where(Tenant.qualification_status == qualification_status)
     if phone_search:
         query = query.where(Tenant.phone_number.ilike(f"%{phone_search}%"))
+    if name_search:
+        query = query.where(
+            or_(
+                Tenant.full_name.ilike(f"%{name_search}%"),
+                Tenant.email.ilike(f"%{name_search}%"),
+            )
+        )
+    if text_search:
+        query = query.where(
+            or_(
+                Tenant.full_name.ilike(f"%{text_search}%"),
+                Tenant.email.ilike(f"%{text_search}%"),
+                Tenant.phone_number.ilike(f"%{text_search}%"),
+            )
+        )
+    if date_from:
+        query = query.where(Tenant.created_at >= date_from)
+    if date_to:
+        query = query.where(Tenant.created_at <= date_to)
     if review_filter == "unreviewed":
         query = query.where(Tenant.reviewed_by_admin == False)
     elif review_filter == "reviewed":
@@ -598,6 +653,25 @@ async def list_tenants(
         )
     if phone_search:
         count_query = count_query.where(Tenant.phone_number.ilike(f"%{phone_search}%"))
+    if name_search:
+        count_query = count_query.where(
+            or_(
+                Tenant.full_name.ilike(f"%{name_search}%"),
+                Tenant.email.ilike(f"%{name_search}%"),
+            )
+        )
+    if text_search:
+        count_query = count_query.where(
+            or_(
+                Tenant.full_name.ilike(f"%{text_search}%"),
+                Tenant.email.ilike(f"%{text_search}%"),
+                Tenant.phone_number.ilike(f"%{text_search}%"),
+            )
+        )
+    if date_from:
+        count_query = count_query.where(Tenant.created_at >= date_from)
+    if date_to:
+        count_query = count_query.where(Tenant.created_at <= date_to)
     if review_filter == "unreviewed":
         count_query = count_query.where(Tenant.reviewed_by_admin == False)
     elif review_filter == "reviewed":
@@ -613,6 +687,54 @@ async def list_tenants(
     )
     result = await db.execute(query)
     return result.scalars().all(), total
+
+
+async def list_tenant_ids_for_navigation(
+    db: AsyncSession,
+    *,
+    review_filter: str | None = "unreviewed",
+    qualification_status: str | None = None,
+    limit: int = 500,
+) -> list[uuid.UUID]:
+    """Ordered tenant IDs for prev/next navigation in a review queue."""
+    visible = or_(Tenant.call_id.is_(None), Call.is_deleted == False)
+    query = (
+        select(Tenant.id)
+        .outerjoin(Call, Tenant.call_id == Call.id)
+        .where(visible)
+    )
+    if qualification_status:
+        query = query.where(Tenant.qualification_status == qualification_status)
+    if review_filter == "unreviewed":
+        query = query.where(Tenant.reviewed_by_admin == False)
+    elif review_filter == "reviewed":
+        query = query.where(Tenant.reviewed_by_admin == True)
+    query = query.order_by(desc(Tenant.created_at)).limit(limit)
+    result = await db.execute(query)
+    return list(result.scalars().all())
+
+
+async def bulk_set_tenants_reviewed(
+    db: AsyncSession,
+    tenant_ids: list[uuid.UUID],
+    *,
+    reviewed: bool = True,
+) -> int:
+    """Mark multiple applicants reviewed/unreviewed. Returns rows updated."""
+    if not tenant_ids:
+        return 0
+    now = datetime.now(UTC)
+    result = await db.execute(
+        update(Tenant)
+        .where(Tenant.id.in_(tenant_ids))
+        .values(
+            reviewed_by_admin=reviewed,
+            reviewed_at=now if reviewed else None,
+            updated_at=now,
+        )
+    )
+    await db.commit()
+    return result.rowcount or 0
 
 
 # ──────────────────────────────────────────────────────────────────────────────

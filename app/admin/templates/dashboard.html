@@ -11,7 +11,7 @@
 {% if can_monitor or can_calls or can_tenants or can_settings %}
 <div class="toolbar">
   {% if can_monitor %}
-  <a class="btn btn-secondary" href="/admin/monitor">Live Monitor</a>
+  <a class="btn btn-secondary" href="/admin/monitor">Live monitor</a>
   {% endif %}
   {% if can_calls %}
   <a class="btn btn-secondary" href="/admin/calls">View all calls</a>
@@ -49,15 +49,15 @@
 {% endif %}
 
 {% if can_tenants and needs_review_count %}
-<div class="card banner-warn" style="margin-top: 16px; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;">
+<div class="card banner-row warn">
   <span><strong>{{ needs_review_count }}</strong> applicant{{ '' if needs_review_count == 1 else 's' }} still {% if needs_review_count == 1 %}needs{% else %}need{% endif %} your review.</span>
   <a class="btn btn-sm" href="/admin/tenants?review=unreviewed">Review applicants</a>
 </div>
 {% endif %}
 
 {% if can_monitor %}
-<div class="card" style="padding: 12px 16px; display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 16px; flex-wrap: wrap;">
-  <span style="display: flex; align-items: center; gap: 8px;">
+<div class="status-strip">
+  <span class="status-strip-body">
     {% if active_count %}
       <span class="dot live" aria-hidden="true"></span>
       <span>{{ active_count }} call{{ '' if active_count == 1 else 's' }} in progress</span>
@@ -76,6 +76,7 @@
       <h2>Recent calls</h2>
       <a class="btn-ghost btn-sm" href="/admin/calls">See all</a>
     </div>
+    <div class="table-wrap">
     <table>
       <thead><tr><th scope="col">Caller</th><th scope="col">Call status</th><th scope="col">Answered</th><th scope="col">When</th></tr></thead>
       <tbody>
@@ -91,6 +92,7 @@
       {% endfor %}
       </tbody>
     </table>
+    </div>
   </div>
 </section>
 {% elif not can_monitor and not can_analytics %}

@@ -1,10 +1,15 @@
 {% extends "base.html" %}
-{% from "partials/macros.html" import glossary %}
+{% from "partials/macros.html" import glossary, breadcrumbs, review_queue_nav %}
 {% from "partials/reviewer_workflow.html" import review_status_strip, reviewer_action_bar %}
 {% block title %}Call review{% endblock %}
 {% block page_title %}Call review{% endblock %}
 {% block page_sub %}<div class="sub">Screening answers, transcript, and reviewer actions for this caller.</div>{% endblock %}
 {% block content %}
+{{ breadcrumbs([
+  {'label': 'Calls', 'href': '/admin/calls'},
+  {'label': (tenant|tenant_display) if tenant else (call.phone_number|phone_display), 'href': ''},
+]) }}
+{% if tenant %}{{ review_queue_nav(nav_prev_id, nav_next_id) }}{% endif %}
 <div class="stack">
   {{ review_status_strip(tenant, call, active_question_count) }}
   {{ reviewer_action_bar(call.id, tenant, user) }}
@@ -31,6 +36,18 @@
         <dt>Listening · Thinking · Speaking</dt>
         <dd class="muted" style="font-size:13px;">{{ call.stt_provider|friendly_provider('stt') }} · {{ call.llm_provider|friendly_provider('llm') }} · {{ call.tts_provider|friendly_provider('tts') }}</dd>
       </div>
+      {% if tenant %}
+      <div class="summary-item">
+        <dt>Result email</dt>
+        <dd>
+          {% if tenant.email_sent %}
+            <span class="pill"><span class="dot ok" aria-hidden="true"></span> Sent{% if tenant.email_sent_at %} · {{ tenant.email_sent_at|localtime('%b %d, %Y %I:%M %p') }}{% endif %}</span>
+          {% else %}
+            <span class="muted">Not sent yet</span>
+          {% endif %}
+        </dd>
+      </div>
+      {% endif %}
       {% if call.turn_count %}
       <div class="summary-item">
         <dt>Avg reply time</dt>
@@ -213,91 +230,6 @@
   </section>
 </div>
 
-<style>
-  .transcript-review { display: grid; gap: 10px; max-height: 720px; overflow-y: auto; padding-right: 4px; }
-  .transcript-line { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 10px 12px; background: #fff; }
-  .transcript-line.ai { border-left: 3px solid #2563eb; }
-  .transcript-line.tenant { border-left: 3px solid #64748b; }
-  .transcript-meta { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; font-size: 12px; }
-  .transcript-text { font-size: 14px; line-height: 1.45; white-space: pre-wrap; }
-</style>
-
-<script>
-  const callId = "{{ call.id }}";
-
-  async function resendEmail() {
-    try {
-      const r = await fetch(`/admin/api/calls/${callId}/resend-email`, { method: 'POST' });
-      if (!r.ok) {
-        const err = await r.json().catch(() => ({}));
-        throw new Error(err.detail || r.statusText);
-      }
-      showMessage('Result email queued — it will arrive shortly.');
-    } catch (e) {
-      showMessage('Could not resend: ' + e.message, true);
-    }
-  }
-
-  async function deleteCall() {
-    if (!confirm('Permanently delete this call? This also removes the applicant profile and any recording, and cannot be undone.')) return;
-    try {
-      const r = await fetch(`/admin/api/calls/${callId}`, { method: 'DELETE' });
-      if (!r.ok) {
-        const err = await r.json().catch(() => ({}));
-        throw new Error(err.detail || r.statusText);
-      }
-      showMessage('Call deleted. Redirecting…');
-      setTimeout(() => { location.href = '/admin/calls'; }, 1200);
-    } catch (e) {
-      showMessage('Could not delete: ' + e.message, true);
-    }
-  }
-
-  async function patchCall(path, body) {
-    const opts = { method: 'PATCH' };
-    if (body !== undefined) {
-      opts.headers = { 'Content-Type': 'application/json' };
-      opts.body = JSON.stringify(body);
-    }
-    const r = await fetch(`/admin/api/calls/${callId}${path}`, opts);
-    if (!r.ok) {
-      const err = await r.json().catch(() => ({}));
-      throw new Error(err.detail || r.statusText);
-    }
-    return r.json().catch(() => ({}));
-  }
-
-  async function saveQualification() {
-    try {
-      const sel = document.getElementById('qualOverride');
-      const status = sel.value;
-      const label = sel.options[sel.selectedIndex].text;
-      await patchCall('/qualification', { status });
-      showMessage('Result updated to ' + label + '.');
-    } catch (e) {
-      showMessage(e.message, true);
-    }
-  }
-
-  async function toggleReviewed() {
-    try {
-      const data = await patchCall('/review');
-      const btn = document.getElementById('reviewBtn');
-      const pill = document.getElementById('reviewStatePill');
-      const reviewed = !!data.reviewed;
-      if (btn) {
-        btn.textContent = reviewed ? 'Mark unreviewed' : 'Mark as reviewed';
-      }
-      if (pill) {
-        pill.className = 'review-chip ' + (reviewed ? 'reviewed' : 'needs-review');
-        pill.innerHTML = reviewed
-          ? '<span class="dot ok" aria-hidden="true"></span> Reviewed'
-          : '<span class="dot warn" aria-hidden="true"></span> Needs your review';
-      }
-      showMessage(reviewed ? 'Marked as reviewed.' : 'Marked as not reviewed.');
-    } catch (e) {
-      showMessage(e.message, true);
-    }
-  }
-</script>
+<script src="/static/js/reviewer.js"></script>
+<script>initReviewerWorkflow("{{ call.id }}");</script>
 {% endblock %}

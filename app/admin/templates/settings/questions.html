@@ -1,6 +1,6 @@
 {% extends "settings/base.html" %}
-{% block title %}Screening Questions{% endblock %}
-{% block page_title %}Screening Questions{% endblock %}
+{% block title %}Screening questions{% endblock %}
+{% block page_title %}Screening questions{% endblock %}
 {% block settings_page_sub %}<div class="sub">Build the conversation your assistant asks on every call — reorder, edit wording, and control scoring.</div>{% endblock %}
 {% block settings_content %}
 
@@ -11,7 +11,7 @@
       ({{ flow_state_count }} total). Edit the wording below — use <strong>Advanced options</strong> only for field keys, custom rules, or special scoring.
     </span>
     <span style="display: flex; gap: 8px; flex-wrap: wrap;">
-      <a class="btn-ghost btn-sm" href="/admin/settings/questions/guide" target="_blank" rel="noopener">How scoring works</a>
+      <a class="btn-ghost btn-sm" href="/admin/settings/questions/guide">How scoring works</a>
       {% if user.can_edit %}
       <a class="btn-ghost btn-sm" href="/test" target="_blank" rel="noopener">Try a screening call</a>
       {% endif %}
@@ -65,75 +65,6 @@
     </div>
   </div>
 </div>
-
-<style>
-  .form-grid label { display: block; font-weight: 600; font-size: 13px; }
-  .form-grid input, .form-grid select, .form-grid textarea { max-width: 100%; margin-top: 4px; }
-  .text-muted { color: var(--muted); font-size: 13px; }
-  .conversation-list { gap: 10px; }
-  .q-conversation-item {
-    border-left: 3px solid var(--accent);
-    padding-left: 4px;
-  }
-  .q-conversation-item.q-inactive { border-left-color: var(--muted); opacity: 0.72; }
-  .q-conversation-head { display: flex; justify-content: space-between; align-items: start; gap: 12px; }
-  .q-conversation-main { display: flex; gap: 12px; flex: 1; min-width: 0; }
-  .q-conversation-num {
-    flex: none;
-    width: 28px; height: 28px;
-    border-radius: 50%;
-    background: var(--accent-soft);
-    color: var(--accent);
-    font-weight: 700;
-    font-size: 13px;
-    display: grid;
-    place-items: center;
-    margin: 2px 0 0;
-  }
-  .q-inactive .q-conversation-num { background: var(--line-soft); color: var(--muted); }
-  .q-conversation-text { margin: 0; font-size: 15px; line-height: 1.4; color: var(--ink); font-weight: 500; }
-  .q-quick-status {
-    display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px;
-  }
-  .q-toggle-pill {
-    display: inline-flex; align-items: center; gap: 6px;
-    padding: 4px 10px; border-radius: 999px;
-    border: 1px solid var(--line);
-    background: var(--panel);
-    font-size: 12px; font-weight: 600;
-    color: var(--ink-soft);
-    cursor: pointer;
-    user-select: none;
-  }
-  .q-toggle-pill input { width: auto; max-width: none; margin: 0; cursor: pointer; }
-  .q-toggle-pill:has(input:checked) { border-color: #93c5fd; background: #eff6ff; color: #1e40af; }
-  .q-badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-  .q-badge {
-    font-size: 12px; padding: 3px 8px; border-radius: 999px;
-    background: var(--line-soft, #f1f5f9); color: var(--muted);
-  }
-  .q-badge.on { background: #dbeafe; color: #1e40af; }
-  .q-badge.off { background: #fee2e2; color: #991b1b; }
-  .q-badge.score { background: #fef3c7; color: #92400e; }
-  .simple-panel { display: grid; gap: 12px; max-width: 640px; }
-  .conversation-preview { max-height: 400px; overflow-y: auto; }
-  .preview-turn { margin: 10px 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: #fff; }
-  .preview-turn.assistant { border-left: 3px solid #2563eb; }
-  .preview-turn.caller { border-left: 3px solid #64748b; }
-  details.q-advanced {
-    margin-top: 14px; border: 1px dashed var(--line); border-radius: 8px;
-    padding: 0 12px; background: #fbfcfe;
-  }
-  details.q-advanced > summary {
-    cursor: pointer; font-weight: 600; color: var(--muted); font-size: 13px;
-    padding: 10px 0; list-style: none;
-  }
-  details.q-advanced > summary::-webkit-details-marker { display: none; }
-  details.q-advanced > summary::before { content: "▸ "; }
-  details.q-advanced[open] > summary::before { content: "▾ "; }
-  details.q-advanced[open] { padding-bottom: 12px; }
-  .simple-score-extra { display: none; margin-top: 8px; }
-</style>
 
 <script>
   const ANSWER_TYPES = {{ answer_types | tojson }};
