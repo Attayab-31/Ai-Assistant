@@ -1,5 +1,11 @@
 # Tooling configuration for code standardization.
 # Functionality is unaffected — these tools enforce consistent style only.
+#
+# Standard commands (run from repo root):
+#   ruff check app config.py main.py tests scripts        # lint
+#   ruff check app config.py main.py tests scripts --fix   # auto-fix safe issues
+#   black app config.py main.py tests scripts              # format
+#   isort app config.py main.py tests scripts              # sort imports (or ruff I)
 
 [tool.black]
 line-length = 88

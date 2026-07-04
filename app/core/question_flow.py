@@ -611,6 +611,7 @@ def extract_fields_from_speech(
         PHONE_RE,
         _is_bare_ack,
         _is_refusal_text,
+        _word_or_digit_count,
         extract_money_from_text,
         extract_occupants,
         extract_pet_fields,
@@ -621,7 +622,6 @@ def extract_fields_from_speech(
         parse_relative_date,
         parse_spoken_name,
         parse_yes_no,
-        _word_or_digit_count,
     )
 
     answer_type = str(question.get("answer_type") or "text")

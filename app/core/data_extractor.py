@@ -10,17 +10,17 @@ from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from app.core.screening_flow import (
-    normalize_email,
-    normalize_money,
-    normalize_phone,
-    parse_relative_date,
-)
 from app.core.question_flow import (
     active_extract_fields,
     extract_fields_from_speech,
     field_labels_from_questions,
     normalize_questions,
+)
+from app.core.screening_flow import (
+    normalize_email,
+    normalize_money,
+    normalize_phone,
+    parse_relative_date,
 )
 
 logger = logging.getLogger(__name__)

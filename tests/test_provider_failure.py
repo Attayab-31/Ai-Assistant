@@ -3,11 +3,11 @@
 import pytest
 
 from app.core.conversation import (
+    DEFAULT_PROVIDER_FAILURE_MESSAGE,
+    STT_EMPTY_STRIKE_LIMIT,
     CallState,
     ConversationSession,
-    DEFAULT_PROVIDER_FAILURE_MESSAGE,
     provider_failure_message_for_session,
-    STT_EMPTY_STRIKE_LIMIT,
 )
 
 

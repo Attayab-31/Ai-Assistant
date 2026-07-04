@@ -641,7 +641,10 @@ def plan_turn_timeout_recovery(
     session: ConversationSession, transcript: str
 ) -> str:
     """Pick recovery speech after timeout; resume read-back when data was already captured."""
-    from app.core.question_flow import build_confirm_field_map, readback_prompt_for_state
+    from app.core.question_flow import (
+        build_confirm_field_map,
+        readback_prompt_for_state,
+    )
 
     prefix = (session.streamed_speakable_prefix or "").strip()
     if prefix:

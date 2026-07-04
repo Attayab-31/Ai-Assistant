@@ -1193,7 +1193,10 @@ def validate_state_transition(
     if allowed is not None:
         return to_state in allowed
     if from_state == "GREETING":
-        from app.core.question_flow import first_active_question_state, flow_states_in_order
+        from app.core.question_flow import (
+            first_active_question_state,
+            flow_states_in_order,
+        )
 
         first = first_active_question_state(questions)
         valid = set(flow_states_in_order(questions)) | {"WRAP_UP", "ENDED"}

@@ -255,7 +255,10 @@ async def check_provider_health(
     user: AdminUser = Depends(require_scope("settings")),
 ):
     """Ping active providers and configured backups; return health/latency info."""
-    from app.core.call_settings import build_call_provider_bundle, load_call_settings_snapshot
+    from app.core.call_settings import (
+        build_call_provider_bundle,
+        load_call_settings_snapshot,
+    )
     from app.providers.stt.deepgram_stt import DeepgramSTTProvider
     from app.providers.stt.groq_stt import GroqSTTProvider
     from config import settings as env_settings

@@ -21,14 +21,14 @@ from collections.abc import Awaitable, Callable
 import orjson
 from fastapi import WebSocket, WebSocketDisconnect
 
-from app.core.call_logging import Phase, vdebug, verror, vinfo, vwarn
 from app.core import call_handler
+from app.core.call_logging import Phase, vdebug, verror, vinfo, vwarn
 from app.core.call_settings import CallProviderBundle
 from app.core.conversation import (
+    STT_EMPTY_STRIKE_LIMIT,
     ConversationSession,
     is_echo_of_agent,
     mark_recovery_played,
-    STT_EMPTY_STRIKE_LIMIT,
     plan_turn_timeout_recovery,
     reset_turn_streaming,
     should_suppress_silence_nudge,
@@ -1036,10 +1036,12 @@ async def run_bidirectional_audio_stream(
                 audio_streamed = False
                 stream_turn_end_sent = False
 
-                async def _stream_audio_part(audio: bytes, is_last: bool) -> None:
+                async def _stream_audio_part(
+                    audio: bytes, is_last: bool, _turn_start: float = t1
+                ) -> None:
                     nonlocal first_audio_ms, audio_streamed, stream_turn_end_sent
                     if first_audio_ms is None:
-                        first_audio_ms = (time.monotonic() - t1) * 1000
+                        first_audio_ms = (time.monotonic() - _turn_start) * 1000
                     audio_streamed = True
                     if is_last:
                         stream_turn_end_sent = True

@@ -13,6 +13,7 @@ import logging
 import re
 from typing import Any
 
+
 # Grep-friendly phase tags (e.g. ``grep 'llm:fail' logs/voice.trace.log``).
 class Phase:
     CALL_START = "call:start"

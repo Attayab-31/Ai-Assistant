@@ -34,6 +34,7 @@ from app.utils.dependencies import (
 )
 from app.utils.helpers import (
     audit_action_choices,
+    date_range_from_days,
     format_currency,
     format_duration,
     format_phone_display,
@@ -45,14 +46,13 @@ from app.utils.helpers import (
     friendly_state,
     glossary_label,
     glossary_tip,
+    list_filter_url,
     localtime,
     pagination_url,
-    list_filter_url,
     score_color,
     status_badge_color,
     tenant_display_name,
     time_ago,
-    date_range_from_days,
 )
 
 logger = logging.getLogger(__name__)
@@ -188,9 +188,8 @@ async def dashboard_page(
 
     onboarding = {"show": False, "steps": [], "complete": True, "done_count": 0, "total_count": 0}
     if can_settings or can_tenants:
-        from config import settings as env_settings
-
         from app.utils.helpers import build_onboarding_checklist
+        from config import settings as env_settings
 
         property_name = await crud.get_setting_value(
             db, "property_name", env_settings.default_property_name
@@ -300,10 +299,10 @@ async def call_detail_page(
     tenant = await crud.get_tenant_by_call(db, call_id)
 
     from app.core.question_flow import (
+        build_applicant_summary_rows,
         field_labels_from_questions,
         normalize_questions,
         questions_snapshot_from_tenant,
-        build_applicant_summary_rows,
     )
 
     questions_config = await crud.get_setting_value(db, "screening_questions", [])

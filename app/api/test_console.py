@@ -42,12 +42,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import call_handler
 from app.core.conversation import CallState
+from app.db.crud import get_user_by_id
 from app.db.database import AsyncSessionLocal, get_db
 from app.utils.audio import (
     any_audio_to_mulaw,
     mulaw_to_wav,
 )
-from app.db.crud import get_user_by_id
 from app.utils.dependencies import ACCESS_TOKEN_COOKIE_NAME, get_current_user
 from app.utils.helpers import friendly_provider_name
 from config import settings

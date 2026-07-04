@@ -178,7 +178,10 @@ def test_normalize_coerces_has_flags_to_bool():
 
 
 def test_infer_monthly_income_from_stt_annual_garble():
-    from app.core.screening_flow import infer_monthly_income_from_raw, normalize_extracted_fields
+    from app.core.screening_flow import (
+        infer_monthly_income_from_raw,
+        normalize_extracted_fields,
+    )
 
     monthly = infer_monthly_income_from_raw("100,000 k means per year")
     assert monthly is not None

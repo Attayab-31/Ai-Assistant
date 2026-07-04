@@ -6,7 +6,6 @@ at ~90ms latency. Uses the groq Python SDK.
 """
 
 import logging
-
 from collections.abc import AsyncIterator
 
 from groq import AsyncGroq
