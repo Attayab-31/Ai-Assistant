@@ -85,6 +85,20 @@ _RUNTIME_MERGE_FIELDS = frozenset(
 )
 
 
+def allowed_extract_fields(questions: list[dict] | None) -> frozenset[str]:
+    """Admin-configured extract fields plus runtime control columns."""
+    return frozenset(active_extract_fields(questions)) | _RUNTIME_MERGE_FIELDS
+
+
+def filter_extracted_to_allowed_fields(
+    data: dict[str, Any] | None,
+    questions: list[dict] | None,
+) -> dict[str, Any]:
+    """Drop keys the LLM invented that are not in the call's question snapshot."""
+    allowed = allowed_extract_fields(questions)
+    return {k: v for k, v in (data or {}).items() if k in allowed}
+
+
 @dataclass
 class ConversationSession:
     """State for one live call or test-console session."""
@@ -292,11 +306,8 @@ class ConversationSession:
         self.refresh_progress()
 
     def merge_extracted_data(self, data: dict[str, Any], *, raw_text: str = "") -> None:
-        allowed = active_extract_fields(self.questions) | _RUNTIME_MERGE_FIELDS
         clean: dict[str, Any] = {}
-        for key, value in (data or {}).items():
-            if key not in allowed:
-                continue
+        for key, value in filter_extracted_to_allowed_fields(data, self.questions).items():
             value = _unwrap_confidence(value)
             if value not in (None, ""):
                 clean[key] = value

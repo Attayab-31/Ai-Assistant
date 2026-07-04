@@ -688,6 +688,22 @@ def test_merge_extracted_data_allows_admin_custom_field():
     session.merge_extracted_data({"pet_age": "three years"})
     assert session.extracted_data.get("pet_age") == "three years"
 
+
+def test_filter_extracted_to_allowed_fields_at_finalize():
+    from app.core.conversation import filter_extracted_to_allowed_fields
+    from app.core.question_flow import default_questions_v2
+
+    filtered = filter_extracted_to_allowed_fields(
+        {
+            "full_name": "Dawn Smith",
+            "pet_age": "three years",
+            "invented": "x",
+        },
+        default_questions_v2(),
+    )
+    assert filtered == {"full_name": "Dawn Smith"}
+
+
     from app.core.question_flow import retry_prompt_for_count
 
     q = {

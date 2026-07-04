@@ -40,6 +40,7 @@ from app.core.conversation import (
     control_flag_for_intent,
     dedupe_repeated_speech,
     field_maps_for_session,
+    filter_extracted_to_allowed_fields,
     is_echo_of_agent,
     is_liveness_acknowledgment,
     is_meta_navigation_request,
@@ -2466,6 +2467,7 @@ async def _finalize_call_impl(session: ConversationSession, db) -> dict:
             llm_provider=providers.llm,
             questions=session.questions,
         )
+        extracted = filter_extracted_to_allowed_fields(extracted, session.questions)
         # Account the extraction call's tokens too (only when the provider
         # actually reported usage — a heuristic fallback makes no LLM call).
         ext_usage = getattr(providers.llm, "last_usage", None)
