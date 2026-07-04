@@ -1,83 +1,229 @@
 {% extends "base.html" %}
-{% block title %}Call Detail{% endblock %}
-{% block page_title %}Call Detail{% endblock %}
+{% from "partials/macros.html" import glossary %}
+{% from "partials/reviewer_workflow.html" import review_status_strip, reviewer_action_bar %}
+{% block title %}Call review{% endblock %}
+{% block page_title %}Call review{% endblock %}
+{% block page_sub %}<div class="sub">Screening answers, transcript, and reviewer actions for this caller.</div>{% endblock %}
 {% block content %}
 <div class="stack">
+  {{ review_status_strip(tenant, call, active_question_count) }}
+  {{ reviewer_action_bar(call.id, tenant, user) }}
+
   <section class="card">
-    <h2>{{ call.phone_number|phone_display }}</h2>
-    <p>Status: <span class="badge" style="background: {{ call.status|status_color }}">{{ call.status }}</span></p>
-    <p>Duration: {{ call.duration_seconds|duration }}</p>
-    <p>
-      Questions answered:
-      {% if tenant and active_question_count %}
-        {{ call.questions_answered or 0 }} / {{ active_question_count }}
-      {% else %}
-        {{ call.questions_answered or 0 }}
-      {% endif %}
-      {% if call.call_completed %} · screening complete{% endif %}
-    </p>
-    <p>Providers: STT {{ call.stt_provider or "-" }}, LLM {{ call.llm_provider or "-" }}, TTS {{ call.tts_provider or "-" }}</p>
-    <div id="callMsg"></div>
-    <div style="display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap;">
-      {% if tenant %}
-      <button type="button" class="btn btn-primary" onclick="withBtnLoading(this, resendEmail, 'Sending\u2026')">📧 Resend result email</button>
-      {% endif %}
-      <button type="button" class="btn btn-danger" onclick="withBtnLoading(this, deleteCall, 'Deleting\u2026')">🗑️ Delete call</button>
+    <div class="card-head">
+      <div>
+        <h2 style="margin:0;">{{ call.phone_number|phone_display }}</h2>
+        <p class="hint" style="margin-top:4px;">Reference: {{ call.call_id }}{% if tenant %} · <a href="/admin/tenants/{{ tenant.id }}">Applicant profile</a>{% endif %}</p>
+      </div>
+      <span class="badge" style="background: {{ call.status|status_color }}">{{ call.status|friendly_call_status }}</span>
     </div>
+
+    <dl class="summary-grid">
+      <div class="summary-item">
+        <dt>Call length</dt>
+        <dd>{{ call.duration_seconds|duration }}</dd>
+      </div>
+      <div class="summary-item">
+        <dt>When</dt>
+        <dd>{{ call.created_at|time_ago }}</dd>
+      </div>
+      <div class="summary-item">
+        <dt>Listening · Thinking · Speaking</dt>
+        <dd class="muted" style="font-size:13px;">{{ call.stt_provider|friendly_provider('stt') }} · {{ call.llm_provider|friendly_provider('llm') }} · {{ call.tts_provider|friendly_provider('tts') }}</dd>
+      </div>
+      {% if call.turn_count %}
+      <div class="summary-item">
+        <dt>Avg reply time</dt>
+        <dd>{{ "%.1f"|format((call.avg_turn_ms or 0) / 1000) }}s <span class="muted">({{ call.turn_count }} turn{{ "" if call.turn_count == 1 else "s" }})</span></dd>
+      </div>
+      {% endif %}
+      {% if call.total_tokens %}
+      <div class="summary-item">
+        <dt>AI usage</dt>
+        <dd class="muted" style="font-size:13px;">{{ "{:,}".format(call.total_tokens or 0) }} {{ glossary('tokens') }} · {{ call.llm_calls or 0 }} AI request{{ "" if call.llm_calls == 1 else "s" }}</dd>
+      </div>
+      {% endif %}
+    </dl>
+
+    {% if call.recording_url %}
+    <div style="margin-top: 16px;">
+      <div class="hint" style="margin-bottom:6px;">Call recording</div>
+      <audio controls preload="none" src="/admin/api/calls/{{ call.id }}/recording"
+             style="max-width: 100%; width: 320px; height: 36px;"></audio>
+    </div>
+    {% endif %}
+
   </section>
 
   {% if tenant %}
   <section class="card">
-    <h2>Screening Summary</h2>
+    <div class="card-head"><h2>Screening summary</h2></div>
+    {% if not score_breakdown %}
     <p>Score: <span style="color: {{ tenant.qualification_score|score_color }}">{{ tenant.qualification_score or 0 }}/100</span></p>
-    <p>Status: <span class="badge" style="background: {{ tenant.qualification_status|status_color }}">{{ tenant.qualification_status }}</span></p>
+    <p>Result: <span class="badge" style="background: {{ tenant.qualification_status|status_color }}">{{ tenant.qualification_status|friendly_qualification }}</span></p>
+    {% endif %}
 
-    <table style="width: 100%; margin-top: 12px;">
-      <tbody>
-        <tr><td class="muted" style="width: 180px; padding: 4px 8px 4px 0;">Full name</td><td>{{ tenant.full_name or "-" }}</td></tr>
-        <tr><td class="muted">Contact phone</td><td>{{ tenant.contact_phone|phone_display if tenant.contact_phone else "-" }}</td></tr>
-        <tr><td class="muted">Email</td><td>{{ tenant.email or "-" }}</td></tr>
-        <tr><td class="muted">Move-in</td><td>{{ tenant.move_in_raw or tenant.move_in_date or "-" }}</td></tr>
-        <tr><td class="muted">Move timing</td><td>{{ tenant.move_timing or "-" }}</td></tr>
-        <tr><td class="muted">Occupants</td><td>{{ tenant.occupants_count or "-" }} total ({{ tenant.adults_count or "-" }} adults, {{ tenant.children_count or 0 }} children)</td></tr>
-        <tr><td class="muted">Current residence</td><td>{{ tenant.current_residence or "-" }}</td></tr>
-        <tr><td class="muted">Time at residence</td><td>{{ tenant.residence_duration or "-" }}</td></tr>
-        <tr><td class="muted">Move reason</td><td>{{ tenant.move_reason or "-" }}</td></tr>
-        <tr><td class="muted">Pets</td><td>{% if tenant.has_pets is none %}-{% elif tenant.has_pets %}Yes{% if tenant.pet_type %} — {{ tenant.pet_type }}{% endif %}{% if tenant.pet_breed %}, {{ tenant.pet_breed }}{% endif %}{% if tenant.pet_weight %}, ~{{ tenant.pet_weight }} lbs{% endif %}{% else %}No{% endif %}</td></tr>
-        <tr><td class="muted">Eviction history</td><td>{% if tenant.has_eviction is none %}-{% elif tenant.has_eviction %}Yes{% if tenant.eviction_circumstances %} — {{ tenant.eviction_circumstances }}{% endif %}{% else %}No{% endif %}</td></tr>
-        <tr><td class="muted">Monthly income</td><td>{{ tenant.monthly_income|currency if tenant.monthly_income else (tenant.income_raw or "-") }}</td></tr>
-        <tr><td class="muted">Employer</td><td>{{ tenant.employer or "-" }}</td></tr>
-        <tr><td class="muted">Employment duration</td><td>{{ tenant.employment_duration or "-" }}</td></tr>
-        <tr><td class="muted">Background notes</td><td>{{ tenant.general_notes or "-" }}</td></tr>
-      </tbody>
-    </table>
-    <p style="margin-top: 12px;"><a href="/admin/tenants/{{ tenant.id }}">View tenant profile →</a></p>
+    {% if using_legacy_question_config %}
+    <p class="banner banner-warn" style="margin: 0 0 12px;">
+      <strong>Note:</strong> This call has no frozen question snapshot. Screening flow and rescoring use <strong>today's</strong> question settings, which may differ from what was asked on the call.
+    </p>
+    {% endif %}
+    {% if tenant.control_flags and tenant.control_flags.get('qualification_status_overridden') %}
+    <p class="muted" style="margin: 0 0 12px; font-size: 13px;">The result was <strong>changed manually</strong> by an admin. Editing applicant data updates the score but keeps the manual result.</p>
+    {% endif %}
+
+    {% set flow_subtitle = "(at time of call)" if flow_from_snapshot else "(current question settings)" %}
+    {% include "partials/screening_summary.html" %}
   </section>
   {% endif %}
 
   {% if score_breakdown %}
   <section class="card">
-    <h2>Score Breakdown</h2>
-    <pre class="pre">{{ score_breakdown }}</pre>
+    <div class="card-head"><h2>Score breakdown</h2></div>
+    <p>
+      {{ score_breakdown.points_earned }} of {{ score_breakdown.points_possible }} points
+      → <strong>{{ score_breakdown.score }}/100</strong>
+      <span class="badge" style="background: {{ score_breakdown.status|status_color }}">{{ score_breakdown.status|friendly_qualification }}</span>
+    </p>
+    {% if score_breakdown.questions %}
+    <table style="width: 100%; margin-top: 8px; font-size: 14px;">
+      <thead>
+        <tr>
+          <th scope="col" class="muted" style="text-align:left;padding:4px 8px 4px 0;">Question</th>
+          <th scope="col" class="muted" style="text-align:left;padding:4px 8px;width:110px;">Points</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for q in score_breakdown.questions %}
+        <tr><td>{{ q.question or q.state }}</td><td>{{ q.points }} / {{ q.max_points }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+    {% if score_breakdown.reasons %}
+    <h3 style="margin-top: 16px; font-size: 14px;">Notes</h3>
+    <ul class="muted" style="margin: 6px 0; padding-left: 18px;">
+      {% for r in score_breakdown.reasons %}<li>{{ r }}</li>{% endfor %}
+    </ul>
+    {% endif %}
   </section>
   {% endif %}
 
-  <section class="card">
-    <h2>Transcript</h2>
-    <pre class="pre">{{ call.full_transcript or "No transcript saved." }}</pre>
+  <section class="grid two-col">
+    <div class="card">
+      <div class="card-head">
+        <h2>Conversation</h2>
+        <span class="muted">{{ transcript_lines|length }} line{{ "" if transcript_lines|length == 1 else "s" }}</span>
+      </div>
+      {% if transcript_lines %}
+      <div class="transcript-review">
+        {% for line in transcript_lines %}
+        <div class="transcript-line {{ 'ai' if line.speaker.lower() == 'ai' else 'tenant' if line.speaker.lower() == 'tenant' else 'other' }}">
+          {% if line.time or line.speaker %}
+          <div class="transcript-meta">
+            {% if line.time %}<span class="muted">{{ line.time }}</span>{% endif %}
+            {% if line.speaker %}<span class="badge" style="background: {{ '#2563eb' if line.speaker.lower() == 'ai' else '#64748b' }};">{{ 'Caller' if line.speaker.lower() == 'tenant' else line.speaker }}</span>{% endif %}
+          </div>
+          {% endif %}
+          <div class="transcript-text">{{ line.text }}</div>
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="empty">
+        <span class="empty-title">No transcript saved</span>
+        {% if call.status in ['failed', 'abandoned', 'initiated'] %}
+        This call may have ended before a conversation was captured. Check the screening summary{% if tenant %} and <a href="/admin/tenants/{{ tenant.id }}">applicant profile</a>{% endif %} for any answers that were saved.
+        {% else %}
+        The transcript may still be processing, or speech was not captured. Check the screening summary above for saved answers.
+        {% endif %}
+      </div>
+      {% endif %}
+    </div>
+
+    <details class="tech-panel">
+      <summary>
+        Technical details
+        <span class="muted" style="font-weight: 500;">turn traces, reply timing, voice pipeline errors</span>
+      </summary>
+      <div class="tech-panel-body stack">
+      <div class="card">
+        <div class="card-head">
+          <h2>Turn traces</h2>
+          <span class="muted">{{ turn_traces|length }} turn{{ "" if turn_traces|length == 1 else "s" }}</span>
+        </div>
+        {% if turn_traces %}
+        <p class="hint" style="margin-top: 0;">Per-turn timing from the voice pipeline. Compare with the conversation on the left.</p>
+        <div class="table-wrap">
+          <table class="screening-table" style="width: 100%; font-size: 13px;">
+            <thead>
+              <tr>
+                <th scope="col" class="muted" style="text-align:left;padding:4px 6px 4px 0;width:28px;">#</th>
+                <th scope="col" class="muted" style="text-align:left;padding:4px 6px;">Step</th>
+                <th scope="col" class="muted" style="text-align:right;padding:4px 6px;width:52px;">Turn</th>
+                <th scope="col" class="muted" style="text-align:right;padding:4px 6px;width:52px;">{{ glossary('llm') }}</th>
+                <th scope="col" class="muted" style="text-align:right;padding:4px 6px;width:52px;">{{ glossary('tts') }}</th>
+                <th scope="col" class="muted" style="text-align:right;padding:4px 6px;width:52px;">{{ glossary('ttfa') }}</th>
+                <th scope="col" class="muted" style="text-align:center;padding:4px 0;width:52px;">Done</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for t in turn_traces %}
+              <tr>
+                <td>{{ loop.index }}</td>
+                <td>{{ t.state|friendly_state }}</td>
+                <td style="text-align:right;">{{ "%.1f"|format((t.turn_ms or 0) / 1000) }}s</td>
+                <td style="text-align:right;">{{ "%.1f"|format((t.llm_ms or 0) / 1000) }}s</td>
+                <td style="text-align:right;">{{ "%.1f"|format((t.tts_ms or 0) / 1000) }}s</td>
+                <td style="text-align:right;">{% if t.ttfa_ms is not none %}{{ "%.1f"|format(t.ttfa_ms / 1000) }}s{% else %}-{% endif %}</td>
+                <td style="text-align:center;">{% if t.complete %}Yes{% elif t.timed_out %}Timeout{% else %}—{% endif %}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <div class="empty" style="padding:16px 12px;"><span class="empty-title">No turn traces</span>Per-turn timing wasn't recorded for this call.</div>
+        {% endif %}
+        {% if trace_errors %}
+        <h3 style="margin-top: 16px; font-size: 14px;">Voice pipeline errors</h3>
+        <ul class="muted" style="margin: 6px 0; padding-left: 18px; font-size: 13px;">
+          {% for err in trace_errors %}
+          <li>{{ err.get('type', 'error') }}: {{ err.get('message', err) }}</li>
+          {% endfor %}
+        </ul>
+        {% endif %}
+      </div>
+
+      {% if call.turn_count %}
+      <div class="card">
+        <div class="card-head"><h2>Reply timing</h2></div>
+        <table class="screening-table" style="width: 100%; font-size: 13px;">
+          <tbody>
+            <tr><td class="muted">Avg turn</td><td>{{ "%.1f"|format((call.avg_turn_ms or 0) / 1000) }}s</td></tr>
+            <tr><td class="muted">{{ glossary('llm') }}</td><td>{{ "%.1f"|format((call.avg_llm_ms or 0) / 1000) }}s</td></tr>
+            <tr><td class="muted">{{ glossary('tts') }}</td><td>{{ "%.1f"|format((call.avg_tts_ms or 0) / 1000) }}s</td></tr>
+            <tr><td class="muted">Slowest turn</td><td>{{ "%.1f"|format((call.max_turn_ms or 0) / 1000) }}s</td></tr>
+          </tbody>
+        </table>
+      </div>
+      {% endif %}
+      </div>
+    </details>
   </section>
 </div>
 
+<style>
+  .transcript-review { display: grid; gap: 10px; max-height: 720px; overflow-y: auto; padding-right: 4px; }
+  .transcript-line { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 10px 12px; background: #fff; }
+  .transcript-line.ai { border-left: 3px solid #2563eb; }
+  .transcript-line.tenant { border-left: 3px solid #64748b; }
+  .transcript-meta { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; font-size: 12px; }
+  .transcript-text { font-size: 14px; line-height: 1.45; white-space: pre-wrap; }
+</style>
+
 <script>
   const callId = "{{ call.id }}";
-
-  function showCallMsg(text, isError = false) {
-    const el = document.getElementById('callMsg');
-    el.textContent = text;
-    el.style.cssText = `margin-top:10px;padding:10px 12px;border-radius:8px;font-weight:600;`
-      + (isError ? 'background:#fee2e2;color:#991b1b;' : 'background:#dcfce7;color:#166534;');
-    setTimeout(() => { el.textContent = ''; el.style.cssText = ''; }, 4000);
-  }
 
   async function resendEmail() {
     try {
@@ -86,24 +232,71 @@
         const err = await r.json().catch(() => ({}));
         throw new Error(err.detail || r.statusText);
       }
-      showCallMsg('✓ Result email queued — it will arrive shortly.');
+      showMessage('Result email queued — it will arrive shortly.');
     } catch (e) {
-      showCallMsg('✗ Could not resend: ' + e.message, true);
+      showMessage('Could not resend: ' + e.message, true);
     }
   }
 
   async function deleteCall() {
-    if (!confirm('Delete this call? It will be hidden from lists and reports.')) return;
+    if (!confirm('Permanently delete this call? This also removes the applicant profile and any recording, and cannot be undone.')) return;
     try {
       const r = await fetch(`/admin/api/calls/${callId}`, { method: 'DELETE' });
       if (!r.ok) {
         const err = await r.json().catch(() => ({}));
         throw new Error(err.detail || r.statusText);
       }
-      showCallMsg('✓ Call deleted. Redirecting…');
+      showMessage('Call deleted. Redirecting…');
       setTimeout(() => { location.href = '/admin/calls'; }, 1200);
     } catch (e) {
-      showCallMsg('✗ Could not delete: ' + e.message, true);
+      showMessage('Could not delete: ' + e.message, true);
+    }
+  }
+
+  async function patchCall(path, body) {
+    const opts = { method: 'PATCH' };
+    if (body !== undefined) {
+      opts.headers = { 'Content-Type': 'application/json' };
+      opts.body = JSON.stringify(body);
+    }
+    const r = await fetch(`/admin/api/calls/${callId}${path}`, opts);
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      throw new Error(err.detail || r.statusText);
+    }
+    return r.json().catch(() => ({}));
+  }
+
+  async function saveQualification() {
+    try {
+      const sel = document.getElementById('qualOverride');
+      const status = sel.value;
+      const label = sel.options[sel.selectedIndex].text;
+      await patchCall('/qualification', { status });
+      showMessage('Result updated to ' + label + '.');
+    } catch (e) {
+      showMessage(e.message, true);
+    }
+  }
+
+  async function toggleReviewed() {
+    try {
+      const data = await patchCall('/review');
+      const btn = document.getElementById('reviewBtn');
+      const pill = document.getElementById('reviewStatePill');
+      const reviewed = !!data.reviewed;
+      if (btn) {
+        btn.textContent = reviewed ? 'Mark unreviewed' : 'Mark as reviewed';
+      }
+      if (pill) {
+        pill.className = 'review-chip ' + (reviewed ? 'reviewed' : 'needs-review');
+        pill.innerHTML = reviewed
+          ? '<span class="dot ok" aria-hidden="true"></span> Reviewed'
+          : '<span class="dot warn" aria-hidden="true"></span> Needs your review';
+      }
+      showMessage(reviewed ? 'Marked as reviewed.' : 'Marked as not reviewed.');
+    } catch (e) {
+      showMessage(e.message, true);
     }
   }
 </script>

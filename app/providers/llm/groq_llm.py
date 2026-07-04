@@ -7,9 +7,11 @@ at ~90ms latency. Uses the groq Python SDK.
 
 import logging
 
+from collections.abc import AsyncIterator
+
 from groq import AsyncGroq
 
-from app.providers.base import BaseLLMProvider
+from app.providers.base import BaseLLMProvider, usage_from_response
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -78,11 +80,44 @@ class GroqLLMProvider(BaseLLMProvider):
         if json_mode:
             kwargs["response_format"] = {"type": "json_object"}
 
+        self.last_usage = None
         try:
             response = await self.client.chat.completions.create(**kwargs)
             content = response.choices[0].message.content
+            self.last_usage = usage_from_response(response)
             logger.debug(f"Groq response ({len(content)} chars): {content[:100]}...")
             return content
         except Exception as e:
             logger.error(f"Groq API error: {e}")
             raise
+
+    async def stream_response(
+        self,
+        system_prompt: str,
+        messages: list[dict],
+        json_mode: bool = False,
+        temperature: float = 0.3,
+        max_tokens: int = 500,
+    ) -> AsyncIterator[str]:
+        """Yield text deltas from a streaming Groq completion."""
+        all_messages = [{"role": "system", "content": system_prompt}] + messages
+        kwargs = {
+            "model": self.model,
+            "messages": all_messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": True,
+        }
+        if json_mode:
+            kwargs["response_format"] = {"type": "json_object"}
+
+        self.last_usage = None
+        stream = await self.client.chat.completions.create(**kwargs)
+        async for chunk in stream:
+            if getattr(chunk, "usage", None):
+                self.last_usage = usage_from_response(chunk)
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta.content
+            if delta:
+                yield delta

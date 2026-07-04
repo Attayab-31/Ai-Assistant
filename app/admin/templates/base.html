@@ -39,6 +39,10 @@
     }
     a { color: var(--accent); text-decoration: none; }
     a:hover { text-decoration: underline; }
+    a:focus-visible, button:focus-visible, .btn:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
     h1, h2, h3 { color: var(--ink); }
     h2 { font-size: 16px; margin: 0 0 12px; }
     h3 { font-size: 14px; margin: 0 0 8px; }
@@ -99,11 +103,10 @@
     .shell { min-height: 100vh; display: grid; grid-template-columns: 248px 1fr; }
     .sidebar { background: var(--sidebar-bg); color: #cbd5e1; padding: 18px 14px; display: flex; flex-direction: column; gap: 6px; position: sticky; top: 0; height: 100vh; overflow-y: auto; }
     .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 15px; color: #fff; margin: 2px 6px 14px; }
-    .brand .logo { width: 30px; height: 30px; border-radius: 8px; background: linear-gradient(135deg,#3b82f6,#6366f1); display: grid; place-items: center; font-size: 16px; }
+    .brand .logo { width: 30px; height: 30px; border-radius: 8px; background: linear-gradient(135deg,#3b82f6,#6366f1); display: grid; place-items: center; font-size: 11px; font-weight: 800; letter-spacing: .04em; color: #fff; }
     .nav { display: grid; gap: 2px; }
     .nav-group-label { color: #64748b; font-size: 10px; text-transform: uppercase; letter-spacing: .08em; font-weight: 700; margin: 14px 8px 4px; }
-    .nav a { color: #cbd5e1; padding: 9px 10px; border-radius: 8px; display: flex; align-items: center; gap: 10px; font-weight: 500; }
-    .nav a .ico { width: 18px; text-align: center; opacity: .9; font-size: 15px; }
+    .nav a { color: #cbd5e1; padding: 9px 12px; border-radius: 8px; display: block; font-weight: 500; }
     .nav a.active { background: var(--accent); color: #fff; }
     .nav a:hover { background: #1e293b; color: #fff; text-decoration: none; }
     .nav a.active:hover { background: var(--accent); }
@@ -129,8 +132,7 @@
     .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; box-shadow: var(--shadow); }
     .card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
     .card-head h2 { margin: 0; }
-    .stat-tile .label { color: var(--muted); font-size: 13px; display: flex; align-items: center; gap: 7px; }
-    .stat-tile .ico { font-size: 16px; }
+    .stat-tile .label { color: var(--muted); font-size: 13px; font-weight: 600; }
     .metric { font-size: 28px; font-weight: 700; margin-top: 6px; letter-spacing: -.01em; }
     .metric small { font-size: 13px; font-weight: 500; color: var(--muted); }
 
@@ -149,18 +151,275 @@
     .progress > span { display: block; height: 100%; background: var(--accent); border-radius: 999px; transition: width .4s ease; }
 
     /* Empty state */
-    .empty { text-align: center; color: var(--muted); padding: 26px 14px; }
-    .empty .ico { font-size: 28px; display: block; margin-bottom: 6px; opacity: .7; }
+    .empty { text-align: center; color: var(--muted); padding: 28px 16px; }
+    .empty-title { display: block; color: var(--ink-soft); font-weight: 600; font-size: 14px; margin-bottom: 4px; }
+
+    .banner { padding: 10px 12px; border-radius: var(--radius-sm); font-size: 13px; margin-bottom: 12px; line-height: 1.45; }
+    .banner-warn { background: #fffbeb; border: 1px solid #fde68a; color: #92400e; }
+    .banner-error { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; }
+    .banner-info { background: #eff6ff; border: 1px solid #bfdbfe; color: #1e40af; }
 
     .pre { white-space: pre-wrap; background: #f8fafc; border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+
+    /* Shared screening summary table (call detail + tenant detail) */
+    .screening-table td { padding: 4px 8px 4px 0; vertical-align: top; }
+    .screening-table .muted { width: 180px; }
 
     /* Wraps a table so it scrolls horizontally on narrow screens instead of
        overflowing the page. */
     .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; border-radius: var(--radius); }
 
+    /* Shared form-group (used outside settings pages too) */
+    .form-group { margin-bottom: 16px; }
+    .form-group > label { display: block; font-weight: 600; color: var(--ink-soft); margin-bottom: 4px; }
+    .form-actions { display: flex; gap: 8px; margin-top: 20px; flex-wrap: wrap; }
+
     /* Help / hint text for non-technical users */
     .hint { color: var(--muted); font-size: 12px; margin-top: 4px; }
-    .callout { background: var(--accent-soft); border: 1px solid #cdddff; color: #1e40af; border-radius: var(--radius-sm); padding: 12px 14px; font-size: 13px; display: flex; gap: 10px; }
+    .text-muted { color: var(--muted); font-size: 13px; }
+    .callout { background: var(--accent-soft); border: 1px solid #cdddff; color: #1e40af; border-radius: var(--radius-sm); padding: 12px 14px; font-size: 13px; line-height: 1.45; }
+
+    .sr-only {
+      position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+      overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0;
+    }
+    .skip-link {
+      position: absolute; left: -9999px; top: 0; z-index: 10001;
+      padding: 10px 14px; background: var(--accent); color: #fff; border-radius: var(--radius-sm);
+      font-weight: 600; text-decoration: none;
+    }
+    .skip-link:focus { left: 12px; top: 12px; }
+
+    .menu-icon {
+      width: 14px; height: 2px; background: currentColor; border-radius: 1px;
+      box-shadow: 0 -5px 0 currentColor, 0 5px 0 currentColor;
+    }
+    @media (min-width: 901px) { .menu-label { display: none; } }
+
+    /* Labeled summary blocks (call/applicant detail headers) */
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 14px 20px;
+      margin: 16px 0 0;
+    }
+    .summary-item dt {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: .02em;
+    }
+    .summary-item dd {
+      margin: 4px 0 0;
+      font-size: 14px;
+      color: var(--ink);
+    }
+
+    /* Glossary tooltips — plain language for technical terms */
+    abbr.glossary-tip {
+      text-decoration: none;
+      border-bottom: 1px dotted var(--muted);
+      cursor: help;
+    }
+    abbr.glossary-tip:hover,
+    abbr.glossary-tip:focus {
+      color: var(--accent);
+      border-bottom-color: var(--accent);
+    }
+
+    /* Reviewer workflow (call + applicant detail) */
+    .review-status-strip {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 16px;
+      margin-bottom: 16px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      font-size: 14px;
+    }
+    .review-chip { display: inline-flex; align-items: center; gap: 6px; }
+    .review-chip.needs-review { color: #92400e; font-weight: 600; }
+    .review-chip.reviewed { color: var(--ink-soft); font-weight: 600; }
+    .review-sep { color: var(--muted); user-select: none; }
+    .reviewer-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: flex-end;
+      padding: 14px 16px;
+      margin-bottom: 16px;
+      background: #f8fafc;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+    }
+    .reviewer-result-group {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: flex-end;
+    }
+    .reviewer-result-group label { font-size: 12px; margin: 0; }
+    .reviewer-result-group select { min-width: 160px; padding: 8px 10px; border-radius: var(--radius-sm); border: 1px solid var(--line); }
+    .reviewer-actions .reviewer-danger { margin-left: auto; }
+    @media (max-width: 680px) {
+      .reviewer-actions .reviewer-danger { margin-left: 0; width: 100%; }
+    }
+
+    /* Filter tabs (Applicants queues, etc.) */
+    .filter-pills {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 14px;
+      align-items: center;
+    }
+    .filter-pills a {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 12px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: var(--panel);
+      color: var(--ink-soft);
+      font-size: 13px;
+      font-weight: 600;
+      text-decoration: none;
+    }
+    .filter-pills a:hover { border-color: #c7d2fe; background: var(--accent-soft); color: var(--accent); text-decoration: none; }
+    .filter-pills a.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .filter-pills a.active:hover { background: var(--accent); color: #fff; }
+    .filter-pills .count {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 20px;
+      height: 20px;
+      padding: 0 6px;
+      border-radius: 999px;
+      background: rgba(255,255,255,.22);
+      font-size: 11px;
+      font-weight: 700;
+    }
+    .filter-pills a:not(.active) .count { background: #fef3c7; color: #92400e; }
+
+    /* Home onboarding checklist */
+    .onboarding-card { margin-bottom: 16px; }
+    .onboarding-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-bottom: 16px;
+    }
+    .onboarding-progress {
+      font-size: 13px;
+      white-space: nowrap;
+      padding: 4px 10px;
+      background: #f8fafc;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+    }
+    .onboarding-steps {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: grid;
+      gap: 12px;
+    }
+    .onboarding-step {
+      display: flex;
+      gap: 14px;
+      align-items: flex-start;
+      padding: 14px 16px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #fafbfc;
+    }
+    .onboarding-step.done {
+      background: #f0fdf4;
+      border-color: #bbf7d0;
+    }
+    .onboarding-check {
+      flex: 0 0 28px;
+      width: 28px;
+      height: 28px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 999px;
+      font-size: 13px;
+      font-weight: 700;
+      background: #e2e8f0;
+      color: #475569;
+    }
+    .onboarding-step.done .onboarding-check,
+    .onboarding-check.done {
+      background: #16a34a;
+      color: #fff;
+    }
+    .onboarding-step-body strong { display: block; margin-bottom: 4px; }
+    .onboarding-step-body p { margin: 0 0 10px; font-size: 14px; }
+    .onboarding-step.done .onboarding-step-body p { margin-bottom: 0; }
+    .onboarding-complete {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 16px;
+      padding: 12px 16px;
+      background: #f0fdf4;
+      border-color: #bbf7d0;
+      color: #166534;
+    }
+
+    /* List pagination */
+    .pagination {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 14px;
+    }
+    .pagination-meta { font-size: 13px; }
+
+    /* Collapsed technical sections (call detail, monitor diagnostics) */
+    details.tech-panel {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--panel);
+      box-shadow: var(--shadow);
+    }
+    details.tech-panel > summary {
+      cursor: pointer;
+      padding: 14px 18px;
+      font-weight: 600;
+      font-size: 14px;
+      list-style: none;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      user-select: none;
+    }
+    details.tech-panel > summary::-webkit-details-marker { display: none; }
+    details.tech-panel > summary::before {
+      content: "▸";
+      color: var(--muted);
+      margin-right: 8px;
+      transition: transform .15s ease;
+    }
+    details.tech-panel[open] > summary::before { transform: rotate(90deg); }
+    details.tech-panel .tech-panel-body { padding: 0 18px 18px; }
+    details.tech-panel .tech-panel-body > .card,
+    details.tech-panel .tech-panel-body > section.card { box-shadow: none; margin-top: 12px; }
+    details.tech-panel .tech-panel-body > .card:first-child,
+    details.tech-panel .tech-panel-body > section.card:first-child { margin-top: 0; }
 
     /* Toast */
     .toast-wrap { position: fixed; right: 18px; bottom: 18px; display: grid; gap: 8px; z-index: 9999; }
@@ -205,47 +464,53 @@
   {% block head %}{% endblock %}
 </head>
 <body>
+  <a class="skip-link" href="#main-content">Skip to main content</a>
   <div id="navbar"></div>
   <div class="shell">
-    <div class="scrim" id="scrim" onclick="toggleNav(false)"></div>
-    <aside class="sidebar" id="sidebar">
-      <div class="brand"><span class="logo">🏠</span> Tenant Screener</div>
+    <div class="scrim" id="scrim" onclick="toggleNav(false)" role="presentation"></div>
+    <aside class="sidebar" id="sidebar" aria-label="Main navigation">
+      <div class="brand"><span class="logo" aria-hidden="true">TS</span> Tenant Screener</div>
       <nav class="nav">
-        <a class="{{ 'active' if active_page == 'dashboard' else '' }}" href="/admin/dashboard"><span class="ico">🏡</span> Home</a>
+        <a class="{{ 'active' if active_page == 'dashboard' else '' }}" href="/admin/dashboard">Home</a>
         {% if user.can('monitor') %}
-        <a class="{{ 'active' if active_page == 'monitor' else '' }}" href="/admin/monitor"><span class="ico">📡</span> Live Monitor</a>
+        <a class="{{ 'active' if active_page == 'monitor' else '' }}" href="/admin/monitor">Live Monitor</a>
         {% endif %}
 
         <div class="nav-group-label">People &amp; Calls</div>
         {% if user.can('calls') %}
-        <a class="{{ 'active' if active_page == 'calls' else '' }}" href="/admin/calls"><span class="ico">📞</span> Calls</a>
+        <a class="{{ 'active' if active_page == 'calls' else '' }}" href="/admin/calls">Calls</a>
         {% endif %}
         {% if user.can('tenants') %}
-        <a class="{{ 'active' if active_page == 'tenants' else '' }}" href="/admin/tenants"><span class="ico">👤</span> Applicants</a>
+        <a class="{{ 'active' if active_page == 'tenants' else '' }}" href="/admin/tenants">Applicants</a>
         {% endif %}
         {% if user.can('analytics') %}
-        <a class="{{ 'active' if active_page == 'analytics' else '' }}" href="/admin/analytics"><span class="ico">📊</span> Analytics</a>
+        <a class="{{ 'active' if active_page == 'analytics' else '' }}" href="/admin/analytics">Analytics</a>
         {% endif %}
 
         <div class="nav-group-label">Configuration</div>
         {% if user.can('settings') %}
-        <a class="{{ 'active' if active_page == 'settings' else '' }}" href="/admin/settings/providers"><span class="ico">⚙️</span> Settings</a>
-        <a href="/test/call" target="_blank" rel="noopener"><span class="ico">📞</span> Client Call</a>
+        <a class="{{ 'active' if active_page == 'settings' else '' }}" href="/admin/settings/general">Settings</a>
+        {% if user.can('settings') and user.can_edit %}
+        <a href="/test/call" target="_blank" rel="noopener">Caller demo page</a>
+        {% endif %}
         {% endif %}
         {% if user.can('audit') %}
-        <a class="{{ 'active' if active_page == 'audit_log' else '' }}" href="/admin/audit-log"><span class="ico">📝</span> Activity Log</a>
+        <a class="{{ 'active' if active_page == 'audit_log' else '' }}" href="/admin/audit-log">Activity log</a>
         {% endif %}
         {% if user.can('accounts') %}
-        <a class="{{ 'active' if active_page == 'account' else '' }}" href="/admin/account"><span class="ico">🔑</span> Team Accounts</a>
+        <a class="{{ 'active' if active_page == 'account' else '' }}" href="/admin/account">Team accounts</a>
         {% endif %}
       </nav>
-      <div class="sidebar-foot">AI Tenant Screener · v1.0</div>
+      <div class="sidebar-foot">Tenant Screener · v1.0</div>
     </aside>
 
-    <main class="main">
+    <main class="main" id="main-content">
       <div class="topbar">
         <div style="display:flex; align-items:center; gap:12px;">
-          <button class="btn btn-secondary btn-sm menu-btn" onclick="toggleNav(true)" aria-label="Open menu">☰</button>
+          <button type="button" class="btn btn-secondary btn-sm menu-btn" onclick="toggleNav(true)" aria-label="Open navigation menu" aria-expanded="false" id="menuBtn">
+            <span class="menu-icon" aria-hidden="true"></span>
+            <span class="menu-label">Menu</span>
+          </button>
           <div>
             <h1>{% block page_title %}Dashboard{% endblock %}</h1>
             {% block page_sub %}{% endblock %}
@@ -260,9 +525,8 @@
         {% endif %}
       </div>
       {% if user and not user.can_edit %}
-      <div class="callout" style="margin-bottom:16px;">
-        <span>👁️</span>
-        <span>Your account is <strong>read-only</strong>. You can view this area but can't make changes.</span>
+      <div class="callout" style="margin-bottom:16px;" role="status">
+        Your account is <strong>read-only</strong>. You can view this area but cannot make changes.
       </div>
       {% endif %}
       {% block content %}{% endblock %}
@@ -275,6 +539,8 @@
     function toggleNav(open) {
       document.getElementById('sidebar').classList.toggle('open', open);
       document.getElementById('scrim').classList.toggle('show', open);
+      const btn = document.getElementById('menuBtn');
+      if (btn) btn.setAttribute('aria-expanded', open ? 'true' : 'false');
     }
     function showToast(message, kind) {
       const wrap = document.getElementById('toastWrap');
@@ -287,8 +553,34 @@
     }
     async function adminLogout(e) {
       if (e) e.preventDefault();
-      try { await fetch('/auth/logout', { method: 'POST' }); } catch (err) { /* ignore */ }
+      try {
+        await fetch('/auth/logout', {
+          method: 'POST',
+          headers: { 'X-Requested-With': 'XMLHttpRequest' },
+        });
+      } catch (err) { /* ignore */ }
       window.location.href = '/admin/login';
+    }
+    // Patch fetch so all admin API calls include the CSRF header expected by
+    // cookie-authenticated mutating routes.
+    (function () {
+      const origFetch = window.fetch;
+      window.fetch = function (url, opts) {
+        opts = opts || {};
+        const headers = new Headers(opts.headers || {});
+        if (!headers.has('X-Requested-With')) {
+          headers.set('X-Requested-With', 'XMLHttpRequest');
+        }
+        opts.headers = headers;
+        return origFetch(url, opts);
+      };
+    })();
+    // Unified flash message for every admin page. Pages historically defined
+    // their own showMessage/showAcctMsg/showCallMsg helpers; they all delegate
+    // here now so there is a single notification standard.
+    function showMessage(text, isError) {
+      const cleaned = String(text || '').replace(/^[\u2713\u2717✓✗]\s*/, '').trim();
+      showToast(cleaned || String(text), isError ? 'bad' : 'ok');
     }
 
     // ── Button loading states ─────────────────────────────────────────────

@@ -1,0 +1,52 @@
+{# Shared screening summary used by both call detail and tenant detail.
+   Expects in context: tenant, custom_fields, field_labels, flow_rows, and an
+   optional `flow_subtitle` string (e.g. "(at time of call)").
+   When `summary_rows` is provided (from the frozen question snapshot), it drives
+   the table so custom admin questions appear in call order. #}
+<table class="screening-table" style="width: 100%; margin-top: 12px;">
+  <tbody>
+    {% if summary_rows %}
+    {% for row in summary_rows %}
+    <tr><td class="muted">{{ row.label }}</td><td>{{ row.value }}</td></tr>
+    {% endfor %}
+    {% else %}
+    <tr><td class="muted">Full name</td><td>{{ tenant.full_name or "-" }}</td></tr>
+    <tr><td class="muted">Contact phone</td><td>{{ tenant.contact_phone|phone_display if tenant.contact_phone else "-" }}</td></tr>
+    <tr><td class="muted">Email</td><td>{{ tenant.email or "-" }}</td></tr>
+    <tr><td class="muted">Move-in</td><td>{{ tenant.move_in_raw or tenant.move_in_date or "-" }}</td></tr>
+    <tr><td class="muted">Move timing</td><td>{{ tenant.move_timing or "-" }}</td></tr>
+    <tr><td class="muted">Occupants</td><td>{{ tenant.occupants_count or "-" }} total ({{ tenant.adults_count or "-" }} adults, {{ tenant.children_count or 0 }} children)</td></tr>
+    <tr><td class="muted">Current residence</td><td>{{ tenant.current_residence or "-" }}</td></tr>
+    <tr><td class="muted">Time at residence</td><td>{{ tenant.residence_duration or "-" }}</td></tr>
+    <tr><td class="muted">Move reason</td><td>{{ tenant.move_reason or "-" }}</td></tr>
+    <tr><td class="muted">Pets</td><td>{% if tenant.has_pets is none %}-{% elif tenant.has_pets %}Yes{% if tenant.pet_type %} — {{ tenant.pet_type }}{% endif %}{% if tenant.pet_breed %}, {{ tenant.pet_breed }}{% endif %}{% if tenant.pet_weight %}, ~{{ tenant.pet_weight }} lbs{% endif %}{% else %}No{% endif %}</td></tr>
+    <tr><td class="muted">Eviction history</td><td>{% if tenant.has_eviction is none %}-{% elif tenant.has_eviction %}Yes{% if tenant.eviction_circumstances %} — {{ tenant.eviction_circumstances }}{% endif %}{% else %}No{% endif %}</td></tr>
+    <tr><td class="muted">Monthly income</td><td>{{ tenant.monthly_income|currency if tenant.monthly_income else (tenant.income_raw or "-") }}</td></tr>
+    <tr><td class="muted">Employer</td><td>{{ tenant.employer or "-" }}</td></tr>
+    <tr><td class="muted">Employment duration</td><td>{{ tenant.employment_duration or "-" }}</td></tr>
+    <tr><td class="muted">Background notes</td><td>{{ tenant.general_notes or "-" }}</td></tr>
+    {% if custom_fields %}
+    {% for key, value in custom_fields.items() %}
+    <tr><td class="muted">{{ field_labels.get(key, key|replace('_', ' ')|title) }}</td><td>{{ value }}</td></tr>
+    {% endfor %}
+    {% endif %}
+    {% endif %}
+  </tbody>
+</table>
+{% if flow_rows %}
+<h3 style="margin-top: 20px; font-size: 15px;">Screening flow{% if flow_subtitle %} {{ flow_subtitle }}{% endif %}</h3>
+<table class="screening-table" style="width: 100%; margin-top: 8px; font-size: 14px;">
+  <thead>
+    <tr>
+      <th scope="col" class="muted" style="text-align:left;padding:4px 8px 4px 0;width:40px;">#</th>
+      <th scope="col" class="muted" style="text-align:left;padding:4px 8px;">Question</th>
+      <th scope="col" class="muted" style="text-align:left;padding:4px 8px;width:90px;">Status</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in flow_rows %}
+    <tr><td>{{ row.order }}</td><td>{{ row.question }}</td><td>{{ row.status }}</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}

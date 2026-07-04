@@ -44,6 +44,23 @@ ASSIGNABLE_ROLES: tuple[str, ...] = ("admin", "staff", "viewer")
 _LEGACY_DEFAULT_SCOPES: frozenset[str] = ALL_SCOPES - {"settings"}
 
 
+def validate_assignable_scopes(role: str, scopes: list[str]) -> list[str]:
+    """Validate and normalize scope list for staff/viewer roles."""
+    if role not in ASSIGNABLE_ROLES:
+        raise ValueError(f"Invalid role: {role}")
+    cleaned = sorted({s.strip() for s in scopes if s.strip()})
+    invalid = set(cleaned) - ALL_SCOPES
+    if invalid:
+        raise ValueError(
+            f"Unknown access areas: {', '.join(sorted(invalid))}"
+        )
+    if role in ("staff", "viewer") and not cleaned:
+        raise ValueError(
+            "Pick at least one access area for staff and viewer accounts."
+        )
+    return cleaned
+
+
 class AdminUser(Base):
     """Admin user with role + per-area permission scopes."""
 

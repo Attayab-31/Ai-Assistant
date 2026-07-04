@@ -18,7 +18,7 @@ from typing import Any
 
 import redis.asyncio as aioredis
 
-from config import settings
+from config import redis_url_connection_kwargs, settings
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +42,7 @@ def get_redis() -> aioredis.Redis | None:
                 socket_timeout=2,
                 health_check_interval=30,
                 retry_on_timeout=True,
+                **redis_url_connection_kwargs(settings.redis_url),
             )
         except Exception as e:  # pragma: no cover - construction is lazy
             logger.warning("Redis client init failed: %s", e)
@@ -107,17 +108,75 @@ async def cache_delete(*keys: str) -> None:
         logger.debug("cache_delete failed: %s", e)
 
 
-async def acquire_once(key: str, ttl_seconds: int) -> bool:
+async def acquire_once(key: str, ttl_seconds: int, *, fail_closed: bool = False) -> bool:
     """Idempotency guard: True the first time, False if already seen.
 
-    Fails OPEN — if Redis is unreachable we return True so real work is never
-    blocked by a cache outage.
+    By default fails OPEN (returns True when Redis is down). Set
+    ``fail_closed=True`` for production webhooks so duplicate deliveries are
+    rejected rather than double-processed.
     """
     r = get_redis()
     if r is None:
-        return True
+        return not fail_closed
     try:
         return bool(await r.set(key, "1", nx=True, ex=ttl_seconds))
     except Exception as e:
         logger.debug("acquire_once(%s) failed: %s", key, e)
-        return True
+        return not fail_closed
+
+
+async def set_stream_stop_signal(call_id: str, ttl_seconds: int = 3600) -> None:
+    """Signal a live audio stream to stop (cross-process hangup support)."""
+    r = get_redis()
+    if r is None:
+        return
+    try:
+        await r.setex(f"stream:stop:{call_id}", ttl_seconds, "1")
+    except Exception as e:
+        logger.debug("set_stream_stop_signal(%s) failed: %s", call_id, e)
+
+
+async def is_stream_stop_signaled(call_id: str) -> bool:
+    """True when another process (or hangup webhook) requested stream stop."""
+    r = get_redis()
+    if r is None:
+        return False
+    try:
+        return bool(await r.get(f"stream:stop:{call_id}"))
+    except Exception as e:
+        logger.debug("is_stream_stop_signaled(%s) failed: %s", call_id, e)
+        return False
+
+
+async def clear_stream_stop_signal(call_id: str) -> None:
+    """Remove a stream-stop flag after the stream has shut down."""
+    await cache_delete(f"stream:stop:{call_id}")
+
+
+async def revoke_token(token: str, ttl_seconds: int) -> None:
+    """Denylist a JWT until it expires (logout / forced sign-out)."""
+    import hashlib
+
+    r = get_redis()
+    if r is None or not token:
+        return
+    digest = hashlib.sha256(token.encode()).hexdigest()
+    try:
+        await r.setex(f"auth:revoked:{digest}", max(1, ttl_seconds), "1")
+    except Exception as e:
+        logger.debug("revoke_token failed: %s", e)
+
+
+async def is_token_revoked(token: str) -> bool:
+    """True when the token was explicitly revoked before expiry."""
+    import hashlib
+
+    r = get_redis()
+    if r is None or not token:
+        return False
+    digest = hashlib.sha256(token.encode()).hexdigest()
+    try:
+        return bool(await r.get(f"auth:revoked:{digest}"))
+    except Exception as e:
+        logger.debug("is_token_revoked failed: %s", e)
+        return False

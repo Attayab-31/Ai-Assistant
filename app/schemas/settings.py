@@ -53,17 +53,43 @@ class ProviderTestResponse(BaseModel):
     error: str | None = None
 
 
+class ConditionalRule(BaseModel):
+    field: str
+    operator: Literal["eq", "ne", "truthy", "falsy"] = "truthy"
+    value: Any | None = None
+
+
+class ScoringRule(BaseModel):
+    enabled: bool = False
+    max_points: int = Field(default=0, ge=0, le=100)
+    rule_type: Literal[
+        "any_answer", "yes_no", "numeric_range", "date_within", "required_field"
+    ] = "any_answer"
+    pass_config: dict[str, Any] = Field(default_factory=dict)
+    auto_disqualify: bool = False
+
+
 class ScreeningQuestion(BaseModel):
     id: str
     state: str
     question: str
+    answer_type: Literal[
+        "text", "long_text", "yes_no", "number", "currency", "date", "phone", "email"
+    ] = "text"
     extract_fields: list[str] = Field(default_factory=list)
+    field_labels: dict[str, str] = Field(default_factory=dict)
     validation: str | None = None
     retry_prompt: str | None = None
     retry_prompt_2: str | None = None
     retry_prompt_3: str | None = None
     active: bool = True
     order: int = 0
+    required: bool = True
+    requires_confirmation: bool = False
+    conditional: ConditionalRule | None = None
+    scoring: ScoringRule | None = None
+    understanding_guide: str | None = None
+    schema_version: int | None = None
 
 
 class QuestionsUpdateRequest(BaseModel):
@@ -159,9 +185,9 @@ class EmailSettingsUpdate(BaseModel):
 
 class GeneralSettingsUpdate(BaseModel):
     property_name: str | None = None
-    ai_agent_name: str | None = None
-    min_income_threshold: int | None = None
-    disqualify_on_eviction: bool | None = None
+    greeting_message: str | None = None
+    closing_message: str | None = None
+    provider_failure_message: str | None = None
     call_recording_enabled: bool | None = None
     max_call_duration_seconds: int | None = None
     silence_timeout_seconds: int | None = None
@@ -172,22 +198,50 @@ class GeneralSettingsUpdate(BaseModel):
     ] | None = None
     stt_fallback_provider: Literal["auto", "deepgram", "groq", "none"] | None = None
     tts_fallback_provider: Literal["auto", "google", "deepgram", "none"] | None = None
-    score_weight_income: int | None = None
-    score_weight_eviction: int | None = None
-    score_weight_completion: int | None = None
-    score_weight_move_date: int | None = None
-    score_weight_rental_history: int | None = None
-    score_weight_household_fit: int | None = None
-    monthly_rent_for_income_ratio: int | None = None
-    income_multiplier: float | None = None
     qualified_score_threshold: int | None = None
     review_score_threshold: int | None = None
+    llm_temperature: float | None = None
+    llm_max_tokens: int | None = None
     timezone: str | None = None
     tts_voice_google: str | None = None
     tts_voice_deepgram: str | None = None
     tts_speed: float | None = None
     deepgram_model: str | None = None
-    hold_music_enabled: bool | None = None
     crm_webhook_url: str | None = None
     crm_webhook_secret: str | None = None
     blacklisted_numbers: Any | None = None
+    retention_enabled: bool | None = None
+    retention_calls_days: int | None = None
+    retention_recording_days: int | None = None
+    retention_audit_days: int | None = None
+    retention_soft_deleted_days: int | None = None
+    retention_stale_call_hours: int | None = None
+    voice_latency_profile: Literal["fast", "balanced", "quality"] | None = None
+    llm_streaming_enabled: bool | None = None
+
+    @field_validator("max_retries_per_question")
+    @classmethod
+    def validate_max_retries(cls, value: int | None) -> int | None:
+        if value is None:
+            return value
+        if not (1 <= int(value) <= 5):
+            raise ValueError("max_retries_per_question must be between 1 and 5")
+        return int(value)
+
+    @field_validator("silence_timeout_seconds")
+    @classmethod
+    def validate_silence_timeout(cls, value: int | None) -> int | None:
+        if value is None:
+            return value
+        if not (2 <= int(value) <= 30):
+            raise ValueError("silence_timeout_seconds must be between 2 and 30")
+        return int(value)
+
+    @field_validator("max_call_duration_seconds")
+    @classmethod
+    def validate_max_duration(cls, value: int | None) -> int | None:
+        if value is None:
+            return value
+        if not (60 <= int(value) <= 3600):
+            raise ValueError("max_call_duration_seconds must be between 60 and 3600")
+        return int(value)

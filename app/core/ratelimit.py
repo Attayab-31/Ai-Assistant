@@ -24,12 +24,25 @@ from threading import Lock
 
 from fastapi import HTTPException, Request, status
 from slowapi import Limiter
-from slowapi.util import get_remote_address
+
+
+def client_ip(request: Request) -> str:
+    """Resolve the client IP, honoring reverse-proxy headers when present."""
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    real_ip = request.headers.get("x-real-ip", "")
+    if real_ip:
+        return real_ip.strip()
+    if request.client and request.client.host:
+        return request.client.host
+    return "127.0.0.1"
+
 
 # In-memory storage: never touches the read-only Redis (see module docstring).
 # A single shared instance is kept for the app's RateLimitExceeded handler.
 limiter = Limiter(
-    key_func=get_remote_address,
+    key_func=client_ip,
     storage_uri="memory://",
     swallow_errors=True,
 )
@@ -54,7 +67,7 @@ def check_auth_rate_limit(request: Request) -> None:
     login and ``reset_auth_failures`` on a successful one. This way a valid
     password is never counted and can never cause a lockout.
     """
-    ip = get_remote_address(request)
+    ip = client_ip(request)
     cutoff = time.monotonic() - _AUTH_FALLBACK_WINDOW_S
     with _auth_failures_lock:
         bucket = _auth_failures.get(ip)
@@ -70,7 +83,7 @@ def check_auth_rate_limit(request: Request) -> None:
 
 def record_auth_failure(request: Request) -> None:
     """Record a failed auth attempt for this IP (drives the 429 backstop)."""
-    ip = get_remote_address(request)
+    ip = client_ip(request)
     now = time.monotonic()
     cutoff = now - _AUTH_FALLBACK_WINDOW_S
     with _auth_failures_lock:
@@ -87,6 +100,6 @@ def record_auth_failure(request: Request) -> None:
 
 def reset_auth_failures(request: Request) -> None:
     """Clear recorded failures for this IP after a successful login."""
-    ip = get_remote_address(request)
+    ip = client_ip(request)
     with _auth_failures_lock:
         _auth_failures.pop(ip, None)

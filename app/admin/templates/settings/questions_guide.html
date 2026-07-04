@@ -1,0 +1,37 @@
+{% extends "settings/base.html" %}
+{% block title %}Questions Guide{% endblock %}
+{% block page_title %}How screening questions work{% endblock %}
+{% block settings_page_sub %}<div class="sub">A plain-language reference for building and scoring your call flow.</div>{% endblock %}
+{% block settings_content %}
+
+<div class="toolbar" style="margin-bottom: 16px;">
+  <a class="btn btn-secondary" href="/admin/settings/questions">Back to questions</a>
+</div>
+
+<article class="form-section guide-doc" style="max-width: 820px; line-height: 1.55; font-size: 14px;">
+  {{ content_html | safe }}
+</article>
+
+<style>
+  .guide-doc h1 { font-size: 22px; margin: 0 0 12px; }
+  .guide-doc h2 { font-size: 17px; margin: 24px 0 10px; color: var(--ink-soft); }
+  .guide-doc h3 { font-size: 15px; margin: 18px 0 8px; }
+  .guide-doc p { margin: 0 0 10px; color: var(--ink-soft); }
+  .guide-doc ul { margin: 0 0 12px; padding-left: 20px; }
+  .guide-doc li { margin-bottom: 6px; }
+  .guide-doc code {
+    background: var(--line-soft);
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-size: 12px;
+  }
+  .guide-doc pre {
+    background: #f8fafc;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    padding: 12px;
+    overflow-x: auto;
+    font-size: 13px;
+  }
+</style>
+{% endblock %}

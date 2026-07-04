@@ -11,7 +11,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import and_, desc, func, select, update
+from sqlalchemy import and_, delete, desc, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -20,7 +20,7 @@ from app.models.call import Call
 from app.models.settings import SystemSetting
 from app.models.tenant import Tenant
 from app.models.user import AdminUser
-from app.utils.security import mask_email, mask_phone
+from app.utils.security import is_sensitive_setting_key, mask_email, mask_phone
 from config import (
     DEFAULT_FAQS,
     DEFAULT_QUESTIONS,
@@ -122,16 +122,35 @@ async def seed_defaults(db: AsyncSession) -> None:
 
     if not missing_settings and not admin_created and not synced_settings:
         logger.info("Default seed data already present")
-        return
+    else:
+        await db.commit()
+        logger.info(
+            "Seeded defaults: %s settings inserted, %s env-backed settings synced, "
+            "admin_created=%s",
+            len(missing_settings),
+            len(synced_settings),
+            admin_created,
+        )
 
-    await db.commit()
+    await ensure_screening_questions_v2(db)
+
+
+async def ensure_screening_questions_v2(db: AsyncSession) -> bool:
+    """Persist v1-shaped screening_questions JSON as schema v2 on startup."""
+    from app.core.question_flow import is_v2_question, normalize_questions
+
+    raw = await get_setting_value(db, "screening_questions", [])
+    if not raw or not isinstance(raw, list):
+        return False
+    if all(is_v2_question(q) for q in raw):
+        return False
+
+    normalized = normalize_questions(raw)
+    await set_setting(db, "screening_questions", json.dumps(normalized))
     logger.info(
-        "Seeded defaults: %s settings inserted, %s env-backed settings synced, "
-        "admin_created=%s",
-        len(missing_settings),
-        len(synced_settings),
-        admin_created,
+        "Upgraded screening_questions to schema v2 (%d questions)", len(normalized)
     )
+    return True
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -140,7 +159,7 @@ async def seed_defaults(db: AsyncSession) -> None:
 
 
 async def create_call(
-    db: AsyncSession, call_id: str, phone_number: str, **kwargs
+    db: AsyncSession, call_id: str, phone_number: str, *, commit: bool = True, **kwargs
 ) -> Call:
     """Create a new call record."""
     status = kwargs.pop("status", "initiated")
@@ -152,8 +171,11 @@ async def create_call(
         **kwargs,
     )
     db.add(call)
-    await db.commit()
-    await db.refresh(call)
+    if commit:
+        await db.commit()
+        await db.refresh(call)
+    else:
+        await db.flush()
     logger.info("Call created: %s from %s", call_id, mask_phone(phone_number))
     return call
 
@@ -178,11 +200,16 @@ async def get_call_by_uuid(db: AsyncSession, call_uuid: uuid.UUID) -> Call | Non
     return result.scalar_one_or_none()
 
 
-async def update_call(db: AsyncSession, call_id: str, **kwargs) -> Call | None:
+async def update_call(
+    db: AsyncSession, call_id: str, *, commit: bool = True, **kwargs
+) -> Call | None:
     """Update call record fields."""
     kwargs["updated_at"] = datetime.now(UTC)
     await db.execute(update(Call).where(Call.call_id == call_id).values(**kwargs))
-    await db.commit()
+    if commit:
+        await db.commit()
+        return await get_call_by_call_id(db, call_id)
+    await db.flush()
     return await get_call_by_call_id(db, call_id)
 
 
@@ -243,15 +270,147 @@ async def list_calls(
     return result.scalars().all(), total
 
 
-async def soft_delete_call(db: AsyncSession, call_uuid: uuid.UUID) -> bool:
-    """Soft delete a call record."""
-    await db.execute(
-        update(Call)
-        .where(Call.id == call_uuid)
-        .values(is_deleted=True, updated_at=datetime.now(UTC))
-    )
+async def hard_delete_call(db: AsyncSession, call_uuid: uuid.UUID) -> bool:
+    """Permanently delete a call. The linked tenant row is removed by the
+    ``ON DELETE CASCADE`` on ``tenants.call_id`` (see the initial migration)."""
+    await db.execute(delete(Call).where(Call.id == call_uuid))
     await db.commit()
     return True
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Retention / cleanup (used by the daily Celery purge task)
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+async def purge_calls_before(
+    db: AsyncSession, cutoff: datetime, *, batch_size: int = 500
+) -> int:
+    """Hard-delete calls created before ``cutoff`` (CASCADE removes tenants)."""
+    total = 0
+    while True:
+        ids_result = await db.execute(
+            select(Call.id).where(Call.created_at < cutoff).limit(batch_size)
+        )
+        ids = [row[0] for row in ids_result.all()]
+        if not ids:
+            break
+        result = await db.execute(delete(Call).where(Call.id.in_(ids)))
+        await db.commit()
+        total += result.rowcount or 0
+        if len(ids) < batch_size:
+            break
+    return total
+
+
+async def purge_soft_deleted_calls_before(
+    db: AsyncSession, cutoff: datetime, *, batch_size: int = 500
+) -> int:
+    """Hard-delete legacy soft-deleted calls last touched before ``cutoff``."""
+    total = 0
+    while True:
+        ids_result = await db.execute(
+            select(Call.id)
+            .where(Call.is_deleted == True, Call.updated_at < cutoff)
+            .limit(batch_size)
+        )
+        ids = [row[0] for row in ids_result.all()]
+        if not ids:
+            break
+        result = await db.execute(delete(Call).where(Call.id.in_(ids)))
+        await db.commit()
+        total += result.rowcount or 0
+        if len(ids) < batch_size:
+            break
+    return total
+
+
+async def purge_audit_logs_before(
+    db: AsyncSession, cutoff: datetime, *, batch_size: int = 500
+) -> int:
+    """Delete audit-log rows created before ``cutoff``."""
+    total = 0
+    while True:
+        ids_result = await db.execute(
+            select(AuditLog.id).where(AuditLog.created_at < cutoff).limit(batch_size)
+        )
+        ids = [row[0] for row in ids_result.all()]
+        if not ids:
+            break
+        result = await db.execute(delete(AuditLog).where(AuditLog.id.in_(ids)))
+        await db.commit()
+        total += result.rowcount or 0
+        if len(ids) < batch_size:
+            break
+    return total
+
+
+async def close_stale_calls(
+    db: AsyncSession, older_than: datetime, *, batch_size: int = 500
+) -> int:
+    """Mark calls stuck in initiated/in_progress as failed (zombie cleanup).
+
+    Prevents rows from lingering forever when a webhook or stream dies without
+    a hangup event. Does not delete — retention handles hard-delete by age.
+    """
+    total = 0
+    stale_statuses = ("initiated", "in_progress")
+    while True:
+        ids_result = await db.execute(
+            select(Call.id)
+            .where(
+                Call.status.in_(stale_statuses),
+                Call.is_deleted == False,
+                Call.created_at < older_than,
+            )
+            .limit(batch_size)
+        )
+        ids = [row[0] for row in ids_result.all()]
+        if not ids:
+            break
+        now = datetime.now(UTC)
+        result = await db.execute(
+            update(Call)
+            .where(Call.id.in_(ids))
+            .values(
+                status="failed",
+                ended_at=now,
+                updated_at=now,
+                error_log={"stale_cleanup": "Auto-closed after exceeding stale window"},
+            )
+        )
+        await db.commit()
+        total += result.rowcount or 0
+        if len(ids) < batch_size:
+            break
+    return total
+
+
+async def get_recordings_before(
+    db: AsyncSession,
+    cutoff: datetime,
+    *,
+    limit: int = 200,
+    offset: int = 0,
+) -> list[tuple[uuid.UUID, str]]:
+    """Return (call_id, recording_url) for calls older than ``cutoff`` that
+    still have a stored recording, so the storage object can be removed."""
+    result = await db.execute(
+        select(Call.id, Call.recording_url)
+        .where(Call.recording_url.isnot(None), Call.created_at < cutoff)
+        .order_by(Call.created_at)
+        .limit(limit)
+        .offset(offset)
+    )
+    return [(row[0], row[1]) for row in result.all()]
+
+
+async def clear_recording_url(db: AsyncSession, call_id: uuid.UUID) -> None:
+    """Null out a call's recording_url after its storage object is deleted."""
+    await db.execute(
+        update(Call).where(Call.id == call_id).values(recording_url=None)
+    )
+    await db.commit()
 
 
 async def get_call_stats(db: AsyncSession) -> dict:
@@ -315,19 +474,37 @@ async def get_call_stats(db: AsyncSession) -> dict:
 
 
 async def create_tenant(
-    db: AsyncSession, call_id: uuid.UUID, phone_number: str, **kwargs
+    db: AsyncSession,
+    call_id: uuid.UUID,
+    phone_number: str,
+    *,
+    commit: bool = True,
+    **kwargs,
 ) -> Tenant:
     """Create or update a tenant record after a call."""
     tenant = Tenant(call_id=call_id, phone_number=phone_number, **kwargs)
     db.add(tenant)
-    await db.commit()
-    await db.refresh(tenant)
+    if commit:
+        await db.commit()
+        await db.refresh(tenant)
+    else:
+        await db.flush()
     return tenant
 
 
 async def get_tenant_by_call(db: AsyncSession, call_uuid: uuid.UUID) -> Tenant | None:
-    """Get tenant record for a specific call."""
-    result = await db.execute(select(Tenant).where(Tenant.call_id == call_uuid))
+    """Get tenant record for a specific call (excluding soft-deleted calls)."""
+    result = await db.execute(
+        select(Tenant)
+        .join(Call, Tenant.call_id == Call.id)
+        .where(Tenant.call_id == call_uuid, Call.is_deleted == False)
+    )
+    return result.scalar_one_or_none()
+
+
+async def get_tenant_by_id(db: AsyncSession, tenant_id: uuid.UUID) -> Tenant | None:
+    """Get a tenant by its internal UUID."""
+    result = await db.execute(select(Tenant).where(Tenant.id == tenant_id))
     return result.scalar_one_or_none()
 
 
@@ -342,27 +519,89 @@ async def update_tenant(
     return result.scalar_one_or_none()
 
 
+async def count_tenants_needing_review(db: AsyncSession) -> int:
+    """Count visible applicants not yet marked reviewed by an admin."""
+    visible = or_(Tenant.call_id.is_(None), Call.is_deleted == False)
+    result = await db.execute(
+        select(func.count(Tenant.id))
+        .outerjoin(Call, Tenant.call_id == Call.id)
+        .where(visible, Tenant.reviewed_by_admin == False)
+    )
+    return result.scalar() or 0
+
+
+async def count_reviewed_tenants(db: AsyncSession) -> int:
+    """Count visible applicants marked reviewed by an admin."""
+    visible = or_(Tenant.call_id.is_(None), Call.is_deleted == False)
+    result = await db.execute(
+        select(func.count(Tenant.id))
+        .outerjoin(Call, Tenant.call_id == Call.id)
+        .where(visible, Tenant.reviewed_by_admin == True)
+    )
+    return result.scalar() or 0
+
+
+async def settings_touched_by_admin(
+    db: AsyncSession, keys: tuple[str, ...] = ("property_name", "greeting_message", "closing_message", "landlord_email")
+) -> bool:
+    """True when an admin has saved any of the given settings keys."""
+    if not keys:
+        return False
+    result = await db.execute(
+        select(func.count(SystemSetting.id)).where(
+            SystemSetting.key.in_(list(keys)),
+            SystemSetting.updated_by.isnot(None),
+        )
+    )
+    return (result.scalar() or 0) > 0
+
+
 async def list_tenants(
     db: AsyncSession,
     page: int = 1,
     per_page: int = 20,
     qualification_status: str | None = None,
     phone_search: str | None = None,
+    review_filter: str | None = None,
 ) -> tuple[list[Tenant], int]:
-    """List tenants with pagination and filters."""
-    query = select(Tenant)
+    """List tenants with pagination and filters.
+
+    Excludes applicants whose call was deleted (legacy soft-deleted rows), so a
+    deleted call's applicant never lingers in the Applicants list. Going forward
+    deletes are hard deletes (CASCADE removes the tenant outright).
+    """
+    # An applicant is visible if it has no linked call, or its call isn't deleted.
+    visible = or_(Tenant.call_id.is_(None), Call.is_deleted == False)
+
+    query = (
+        select(Tenant)
+        .outerjoin(Call, Tenant.call_id == Call.id)
+        .where(visible)
+    )
     if qualification_status:
         query = query.where(Tenant.qualification_status == qualification_status)
     if phone_search:
         query = query.where(Tenant.phone_number.ilike(f"%{phone_search}%"))
+    if review_filter == "unreviewed":
+        query = query.where(Tenant.reviewed_by_admin == False)
+    elif review_filter == "reviewed":
+        query = query.where(Tenant.reviewed_by_admin == True)
 
-    count_query = select(func.count(Tenant.id))
+    count_query = (
+        select(func.count(Tenant.id))
+        .outerjoin(Call, Tenant.call_id == Call.id)
+        .where(visible)
+    )
     if qualification_status:
         count_query = count_query.where(
             Tenant.qualification_status == qualification_status
         )
     if phone_search:
         count_query = count_query.where(Tenant.phone_number.ilike(f"%{phone_search}%"))
+    if review_filter == "unreviewed":
+        count_query = count_query.where(Tenant.reviewed_by_admin == False)
+    elif review_filter == "reviewed":
+        count_query = count_query.where(Tenant.reviewed_by_admin == True)
 
     count_result = await db.execute(count_query)
     total = count_result.scalar() or 0
@@ -436,12 +675,6 @@ async def create_user(
     await db.commit()
     await db.refresh(user)
     return user
-
-
-async def count_users(db: AsyncSession) -> int:
-    """Return the number of admin users (used to gate first-user signup)."""
-    result = await db.execute(select(func.count()).select_from(AdminUser))
-    return int(result.scalar() or 0)
 
 
 async def update_user_password(
@@ -575,31 +808,87 @@ async def get_setting_value(db: AsyncSession, key: str, default: Any = None) -> 
 
 
 async def set_setting(
-    db: AsyncSession, key: str, value: str, updated_by: uuid.UUID | None = None
-) -> SystemSetting:
-    """Create or update a system setting."""
+    db: AsyncSession,
+    key: str,
+    value: str,
+    updated_by: uuid.UUID | None = None,
+    *,
+    is_sensitive: bool | None = None,
+) -> tuple[SystemSetting, bool]:
+    """Create or update a system setting.
+
+    Returns ``(setting, cache_invalidated)``. Cache invalidation failures are
+    logged but do not roll back the DB write.
+    """
+    if is_sensitive is None:
+        is_sensitive = is_sensitive_setting_key(key)
     setting = await get_setting(db, key)
     if setting:
         setting.value = value
+        setting.is_sensitive = is_sensitive
         if updated_by:
             setting.updated_by = updated_by
         setting.updated_at = datetime.now(UTC)
     else:
-        setting = SystemSetting(key=key, value=value, updated_by=updated_by)
+        setting = SystemSetting(
+            key=key,
+            value=value,
+            updated_by=updated_by,
+            is_sensitive=is_sensitive,
+        )
         db.add(setting)
     await db.commit()
     await db.refresh(setting)
     from app.services.settings_cache import invalidate_settings_cache
 
-    await invalidate_settings_cache()
-    return setting
+    try:
+        await invalidate_settings_cache()
+    except Exception as exc:
+        # The DB write is already committed; cache invalidation failure should
+        # not turn a successful settings save into a user-visible API failure.
+        logger.warning("Settings cache invalidation failed for %s: %s", key, exc)
+        return setting, False
+    return setting, True
 
 
 async def get_all_settings(db: AsyncSession) -> dict[str, str]:
     """Get all settings as a flat dict (sensitive values masked)."""
     result = await db.execute(select(SystemSetting))
     settings_list = result.scalars().all()
-    return {s.key: ("****" if s.is_sensitive else s.value) for s in settings_list}
+    return {
+        s.key: (
+            "****"
+            if (s.is_sensitive or is_sensitive_setting_key(s.key))
+            else s.value
+        )
+        for s in settings_list
+    }
+
+
+async def add_to_blacklist(
+    db: AsyncSession, phone_number: str, updated_by: uuid.UUID | None = None
+) -> list[str]:
+    """Add a phone number to the Do-Not-Call blacklist (idempotent)."""
+    blacklist = await get_setting_value(db, "blacklisted_numbers", [])
+    if phone_number and phone_number not in blacklist:
+        blacklist.append(phone_number)
+        await set_setting(
+            db, "blacklisted_numbers", json.dumps(blacklist), updated_by=updated_by
+        )
+    return blacklist
+
+
+async def remove_from_blacklist(
+    db: AsyncSession, phone_number: str, updated_by: uuid.UUID | None = None
+) -> list[str]:
+    """Remove a phone number from the Do-Not-Call blacklist (idempotent)."""
+    blacklist = await get_setting_value(db, "blacklisted_numbers", [])
+    if phone_number in blacklist:
+        blacklist.remove(phone_number)
+        await set_setting(
+            db, "blacklisted_numbers", json.dumps(blacklist), updated_by=updated_by
+        )
+    return blacklist
 
 
 # ──────────────────────────────────────────────────────────────────────────────

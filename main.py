@@ -48,6 +48,8 @@ APP_START_TIME = time.time()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan: startup → yield → shutdown."""
+    # Re-apply after uvicorn configures logging so voice trace handler stays active.
+    setup_logging()
     logger.info("🚀 AI Tenant Screener starting up...")
 
     # Fail fast on insecure production configuration so we never serve real
@@ -59,6 +61,13 @@ async def lifespan(app: FastAPI):
         raise RuntimeError(
             "Refusing to start in production with insecure configuration: "
             + "; ".join(config_errors)
+        )
+
+    if settings.web_workers != 1:
+        logger.warning(
+            "WEB_WORKERS=%s — live call sessions are in-process only; "
+            "use WEB_WORKERS=1 until shared session store exists",
+            settings.web_workers,
         )
 
     # Database
@@ -89,6 +98,18 @@ async def lifespan(app: FastAPI):
         logger.info("✅ Provider registry initialized")
     except Exception as e:
         logger.warning("Provider registry init partial: %s", e)
+
+    # Seed the in-process display timezone from the admin setting so synchronous
+    # template/email helpers localize timestamps without a DB round-trip.
+    try:
+        from app.db.crud import get_setting_value
+        from app.db.database import AsyncSessionLocal
+        from app.utils.helpers import set_display_timezone
+
+        async with AsyncSessionLocal() as db:
+            set_display_timezone(await get_setting_value(db, "timezone", ""))
+    except Exception as e:
+        logger.warning("Could not load display timezone: %s", e)
 
     logger.info("✅ AI Tenant Screener ready!")
     yield
@@ -148,6 +169,27 @@ app.add_middleware(
 
 
 @app.middleware("http")
+async def csrf_middleware(request: Request, call_next):
+    """Require a custom header on cookie-authenticated mutating requests."""
+    if request.method in ("POST", "PUT", "PATCH", "DELETE"):
+        path = request.url.path
+        protected = (
+            path.startswith("/admin/api/")
+            or path.startswith("/api/settings/")
+            or path == "/auth/logout"
+        )
+        if protected and request.cookies.get("access_token"):
+            auth_header = request.headers.get("Authorization", "")
+            if not auth_header.startswith("Bearer "):
+                if request.headers.get("X-Requested-With") != "XMLHttpRequest":
+                    return JSONResponse(
+                        {"detail": "Missing CSRF header"},
+                        status_code=403,
+                    )
+    return await call_next(request)
+
+
+@app.middleware("http")
 async def security_headers_middleware(request: Request, call_next):
     """Add security headers to every response."""
     response: Response = await call_next(request)
@@ -197,7 +239,10 @@ app.include_router(webhook_router, prefix="/telnyx", tags=["Telnyx Webhooks"])
 app.include_router(auth_router, prefix="/auth", tags=["Authentication"])
 app.include_router(admin_router, prefix="/admin", tags=["Admin Dashboard"])
 app.include_router(settings_router, prefix="/api/settings", tags=["Settings API"])
-app.include_router(test_console_router, prefix="/test", tags=["Test Console"])
+if settings.allow_test_console:
+    app.include_router(test_console_router, prefix="/test", tags=["Test Console"])
+else:
+    logger.info("Test console disabled (production default)")
 
 
 # ──────────────────────────────────────────────────────────────────────────────

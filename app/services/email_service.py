@@ -86,6 +86,7 @@ def render_email_template(
     body_template: str | None = None,
     include_transcript: bool = False,
     transcript: str = "",
+    timezone: str | None = None,
 ) -> tuple[str, str]:
     """
     Render the email subject and HTML body from tenant data.
@@ -100,7 +101,11 @@ def render_email_template(
     """
     import html as _html
 
-    from app.utils.helpers import format_currency, format_duration
+    from app.utils.helpers import (
+        format_currency,
+        format_duration,
+        format_in_timezone,
+    )
 
     status_label, status_color = STATUS_LABELS.get(status, ("UNKNOWN", "#64748b"))
 
@@ -122,7 +127,7 @@ def render_email_template(
     move_date_text = (
         tenant_data.get("move_in_raw") or tenant_data.get("move_in_date") or "—"
     )
-    date_text = datetime.now(UTC).strftime("%B %d, %Y at %I:%M %p UTC")
+    date_text = format_in_timezone(datetime.now(UTC), timezone)
 
     tokens = {
         "name": _esc(tenant_data.get("full_name") or "—"),
@@ -182,11 +187,72 @@ def render_email_template(
           <pre style="white-space:pre-wrap; word-break:break-word; background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:12px; font-size:12px; color:#334155;">{safe_transcript}</pre>
         </div>"""
 
+    custom_fields = tenant_data.get("custom_fields")
+    if not custom_fields and isinstance(tenant_data.get("normalized_data"), dict):
+        custom_fields = tenant_data["normalized_data"].get("custom_fields")
+    if custom_fields:
+        rows = "".join(
+            f"<tr><td style='padding:6px 8px;border-bottom:1px solid #e2e8f0;'>"
+            f"{_esc(k.replace('_', ' '))}</td>"
+            f"<td style='padding:6px 8px;border-bottom:1px solid #e2e8f0;'>{_esc(v)}</td></tr>"
+            for k, v in custom_fields.items()
+            if v not in (None, "")
+        )
+        if rows:
+            html += f"""
+        <div style="max-width:600px; margin:16px auto 0;">
+          <h3 style="color:#1e293b; font-size:15px;">Additional screening answers</h3>
+          <table style="width:100%;border-collapse:collapse;font-size:13px;">{rows}</table>
+        </div>"""
+
     if subject_template and subject_template.strip():
         subject = _apply_tokens(subject_template, tokens)
     else:
         subject = f"🏠 New Tenant Screening — {phone_number} — {status_label}"
     return subject, html
+
+
+SAMPLE_TEST_TRANSCRIPT = """AI: Thank you for calling Ready Rentals Online!
+Tenant: Hi, my name is Jane Doe and I'm interested in the apartment.
+AI: Great! What is your monthly household income?
+Tenant: About four thousand five hundred dollars a month."""
+
+
+def build_test_email_preview(
+    email_settings: dict,
+    *,
+    timezone: str | None = None,
+    call_id: str = "test-preview",
+) -> tuple[str, str]:
+    """Render subject/body using saved templates and realistic sample data."""
+    sample_tenant = {
+        "full_name": "Jane Doe",
+        "adults_count": 2,
+        "children_count": 1,
+        "monthly_income": 4500,
+        "has_eviction": False,
+        "move_in_date": "2026-08-01",
+        "move_in_raw": "August first",
+        "move_reason": "Closer to work",
+    }
+    include_transcript = _coerce_bool(
+        email_settings.get("email_include_transcript"), False
+    )
+    return render_email_template(
+        phone_number="+1 (555) 123-4567",
+        tenant_data=sample_tenant,
+        score=82,
+        status="qualified",
+        reasons=[],
+        duration=245,
+        providers={"stt": "groq", "llm": "groq", "tts": "deepgram"},
+        call_id=call_id,
+        subject_template=email_settings.get("email_subject_template") or None,
+        body_template=email_settings.get("email_body_template") or None,
+        include_transcript=include_transcript,
+        transcript=SAMPLE_TEST_TRANSCRIPT if include_transcript else "",
+        timezone=timezone or email_settings.get("timezone"),
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -266,6 +332,7 @@ def send_screening_email_task(
             body_template=email_settings.get("email_body_template") or None,
             include_transcript=email_settings.get("email_include_transcript", False),
             transcript=transcript or "",
+            timezone=email_settings.get("timezone") or None,
         )
 
         from_name = email_settings.get("email_from_name") or settings.email_from_name
@@ -353,6 +420,12 @@ def fire_crm_webhook_task(
                 if tenant_data.get("move_in_date")
                 else None,
                 "move_reason": tenant_data.get("move_reason"),
+                "custom_fields": tenant_data.get("custom_fields")
+                or (
+                    tenant_data.get("normalized_data", {}).get("custom_fields")
+                    if isinstance(tenant_data.get("normalized_data"), dict)
+                    else None
+                ),
             },
             "transcript_url": f"{app_url}/admin/calls/{call_id}",
         }
@@ -376,6 +449,73 @@ def fire_crm_webhook_task(
             raise self.retry(exc=e, countdown=15 * (2**self.request.retries))
         except self.MaxRetriesExceededError:
             logger.error(f"CRM webhook permanently failed for call {call_id}")
+            return {"sent": False, "error": str(e)}
+
+
+@celery_app.task(
+    bind=True,
+    max_retries=2,
+    default_retry_delay=30,
+    soft_time_limit=20,
+    time_limit=30,
+    name="app.services.email_service.send_latency_alert_task",
+)
+def send_latency_alert_task(
+    self,
+    call_id: str,
+    warnings: list[str],
+    turn_count: int = 0,
+    avg_turn_ms: int = 0,
+    max_turn_ms: int = 0,
+    llm_provider: str = "",
+    tts_provider: str = "",
+):
+    """Email the landlord when a call breached voice latency SLOs."""
+    import html as _html
+
+    try:
+        if not settings.resend_api_key:
+            return {"sent": False, "reason": "no_api_key"}
+
+        email_settings = _get_email_settings_sync()
+        landlord_email = (
+            email_settings.get("landlord_email") or settings.default_landlord_email
+        )
+        if not landlord_email:
+            return {"sent": False, "reason": "no_recipient"}
+
+        resend.api_key = settings.resend_api_key
+        from_name = email_settings.get("email_from_name") or settings.email_from_name
+        from_address = email_settings.get("email_from_address") or settings.email_from
+        warning_lines = "".join(
+            f"<li>{_html.escape(w)}</li>" for w in (warnings or [])
+        )
+        html = f"""
+        <div style="font-family: sans-serif; max-width: 560px;">
+          <h2 style="color:#b45309;">Voice latency alert</h2>
+          <p>Call <strong>{_html.escape(call_id)}</strong> finished with elevated latency.</p>
+          <ul>{warning_lines}</ul>
+          <p style="font-size:14px;color:#64748b;">
+            Turns: {turn_count} · avg turn: {avg_turn_ms}ms · max turn: {max_turn_ms}ms<br>
+            LLM: {_html.escape(llm_provider or "—")} · TTS: {_html.escape(tts_provider or "—")}
+          </p>
+          <p><a href="{settings.app_url}/admin/calls">View calls in dashboard</a></p>
+        </div>
+        """
+        params = {
+            "from": f"{from_name} <{from_address}>",
+            "to": [landlord_email],
+            "subject": f"Latency alert — call {call_id}",
+            "html": html,
+        }
+        resend.Emails.send(params)
+        logger.info("Latency alert sent for call %s", call_id)
+        return {"sent": True}
+    except Exception as e:
+        logger.error("Latency alert failed for call %s: %s", call_id, e)
+        try:
+            raise self.retry(exc=e, countdown=30 * (2**self.request.retries))
+        except self.MaxRetriesExceededError:
             return {"sent": False, "error": str(e)}
 
 
@@ -513,6 +653,7 @@ def _get_email_settings_sync() -> dict:
         "email_include_transcript",
         "cc_emails",
         "bcc_emails",
+        "timezone",
     )
 
     async def _fetch():
@@ -537,28 +678,8 @@ def _get_email_settings_sync() -> dict:
         "email_include_transcript": _coerce_bool(raw.get("email_include_transcript")),
         "cc_emails": raw.get("cc_emails") or "",
         "bcc_emails": raw.get("bcc_emails") or "",
+        "timezone": raw.get("timezone") or "",
     }
-
-
-def _get_landlord_email_sync() -> str:
-    """Get landlord email using a sync DB connection (Celery worker context)."""
-    import asyncio
-
-    from app.db.crud import get_setting_value
-    from app.db.database import AsyncSessionLocal
-
-    async def _fetch():
-        async with AsyncSessionLocal() as db:
-            email = await get_setting_value(
-                db, "landlord_email", settings.default_landlord_email
-            )
-            return email or settings.default_landlord_email
-
-    try:
-        return asyncio.run(_fetch())
-    except RuntimeError:
-        # Event loop already running — fallback to default
-        return settings.default_landlord_email
 
 
 def _get_webhook_secret_sync() -> str:

@@ -8,10 +8,11 @@ Google AI Studio free tier has a more generous quota than Groq's daily wall.
 
 import logging
 import re
+from collections.abc import AsyncIterator
 
 from openai import AsyncOpenAI
 
-from app.providers.base import BaseLLMProvider
+from app.providers.base import BaseLLMProvider, usage_from_response
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -106,9 +107,11 @@ class GeminiLLMProvider(BaseLLMProvider):
         if self.model.startswith("gemini-2.5"):
             kwargs["extra_body"] = {"reasoning_effort": "none"}
 
+        self.last_usage = None
         try:
             response = await self.client.chat.completions.create(**kwargs)
             content = response.choices[0].message.content or ""
+            self.last_usage = usage_from_response(response)
             if json_mode:
                 content = _extract_json(content)
             logger.debug(f"Gemini response: {content[:100]}...")
@@ -116,3 +119,37 @@ class GeminiLLMProvider(BaseLLMProvider):
         except Exception as e:
             logger.error(f"Gemini API error: {e}")
             raise
+
+    async def stream_response(
+        self,
+        system_prompt: str,
+        messages: list[dict],
+        json_mode: bool = False,
+        temperature: float = 0.3,
+        max_tokens: int = 500,
+    ) -> AsyncIterator[str]:
+        """Yield text deltas from a streaming Gemini completion."""
+        all_messages = [{"role": "system", "content": system_prompt}] + messages
+        effective_max = max(max_tokens, _JSON_MIN_MAX_TOKENS) if json_mode else max_tokens
+        kwargs = {
+            "model": self.model,
+            "messages": all_messages,
+            "temperature": temperature,
+            "max_tokens": effective_max,
+            "stream": True,
+        }
+        if json_mode:
+            kwargs["response_format"] = {"type": "json_object"}
+        if self.model.startswith("gemini-2.5"):
+            kwargs["extra_body"] = {"reasoning_effort": "none"}
+
+        self.last_usage = None
+        stream = await self.client.chat.completions.create(**kwargs)
+        async for chunk in stream:
+            if getattr(chunk, "usage", None):
+                self.last_usage = usage_from_response(chunk)
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta.content
+            if delta:
+                yield delta

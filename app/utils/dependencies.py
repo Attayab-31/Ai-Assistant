@@ -16,14 +16,15 @@ from app.db.crud import get_user_by_id
 from app.db.database import get_db
 from app.models.user import AdminUser
 from app.utils.security import decode_access_token
+from config import settings
 
 logger = logging.getLogger(__name__)
 ACCESS_TOKEN_COOKIE_NAME = "access_token"
 
 # Short-lived cache of authenticated users so back-to-back admin requests don't
-# each hit the database. Users are read-only here, so caching the loaded row is
-# safe; a deactivation/role change propagates within USER_CACHE_TTL_SECONDS.
-USER_CACHE_TTL_SECONDS = 30.0
+# each hit the database. Disabled in production so role/deactivation changes
+# take effect immediately.
+USER_CACHE_TTL_SECONDS = 0.0 if settings.is_production else 30.0
 _user_cache: dict[uuid.UUID, tuple[float, AdminUser]] = {}
 
 
@@ -65,6 +66,14 @@ async def get_current_user(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired token",
+        )
+
+    from app.core.redis_client import is_token_revoked
+
+    if await is_token_revoked(token):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Session expired",
         )
 
     user_id = payload.get("sub")

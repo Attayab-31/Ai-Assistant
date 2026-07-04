@@ -1,0 +1,36 @@
+{# Home onboarding checklist for new accounts #}
+
+{% macro onboarding_checklist(onboarding) %}
+{% if onboarding and onboarding.show %}
+<section class="card onboarding-card" aria-labelledby="onboarding-heading">
+  <div class="onboarding-head">
+    <div>
+      <h2 id="onboarding-heading" style="margin: 0 0 4px;">Get started</h2>
+      <p class="muted" style="margin: 0;">{{ onboarding.total_count }} quick step{{ '' if onboarding.total_count == 1 else 's' }} to go live with phone screening.</p>
+    </div>
+    <span class="onboarding-progress muted">{{ onboarding.done_count }} of {{ onboarding.total_count }} done</span>
+  </div>
+  <ol class="onboarding-steps">
+    {% for step in onboarding.steps %}
+    <li class="onboarding-step {{ 'done' if step.done else 'pending' }}">
+      <span class="onboarding-check" aria-hidden="true">
+        {% if step.done %}✓{% else %}{{ loop.index }}{% endif %}
+      </span>
+      <div class="onboarding-step-body">
+        <strong>{{ step.label }}</strong>
+        <p class="muted">{{ step.detail }}</p>
+        {% if not step.done %}
+        <a class="btn btn-sm" href="{{ step.href }}"{% if step.new_tab %} target="_blank" rel="noopener"{% endif %}>{{ step.cta }}</a>
+        {% endif %}
+      </div>
+    </li>
+    {% endfor %}
+  </ol>
+</section>
+{% elif onboarding and onboarding.complete and onboarding.total_count %}
+<div class="card onboarding-complete" role="status">
+  <span class="onboarding-check done" aria-hidden="true">✓</span>
+  <span><strong>Setup complete.</strong> You are ready to screen applicants by phone.</span>
+</div>
+{% endif %}
+{% endmacro %}

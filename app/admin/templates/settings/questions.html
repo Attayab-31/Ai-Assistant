@@ -1,111 +1,848 @@
 {% extends "settings/base.html" %}
 {% block title %}Screening Questions{% endblock %}
 {% block page_title %}Screening Questions{% endblock %}
+{% block settings_page_sub %}<div class="sub">Build the conversation your assistant asks on every call — reorder, edit wording, and control scoring.</div>{% endblock %}
 {% block settings_content %}
 
-<div class="stack">
-  <p class="text-muted" style="margin-top: 0;">
-    The screening flow has <strong>{{ flow_state_count }}</strong> fixed states (Q1–Q15 plus conditional
-    Q6A pet details and Q11A eviction details). Callers who answer “no pets” or “no eviction” skip those
-    follow-ups, so a typical completed call shows <strong>15 / 15</strong> questions answered.
-    You can edit question wording and retry prompts here; flow states cannot be added or removed.
-  </p>
-
-  <div style="display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap;">
-    <button type="button" onclick="withBtnLoading(this, resetQuestions, 'Resetting\u2026')" class="btn btn-secondary">↻ Reset to Defaults</button>
-    <button type="button" onclick="withBtnLoading(this, previewFlow, 'Loading\u2026')" class="btn btn-secondary">👁️ Preview Flow</button>
-    <button type="button" onclick="withBtnLoading(this, saveAllQuestions, 'Saving\u2026')" class="btn btn-primary">💾 Save All Changes</button>
+<div class="stack settings-form">
+  <div class="callout" style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px;">
+    <span>
+      Your screening conversation has <strong>{{ active_flow_count }}</strong> active question{{ '' if active_flow_count == 1 else 's' }}
+      ({{ flow_state_count }} total). Edit the wording below — use <strong>Advanced options</strong> only for field keys, custom rules, or special scoring.
+    </span>
+    <span style="display: flex; gap: 8px; flex-wrap: wrap;">
+      <a class="btn-ghost btn-sm" href="/admin/settings/questions/guide" target="_blank" rel="noopener">How scoring works</a>
+      {% if user.can_edit %}
+      <a class="btn-ghost btn-sm" href="/test" target="_blank" rel="noopener">Try a screening call</a>
+      {% endif %}
+    </span>
   </div>
 
-  {% if questions %}
-    <div id="questionsContainer">
-      {% for question in questions %}
-      <div class="form-section question-card" data-state="{{ question.state }}">
-        <div class="question-view">
-          <div style="display: flex; justify-content: space-between; align-items: start; gap: 12px;">
-            <div style="flex: 1;">
-              <h4 style="margin: 0 0 4px; font-size: 15px;">
-                {{ question.id }} — {{ question.state }}
-                {% if question.state in ["Q6A_PET_DETAILS", "Q11A_EVICTION_DETAILS"] %}
-                  <span class="text-muted" style="font-weight: normal; font-size: 13px;">(conditional)</span>
-                {% endif %}
-              </h4>
-              <p class="question-text" style="margin: 0 0 8px; color: var(--ink);">{{ question.question }}</p>
-              <p class="text-muted" style="margin: 0; font-size: 13px;">
-                Order: {{ question.order or loop.index }} |
-                Fields: {{ (question.extract_fields or [])|join(", ") }} |
-                Active: {{ "yes" if question.get("active", True) else "no" }}
-              </p>
-            </div>
-            <button type="button" onclick="toggleEdit(this)" class="btn btn-secondary" style="padding: 6px 12px; font-size: 13px;">Edit</button>
-          </div>
-        </div>
-        <div class="question-edit" style="display: none; margin-top: 12px;">
-          <div class="form-group">
-            <label>Question</label>
-            <textarea class="edit-question" rows="2">{{ question.question }}</textarea>
-          </div>
-          <div class="form-group">
-            <label>Retry prompt (1st)</label>
-            <textarea class="edit-retry1" rows="2">{{ question.get("retry_prompt", "") }}</textarea>
-          </div>
-          <div class="form-group">
-            <label>Retry prompt (2nd)</label>
-            <textarea class="edit-retry2" rows="2">{{ question.get("retry_prompt_2", "") }}</textarea>
-          </div>
-          <div class="form-group">
-            <label>Retry prompt (3rd)</label>
-            <textarea class="edit-retry3" rows="2">{{ question.get("retry_prompt_3", "") }}</textarea>
-          </div>
-          {% set is_protected = question.state in ["Q1_FULL_NAME", "Q2_PHONE", "Q3_EMAIL"] %}
-          <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
-            <input type="checkbox" class="edit-active"
-              {{ "checked" if (question.get("active", True) or is_protected) else "" }}
-              {{ "disabled" if is_protected else "" }} />
-            Active in flow
-            {% if is_protected %}
-              <span class="text-muted" style="font-size: 12px;">(required — always on)</span>
-            {% endif %}
-          </label>
-          <button type="button" onclick="toggleEdit(this)" class="btn btn-secondary">Done</button>
-        </div>
-        <script type="application/json" class="question-meta">{{ question | tojson }}</script>
-      </div>
-      {% endfor %}
+  <div id="warningBanner" class="stack" style="margin-bottom: 12px;">
+    {% for w in save_warnings %}
+    <div class="banner banner-warn" style="padding:10px 12px;font-size:13px;">{{ w }}</div>
+    {% endfor %}
+    <div id="liveScoringWarn" class="admin-warn" style="display:none;padding:10px 12px;border-radius:8px;background:#fef3c7;color:#92400e;font-size:13px;"></div>
+    <div id="liveIdentityWarn" class="admin-warn" style="display:none;padding:10px 12px;border-radius:8px;background:#fee2e2;color:#991b1b;font-size:13px;"></div>
+  </div>
+
+  <p class="text-muted" style="margin: 0 0 12px; font-size: 13px;">
+    Total scoring points enabled: <strong id="scoringTotal">{{ scoring_points_total }}</strong> / 100 recommended max
+  </p>
+
+  <div style="display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; align-items: center;">
+    <select id="addQuestionType" class="settings-edit-only" aria-label="Question type to add" style="padding:8px 10px;border-radius:6px;border:1px solid var(--line);font-size:14px;">
+      <option value="text">Add: short answer</option>
+      <option value="yes_no">Add: yes / no</option>
+      <option value="long_text">Add: open-ended</option>
+      <option value="number">Add: number</option>
+      <option value="currency">Add: money amount</option>
+      <option value="date">Add: date / timeframe</option>
+    </select>
+    <button type="button" onclick="addQuestion()" class="btn btn-secondary settings-edit-only">Add question</button>
+    <button type="button" onclick="withBtnLoading(this, resetQuestions, 'Resetting\u2026')" class="btn btn-secondary settings-edit-only">Reset to defaults</button>
+    <button type="button" onclick="withBtnLoading(this, previewFlow, 'Loading\u2026')" class="btn btn-secondary">Preview conversation</button>
+    <button type="button" onclick="withBtnLoading(this, saveAllQuestions, 'Saving\u2026')" class="btn btn-primary settings-save">Save all changes</button>
+  </div>
+
+  <div id="questionsContainer" class="stack conversation-list">
+    {% for question in questions %}
+    <div class="form-section question-card" data-state="{{ question.state }}">
+      <div class="question-view"></div>
+      <div class="question-edit" style="display: none; margin-top: 12px;"></div>
+      <script type="application/json" class="question-meta">{{ question | tojson }}</script>
     </div>
-  {% else %}
-    <div class="form-section">
-      <p class="text-muted">No screening questions configured. Click "Reset to Defaults" to load default questions.</p>
-    </div>
-  {% endif %}
+    {% else %}
+    <div class="form-section"><div class="empty" style="padding:20px 12px;"><span class="empty-title">No questions yet</span>Choose a type above and select <strong>Add question</strong>, or <strong>Reset to defaults</strong>.</div></div>
+    {% endfor %}
+  </div>
 
   <div id="previewContainer" style="display: none; margin-top: 20px;">
     <div class="form-section">
-      <h3 style="margin-top: 0;">Conversation Flow Preview</h3>
+      <h3 style="margin-top: 0;">Sample conversation path</h3>
       <p id="previewMeta" class="text-muted"></p>
-      <div id="previewContent" style="max-height: 400px; overflow-y: auto;"></div>
+      <div id="previewContent" class="conversation-preview"></div>
     </div>
   </div>
 </div>
 
+<style>
+  .form-grid label { display: block; font-weight: 600; font-size: 13px; }
+  .form-grid input, .form-grid select, .form-grid textarea { max-width: 100%; margin-top: 4px; }
+  .text-muted { color: var(--muted); font-size: 13px; }
+  .conversation-list { gap: 10px; }
+  .q-conversation-item {
+    border-left: 3px solid var(--accent);
+    padding-left: 4px;
+  }
+  .q-conversation-item.q-inactive { border-left-color: var(--muted); opacity: 0.72; }
+  .q-conversation-head { display: flex; justify-content: space-between; align-items: start; gap: 12px; }
+  .q-conversation-main { display: flex; gap: 12px; flex: 1; min-width: 0; }
+  .q-conversation-num {
+    flex: none;
+    width: 28px; height: 28px;
+    border-radius: 50%;
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-weight: 700;
+    font-size: 13px;
+    display: grid;
+    place-items: center;
+    margin: 2px 0 0;
+  }
+  .q-inactive .q-conversation-num { background: var(--line-soft); color: var(--muted); }
+  .q-conversation-text { margin: 0; font-size: 15px; line-height: 1.4; color: var(--ink); font-weight: 500; }
+  .q-quick-status {
+    display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px;
+  }
+  .q-toggle-pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 10px; border-radius: 999px;
+    border: 1px solid var(--line);
+    background: var(--panel);
+    font-size: 12px; font-weight: 600;
+    color: var(--ink-soft);
+    cursor: pointer;
+    user-select: none;
+  }
+  .q-toggle-pill input { width: auto; max-width: none; margin: 0; cursor: pointer; }
+  .q-toggle-pill:has(input:checked) { border-color: #93c5fd; background: #eff6ff; color: #1e40af; }
+  .q-badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .q-badge {
+    font-size: 12px; padding: 3px 8px; border-radius: 999px;
+    background: var(--line-soft, #f1f5f9); color: var(--muted);
+  }
+  .q-badge.on { background: #dbeafe; color: #1e40af; }
+  .q-badge.off { background: #fee2e2; color: #991b1b; }
+  .q-badge.score { background: #fef3c7; color: #92400e; }
+  .simple-panel { display: grid; gap: 12px; max-width: 640px; }
+  .conversation-preview { max-height: 400px; overflow-y: auto; }
+  .preview-turn { margin: 10px 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: #fff; }
+  .preview-turn.assistant { border-left: 3px solid #2563eb; }
+  .preview-turn.caller { border-left: 3px solid #64748b; }
+  details.q-advanced {
+    margin-top: 14px; border: 1px dashed var(--line); border-radius: 8px;
+    padding: 0 12px; background: #fbfcfe;
+  }
+  details.q-advanced > summary {
+    cursor: pointer; font-weight: 600; color: var(--muted); font-size: 13px;
+    padding: 10px 0; list-style: none;
+  }
+  details.q-advanced > summary::-webkit-details-marker { display: none; }
+  details.q-advanced > summary::before { content: "▸ "; }
+  details.q-advanced[open] > summary::before { content: "▾ "; }
+  details.q-advanced[open] { padding-bottom: 12px; }
+  .simple-score-extra { display: none; margin-top: 8px; }
+</style>
+
 <script>
-  function readQuestionMeta(card) {
-    const el = card.querySelector('.question-meta');
-    return JSON.parse(el.textContent);
+  const ANSWER_TYPES = {{ answer_types | tojson }};
+  const SCORING_RULE_TYPES = {{ scoring_rule_types | tojson }};
+  const COND_OPS = {{ conditional_operators | tojson }};
+  const CONTACT_FIELDS = {
+    full_name: 'full name',
+    contact_phone: 'contact phone',
+    email: 'email address',
+  };
+
+  const ANSWER_TYPE_LABELS = {
+    text: 'Short text',
+    long_text: 'Open-ended explanation',
+    yes_no: 'Yes / No',
+    number: 'Number',
+    currency: 'Money amount',
+    date: 'Date or timeframe',
+    phone: 'Phone number',
+    email: 'Email address',
+  };
+
+  const SCORE_PRESETS = [
+    { id: 'none', label: 'Does not affect score' },
+    { id: 'any_answer', label: 'Any answer earns points' },
+    { id: 'required_field', label: 'Must capture an answer' },
+    { id: 'yes_no_no_better', label: 'Yes/No — "No" earns full points' },
+    { id: 'yes_no_yes_better', label: 'Yes/No — "Yes" earns full points' },
+    { id: 'yes_no_dq_yes', label: 'Yes/No — Disqualify if Yes' },
+    { id: 'yes_no_dq_no', label: 'Yes/No — Disqualify if No' },
+    { id: 'numeric_min', label: 'Number must be at least…' },
+    { id: 'date_within', label: 'Date within X days' },
+    { id: 'custom', label: 'Custom rule (advanced)' },
+  ];
+
+  function esc(s) {
+    return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
   }
 
-  function collectQuestions() {
-    // Always read the edit inputs (they hold the current value whether or not
-    // the edit panel is open) so retry prompts and the active toggle persist
-    // even after the panel is collapsed before saving.
-    return Array.from(document.querySelectorAll('.question-card')).map(card => {
+  function isCustomQuestion(meta) {
+    return String(meta.state || '').startsWith('CUSTOM_');
+  }
+
+  function answerTypeLabel(t) {
+    return ANSWER_TYPE_LABELS[t] || t;
+  }
+
+  function answerTypeOptions(selected) {
+    return ANSWER_TYPES.map(t =>
+      `<option value="${t}" ${t === selected ? 'selected' : ''}>${answerTypeLabel(t)}</option>`
+    ).join('');
+  }
+
+  function scorePresetOptions(selected) {
+    return SCORE_PRESETS.map(p =>
+      `<option value="${p.id}" ${p.id === selected ? 'selected' : ''}>${esc(p.label)}</option>`
+    ).join('');
+  }
+
+  function classifyConditional(cond) {
+    if (!cond || !cond.field || !cond.operator) return 'always';
+    const op = cond.operator;
+    const val = cond.value;
+    if (op === 'eq' && (val === true || val === 'true')) return 'if_yes';
+    if (op === 'eq' && (val === false || val === 'false')) return 'if_no';
+    if (op === 'truthy') return 'if_answered';
+    return 'custom';
+  }
+
+  function classifyScoringPreset(scoring) {
+    scoring = scoring || {};
+    if (!scoring.enabled) return 'none';
+    const rt = scoring.rule_type;
+    const pc = scoring.pass_config || {};
+    const max = parseInt(scoring.max_points || 0, 10);
+    if (rt === 'any_answer') return 'any_answer';
+    if (rt === 'required_field') return 'required_field';
+    if (rt === 'yes_no') {
+      if (pc.disqualify_on_yes) return 'yes_no_dq_yes';
+      if (pc.disqualify_on_no) return 'yes_no_dq_no';
+      const yes = parseInt(pc.yes ?? max, 10);
+      const no = parseInt(pc.no ?? 0, 10);
+      if (no >= max && yes === 0) return 'yes_no_no_better';
+      if (yes >= max && no === 0) return 'yes_no_yes_better';
+      return 'custom';
+    }
+    if (rt === 'numeric_range' && pc.min != null && pc.min !== '') return 'numeric_min';
+    if (rt === 'date_within') return 'date_within';
+    return 'custom';
+  }
+
+  function buildConditionalFromSimple(card) {
+    const mode = card.querySelector('.simple-cond-mode')?.value || 'always';
+    if (mode === 'custom') {
+      const condField = card.querySelector('.edit-cond-field')?.value.trim();
+      const condOp = card.querySelector('.edit-cond-op')?.value;
+      if (!condField || !condOp) return null;
+      let value = card.querySelector('.edit-cond-value')?.value;
+      if (value === 'true') value = true;
+      if (value === 'false') value = false;
+      return { field: condField, operator: condOp, value };
+    }
+    const field = card.querySelector('.simple-cond-prior')?.value || '';
+    if (mode === 'always' || !field) return null;
+    if (mode === 'if_yes') return { field, operator: 'eq', value: true };
+    if (mode === 'if_no') return { field, operator: 'eq', value: false };
+    if (mode === 'if_answered') return { field, operator: 'truthy' };
+    return null;
+  }
+
+  function scoringFromPreset(card) {
+    const preset = card.querySelector('.simple-score-preset')?.value || 'none';
+    const maxPts = parseInt(card.querySelector('.simple-score-points')?.value || '0', 10);
+    if (preset === 'none') {
+      return { enabled: false, max_points: 0, rule_type: 'any_answer', pass_config: {} };
+    }
+    if (preset === 'any_answer') {
+      return { enabled: true, max_points: maxPts, rule_type: 'any_answer', pass_config: {} };
+    }
+    if (preset === 'required_field') {
+      return { enabled: true, max_points: maxPts, rule_type: 'required_field', pass_config: {} };
+    }
+    if (preset === 'yes_no_no_better') {
+      return { enabled: true, max_points: maxPts, rule_type: 'yes_no', pass_config: { yes: 0, no: maxPts } };
+    }
+    if (preset === 'yes_no_yes_better') {
+      return { enabled: true, max_points: maxPts, rule_type: 'yes_no', pass_config: { yes: maxPts, no: 0 } };
+    }
+    if (preset === 'yes_no_dq_yes') {
+      return { enabled: true, max_points: maxPts, rule_type: 'yes_no', pass_config: { yes: 0, no: maxPts, disqualify_on_yes: true } };
+    }
+    if (preset === 'yes_no_dq_no') {
+      return { enabled: true, max_points: maxPts, rule_type: 'yes_no', pass_config: { yes: maxPts, no: 0, disqualify_on_no: true } };
+    }
+    if (preset === 'numeric_min') {
+      const min = card.querySelector('.simple-score-min')?.value.trim();
+      const pc = {};
+      if (min !== '') pc.min = parseFloat(min);
+      const max = card.querySelector('.edit-pass-max')?.value.trim();
+      if (max !== '') pc.max = parseFloat(max);
+      return { enabled: true, max_points: maxPts, rule_type: 'numeric_range', pass_config: pc };
+    }
+    if (preset === 'date_within') {
+      const days = parseInt(card.querySelector('.simple-score-days')?.value || '90', 10);
+      return { enabled: true, max_points: maxPts, rule_type: 'date_within', pass_config: { max_days_ahead: days } };
+    }
+    return readScoringFromAdvanced(card);
+  }
+
+  function readScoringFromAdvanced(card) {
+    const scoreEnabled = card.querySelector('.edit-score-enabled')?.checked;
+    const maxPts = parseInt(card.querySelector('.edit-score-points')?.value || '0', 10);
+    const ruleType = card.querySelector('.edit-score-rule')?.value || 'any_answer';
+    return {
+      enabled: !!scoreEnabled,
+      max_points: maxPts,
+      rule_type: ruleType,
+      pass_config: readPassConfig(card, ruleType, maxPts),
+    };
+  }
+
+  function readPassConfig(card, ruleType, maxPts) {
+    const pc = {};
+    if (ruleType === 'yes_no') {
+      pc.yes = parseInt(card.querySelector('.edit-pass-yes')?.value || String(maxPts), 10);
+      pc.no = parseInt(card.querySelector('.edit-pass-no')?.value || '0', 10);
+      if (card.querySelector('.edit-pass-dq-yes')?.checked) pc.disqualify_on_yes = true;
+      if (card.querySelector('.edit-pass-dq-no')?.checked) pc.disqualify_on_no = true;
+    } else if (ruleType === 'numeric_range') {
+      const min = card.querySelector('.edit-pass-min')?.value.trim();
+      const max = card.querySelector('.edit-pass-max')?.value.trim();
+      if (min !== '') pc.min = parseFloat(min);
+      if (max !== '') pc.max = parseFloat(max);
+    } else if (ruleType === 'date_within') {
+      pc.max_days_ahead = parseInt(card.querySelector('.edit-pass-days')?.value || '90', 10);
+    }
+    return pc;
+  }
+
+  function syncPassConfigVisibility(card) {
+    const rule = card.querySelector('.edit-score-rule')?.value || 'any_answer';
+    card.querySelectorAll('.pass-fields').forEach(el => { el.style.display = 'none'; });
+    const map = {
+      yes_no: '.pass-yes-no',
+      numeric_range: '.pass-numeric',
+      date_within: '.pass-date',
+      any_answer: '.pass-any',
+      required_field: '.pass-required',
+    };
+    const sel = map[rule];
+    if (sel) card.querySelectorAll(sel).forEach(el => { el.style.display = 'block'; });
+  }
+
+  function syncSimpleCondVisibility(card) {
+    const mode = card.querySelector('.simple-cond-mode')?.value || 'always';
+    const prior = card.querySelector('.simple-cond-prior-wrap');
+    const adv = card.querySelector('.adv-cond-panel');
+    if (prior) prior.style.display = ['if_yes', 'if_no', 'if_answered'].includes(mode) ? 'block' : 'none';
+    if (adv) adv.style.display = mode === 'custom' ? 'block' : 'none';
+  }
+
+  function syncSimpleScoreVisibility(card) {
+    const enabled = card.querySelector('.simple-score-enabled')?.checked;
+    const pts = card.querySelector('.simple-score-points-wrap');
+    if (pts) pts.style.display = enabled ? 'block' : 'none';
+    const preset = card.querySelector('.simple-score-preset')?.value || 'none';
+    const minWrap = card.querySelector('.simple-score-min-wrap');
+    const daysWrap = card.querySelector('.simple-score-days-wrap');
+    const adv = card.querySelector('.adv-score-panel');
+    if (minWrap) minWrap.style.display = preset === 'numeric_min' ? 'block' : 'none';
+    if (daysWrap) daysWrap.style.display = preset === 'date_within' ? 'block' : 'none';
+    if (adv) adv.style.display = preset === 'custom' ? 'block' : 'none';
+  }
+
+  function priorQuestionChoices(card) {
+    const cards = Array.from(document.querySelectorAll('.question-card'));
+    const idx = cards.indexOf(card);
+    const out = [];
+    for (let i = 0; i < idx; i++) {
+      const c = cards[i];
+      const meta = readQuestionMeta(c);
+      const field = (meta.extract_fields || [''])[0];
+      const text = (c.querySelector('.edit-question')?.value || meta.question || '').trim();
+      const short = text.length > 55 ? text.slice(0, 52) + '…' : text;
+      out.push({ field, label: `#${i + 1} ${short || field}` });
+    }
+    return out;
+  }
+
+  function priorQuestionOptionsHtml(card, selectedField) {
+    const choices = priorQuestionChoices(card);
+    if (!choices.length) {
+      return '<option value="">— add earlier questions first —</option>';
+    }
+    return choices.map(c =>
+      `<option value="${esc(c.field)}" ${c.field === selectedField ? 'selected' : ''}>${esc(c.label)}</option>`
+    ).join('');
+  }
+
+  function extraFieldsHtml(fields, labels, primaryKey) {
+    const extras = (fields || []).filter(f => f && f !== primaryKey);
+    if (!extras.length) {
+      return '<p class="text-muted extra-fields-empty" style="margin:0;font-size:12px;">No extra fields.</p>';
+    }
+    return extras.map(key => `
+      <div class="extra-field-row" style="display:grid;grid-template-columns:1fr 1fr auto;gap:8px;margin-bottom:8px;">
+        <input class="extra-field-key" value="${esc(key)}" placeholder="field_key">
+        <input class="extra-field-label" value="${esc((labels || {})[key] || '')}" placeholder="spoken label">
+        <button type="button" class="btn btn-secondary btn-sm remove-extra-field">Remove</button>
+      </div>`).join('');
+  }
+
+  function primaryFieldInputHtml(q) {
+    const field = (q.extract_fields || [''])[0];
+    if (isCustomQuestion(q)) {
+      return `<label>Primary field key
+        <input class="edit-field-key" value="${esc(field)}">
+        <span class="text-muted" style="display:block;margin-top:4px;font-size:12px;font-weight:normal;">Internal storage name. Use lowercase letters and underscores, e.g. <code>needs_parking</code>.</span>
+      </label>`;
+    }
+    return `<label>Primary field key
+      <input class="edit-field-key" value="${esc(field)}" readonly tabindex="-1" style="background:var(--line-soft);cursor:not-allowed;">
+      <span class="text-muted" style="display:block;margin-top:4px;font-size:12px;font-weight:normal;">Locked on built-in questions — connects to profiles, email, and scoring.</span>
+    </label>`;
+  }
+
+  function passConfigPanelHtml(scoring) {
+    scoring = scoring || {};
+    const pc = scoring.pass_config || {};
+    const maxPts = scoring.max_points || 0;
+    const ruleOpts = SCORING_RULE_TYPES.map(r =>
+      `<option value="${r}" ${scoring.rule_type === r ? 'selected' : ''}>${r}</option>`
+    ).join('');
+    return `
+      <label style="display:flex;align-items:center;gap:8px;">
+        <input type="checkbox" class="edit-score-enabled" ${scoring.enabled ? 'checked' : ''} style="width:auto;max-width:none;"> Scoring enabled
+      </label>
+      <label>Max points <input type="number" class="edit-score-points" min="0" max="100" value="${maxPts}"></label>
+      <label>Rule type <select class="edit-score-rule">${ruleOpts}</select></label>
+      <div class="pass-config-panel" style="margin-top:8px;">
+        <div class="pass-yes-no pass-fields" style="display:none;">
+          <label>Points if Yes <input type="number" class="edit-pass-yes" min="0" max="100" value="${pc.yes ?? maxPts}"></label>
+          <label>Points if No <input type="number" class="edit-pass-no" min="0" max="100" value="${pc.no ?? 0}"></label>
+          <label style="display:flex;align-items:center;gap:8px;"><input type="checkbox" class="edit-pass-dq-yes" ${pc.disqualify_on_yes ? 'checked' : ''} style="width:auto;"> Disqualify on Yes</label>
+          <label style="display:flex;align-items:center;gap:8px;"><input type="checkbox" class="edit-pass-dq-no" ${pc.disqualify_on_no ? 'checked' : ''} style="width:auto;"> Disqualify on No</label>
+        </div>
+        <div class="pass-numeric pass-fields" style="display:none;">
+          <label>Minimum (pass) <input type="number" class="edit-pass-min" step="any" value="${pc.min ?? ''}"></label>
+          <label>Maximum (optional) <input type="number" class="edit-pass-max" step="any" value="${pc.max ?? ''}"></label>
+        </div>
+        <div class="pass-date pass-fields" style="display:none;">
+          <label>Max days ahead <input type="number" class="edit-pass-days" min="1" value="${pc.max_days_ahead ?? 90}"></label>
+        </div>
+        <p class="pass-any pass-fields text-muted" style="display:none;margin:0;font-size:12px;">Full max points when any answer is captured.</p>
+        <p class="pass-required pass-fields text-muted" style="display:none;margin:0;font-size:12px;">Full max points when the field is captured.</p>
+      </div>`;
+  }
+
+  function advancedCondPanelHtml(cond) {
+    const opOpts = ['<option value="">— none —</option>'].concat(COND_OPS.map(o =>
+      `<option value="${o}" ${cond.operator === o ? 'selected' : ''}>${o}</option>`
+    )).join('');
+    const v = cond.value;
+    const valStr = v === true ? 'true' : v === false ? 'false' : (v ?? '');
+    return `
+      <fieldset class="adv-cond-panel" style="border:1px solid var(--line);border-radius:8px;padding:10px;">
+        <legend style="font-size:13px;font-weight:600;">Custom conditional rule</legend>
+        <label>Field <input class="edit-cond-field" value="${esc(cond.field || '')}"></label>
+        <label>Operator <select class="edit-cond-op">${opOpts}</select></label>
+        <label>Value (for eq/ne) <input class="edit-cond-value" value="${esc(valStr)}" placeholder="true, false, or text"></label>
+        <p class="text-muted" style="margin:8px 0 0;font-size:12px;font-weight:normal;">Operators: <code>eq</code> equals, <code>ne</code> not equal, <code>truthy</code> has a value, <code>falsy</code> empty/no.</p>
+      </fieldset>`;
+  }
+
+  function scoringPresetLabel(preset) {
+    const hit = SCORE_PRESETS.find(p => p.id === preset);
+    return hit ? hit.label : 'Custom rule';
+  }
+
+  function buildEditHtml(q, card) {
+    const cond = q.conditional || {};
+    const scoring = q.scoring || {};
+    const field = (q.extract_fields || [''])[0];
+    const flabel = (q.field_labels || {})[field] || '';
+    const condMode = classifyConditional(cond);
+    const scorePreset = classifyScoringPreset(scoring);
+    const scoringOn = !!(scoring && scoring.enabled);
+    const openAdvanced = condMode === 'custom' || scorePreset === 'custom'
+      || ['yes_no_no_better', 'yes_no_yes_better', 'yes_no_dq_yes', 'yes_no_dq_no', 'numeric_min', 'date_within'].includes(scorePreset)
+      || !!(q.understanding_guide || '').trim()
+      || !!(q.retry_prompt_2 || '').trim()
+      || !!(q.retry_prompt_3 || '').trim()
+      || ((q.extract_fields || []).length > 1);
+
+    return `
+      <div class="simple-panel form-grid">
+        <label>What should the assistant ask?
+          <textarea class="edit-question" rows="2">${esc(q.question)}</textarea>
+        </label>
+        <label>Answer type
+          <select class="edit-answer-type">${answerTypeOptions(q.answer_type)}</select>
+        </label>
+        <label>If the caller is unclear, say…
+          <textarea class="edit-retry1" rows="2" placeholder="Optional — leave blank to use a friendly default">${esc(q.retry_prompt || '')}</textarea>
+        </label>
+        <label>When should this be asked?
+          <select class="simple-cond-mode">
+            <option value="always" ${condMode === 'always' ? 'selected' : ''}>Always (every caller hears it)</option>
+            <option value="if_yes" ${condMode === 'if_yes' ? 'selected' : ''}>Only if a previous answer was Yes</option>
+            <option value="if_no" ${condMode === 'if_no' ? 'selected' : ''}>Only if a previous answer was No</option>
+            <option value="if_answered" ${condMode === 'if_answered' ? 'selected' : ''}>Only if a previous question was answered</option>
+            <option value="custom" ${condMode === 'custom' ? 'selected' : ''}>Custom rule (in Advanced)</option>
+          </select>
+        </label>
+        <label class="simple-cond-prior-wrap">Which previous question?
+          <select class="simple-cond-prior">${priorQuestionOptionsHtml(card, cond.field || '')}</select>
+        </label>
+        <label style="display:flex;align-items:center;gap:8px;font-weight:600;">
+          <input type="checkbox" class="edit-active" ${q.active !== false ? 'checked' : ''} style="width:auto;max-width:none;"> On — ask during calls
+        </label>
+        <label style="display:flex;align-items:center;gap:8px;font-weight:600;">
+          <input type="checkbox" class="edit-required" ${q.required !== false ? 'checked' : ''} style="width:auto;max-width:none;"> Required — must answer before moving on
+        </label>
+        <label style="display:flex;align-items:center;gap:8px;font-weight:600;">
+          <input type="checkbox" class="simple-score-enabled" ${scoringOn ? 'checked' : ''} style="width:auto;max-width:none;"> Affects applicant score
+        </label>
+        <label class="simple-score-points-wrap">Points for this question (0–100)
+          <input type="number" class="simple-score-points" min="0" max="100" value="${scoring.max_points || 0}">
+        </label>
+        <label style="display:flex;align-items:center;gap:8px;font-weight:600;">
+          <input type="checkbox" class="edit-confirm" ${q.requires_confirmation ? 'checked' : ''} style="width:auto;max-width:none;"> Read answer back to confirm (name, phone, email)
+        </label>
+      </div>
+      <details class="q-advanced" ${openAdvanced ? 'open' : ''}>
+        <summary>Advanced options — field keys, extra data, special scoring rules</summary>
+        <div class="form-grid" style="display:grid;gap:10px;max-width:640px;margin-top:8px;">
+          ${primaryFieldInputHtml(q)}
+          <label>Field label (spoken)
+            <input class="edit-field-label" value="${esc(flabel)}">
+          </label>
+          <label>Understanding guide (optional)
+            <textarea class="edit-understanding-guide" rows="2" placeholder="Hints for the AI. Leave blank for smart defaults.">${esc(q.understanding_guide || '')}</textarea>
+          </label>
+          <fieldset style="border:1px solid var(--line);border-radius:8px;padding:10px;">
+            <legend style="font-size:13px;font-weight:600;">Additional fields (optional)</legend>
+            <p class="text-muted" style="margin:0 0 8px;font-size:12px;font-weight:normal;">Capture multiple values from one question (e.g. pet type + weight).</p>
+            <div class="extra-fields-container">${extraFieldsHtml(q.extract_fields, q.field_labels, field)}</div>
+            <button type="button" class="btn btn-secondary btn-sm add-extra-field-btn settings-edit-only">+ Add field</button>
+          </fieldset>
+          <label>Retry prompt (2nd) <textarea class="edit-retry2" rows="2">${esc(q.retry_prompt_2 || '')}</textarea></label>
+          <label>Retry prompt (3rd) <textarea class="edit-retry3" rows="2">${esc(q.retry_prompt_3 || '')}</textarea></label>
+          ${advancedCondPanelHtml(cond)}
+          <fieldset style="border:1px solid var(--line);border-radius:8px;padding:10px;">
+            <legend style="font-size:13px;font-weight:600;">Scoring rule (beyond simple points)</legend>
+            <p class="text-muted" style="margin:0 0 8px;font-size:12px;font-weight:normal;">Use a preset for yes/no disqualify rules, minimum numbers, date windows, etc.</p>
+            <label>Scoring preset
+              <select class="simple-score-preset">${scorePresetOptions(scorePreset)}</select>
+            </label>
+            <label class="simple-score-min-wrap">Minimum value to pass
+              <input type="number" class="simple-score-min" step="any" value="${(scoring.pass_config || {}).min ?? ''}">
+            </label>
+            <label class="simple-score-days-wrap">Date must be within (days)
+              <input type="number" class="simple-score-days" min="1" value="${(scoring.pass_config || {}).max_days_ahead ?? 90}">
+            </label>
+          </fieldset>
+          <fieldset class="adv-score-panel" style="border:1px solid var(--line);border-radius:8px;padding:10px;">
+            <legend style="font-size:13px;font-weight:600;">Custom scoring rule</legend>
+            ${passConfigPanelHtml(scoring)}
+          </fieldset>
+        </div>
+      </details>
+      <button type="button" onclick="toggleEdit(this)" class="btn btn-secondary" style="margin-top:10px;">Done</button>`;
+  }
+
+  function summaryBadges(q) {
+    const badges = [];
+    if (q.conditional && q.conditional.field) badges.push('<span class="q-badge">Only sometimes</span>');
+    if (q.requires_confirmation) badges.push('<span class="q-badge">Read-back</span>');
+    if (q.scoring && q.scoring.enabled) {
+      const preset = classifyScoringPreset(q.scoring);
+      const extra = preset !== 'any_answer' && preset !== 'required_field' && preset !== 'none'
+        ? ' · ' + esc(scoringPresetLabel(preset))
+        : '';
+      badges.push(`<span class="q-badge score">Score: ${q.scoring.max_points || 0} pts${extra}</span>`);
+    }
+    badges.push(`<span class="q-badge">${esc(answerTypeLabel(q.answer_type || 'text'))}</span>`);
+    return badges.join('');
+  }
+
+  function buildViewHtml(q, index) {
+    const n = (index != null ? index + 1 : q.order) || 1;
+    const inactive = q.active === false;
+    const scoringOn = !!(q.scoring && q.scoring.enabled);
+    return `
+      <article class="q-conversation-item ${inactive ? 'q-inactive' : ''}">
+        <div class="q-conversation-head">
+          <div class="q-conversation-main">
+            <div class="q-conversation-num" aria-hidden="true">${n}</div>
+            <div style="min-width:0;">
+              <p class="q-conversation-text">${esc(q.question)}</p>
+              <div class="q-quick-status settings-edit-only">
+                <label class="q-toggle-pill" title="Ask during calls">
+                  <input type="checkbox" class="quick-active" ${q.active !== false ? 'checked' : ''}> On
+                </label>
+                <label class="q-toggle-pill" title="Caller must answer">
+                  <input type="checkbox" class="quick-required" ${q.required !== false ? 'checked' : ''}> Required
+                </label>
+                <label class="q-toggle-pill" title="Counts toward qualification score">
+                  <input type="checkbox" class="quick-scoring" ${scoringOn ? 'checked' : ''}> Affects score
+                </label>
+              </div>
+              <div class="q-badges">${summaryBadges(q)}</div>
+            </div>
+          </div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;flex:none;">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="moveQuestion(this,-1)" title="Move up">↑</button>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="moveQuestion(this,1)" title="Move down">↓</button>
+            <button type="button" onclick="toggleEdit(this)" class="btn btn-secondary btn-sm">Edit</button>
+            <button type="button" onclick="deleteQuestion(this)" class="btn btn-danger btn-sm settings-edit-only">Delete</button>
+          </div>
+        </div>
+      </article>`;
+  }
+
+  function applyQuickToggle(card, field, checked) {
+    const meta = collectFromCard(card);
+    if (field === 'active') meta.active = checked;
+    if (field === 'required') meta.required = checked;
+    if (field === 'scoring') {
+      if (!checked) {
+        meta.scoring = { enabled: false, max_points: 0, rule_type: 'any_answer', pass_config: {} };
+      } else {
+        const pts = (meta.scoring && meta.scoring.max_points) || 5;
+        const preset = classifyScoringPreset(meta.scoring || {});
+        if (preset === 'none') {
+          meta.scoring = { enabled: true, max_points: pts, rule_type: 'any_answer', pass_config: {} };
+        } else {
+          meta.scoring = { ...(meta.scoring || {}), enabled: true };
+        }
+      }
+    }
+    renderCard(card, meta, cardIndex(card));
+    updateLiveWarnings();
+  }
+
+  function cardIndex(card) {
+    return Array.from(document.querySelectorAll('.question-card')).indexOf(card);
+  }
+
+  function bindViewQuickToggles(card) {
+    const view = card.querySelector('.question-view');
+    if (!view || view.dataset.quickBound) return;
+    view.dataset.quickBound = '1';
+    view.querySelector('.quick-active')?.addEventListener('change', (e) => applyQuickToggle(card, 'active', e.target.checked));
+    view.querySelector('.quick-required')?.addEventListener('change', (e) => applyQuickToggle(card, 'required', e.target.checked));
+    view.querySelector('.quick-scoring')?.addEventListener('change', (e) => applyQuickToggle(card, 'scoring', e.target.checked));
+  }
+
+  function renderCard(card, q, index) {
+    const idx = index != null ? index : cardIndex(card);
+    card.querySelector('.question-view').innerHTML = buildViewHtml(q, idx);
+    card.querySelector('.question-edit').innerHTML = buildEditHtml(q, card);
+    writeQuestionMeta(card, q);
+    delete card.dataset.bound;
+    delete card.querySelector('.question-view')?.dataset.quickBound;
+    bindCardHandlers(card);
+    bindViewQuickToggles(card);
+    syncSimpleCondVisibility(card);
+    syncSimpleScoreVisibility(card);
+    syncPassConfigVisibility(card);
+  }
+
+  function readQuestionMeta(card) {
+    return JSON.parse(card.querySelector('.question-meta').textContent);
+  }
+
+  function writeQuestionMeta(card, meta) {
+    card.querySelector('.question-meta').textContent = JSON.stringify(meta);
+  }
+
+  function bindExtraFields(card) {
+    const container = card.querySelector('.extra-fields-container');
+    if (!container) return;
+    const primary = card.querySelector('.edit-field-key')?.value.trim()
+      || (readQuestionMeta(card).extract_fields || [''])[0];
+    const meta = readQuestionMeta(card);
+    container.innerHTML = extraFieldsHtml(meta.extract_fields, meta.field_labels, primary);
+    const addBtn = card.querySelector('.add-extra-field-btn');
+    if (addBtn && !addBtn.dataset.bound) {
+      addBtn.dataset.bound = '1';
+      addBtn.addEventListener('click', () => {
+        const empty = container.querySelector('.extra-fields-empty');
+        if (empty) empty.remove();
+        const row = document.createElement('div');
+        row.className = 'extra-field-row';
+        row.style.cssText = 'display:grid;grid-template-columns:1fr 1fr auto;gap:8px;margin-bottom:8px;';
+        row.innerHTML = `
+          <input class="extra-field-key" placeholder="field_key">
+          <input class="extra-field-label" placeholder="spoken label">
+          <button type="button" class="btn btn-secondary btn-sm remove-extra-field">Remove</button>`;
+        row.querySelector('.remove-extra-field').addEventListener('click', () => row.remove());
+        container.appendChild(row);
+      });
+    }
+    container.querySelectorAll('.remove-extra-field').forEach(btn => {
+      if (!btn.dataset.bound) {
+        btn.dataset.bound = '1';
+        btn.addEventListener('click', () => btn.closest('.extra-field-row')?.remove());
+      }
+    });
+  }
+
+  function readExtraFields(card, primaryKey) {
+    const fields = [];
+    const labels = {};
+    card.querySelectorAll('.extra-field-row').forEach(row => {
+      const key = row.querySelector('.extra-field-key')?.value.trim();
+      if (!key || key === primaryKey) return;
+      fields.push(key);
+      const lab = row.querySelector('.extra-field-label')?.value.trim();
+      if (lab) labels[key] = lab;
+    });
+    return { fields, labels };
+  }
+
+  function bindCardHandlers(card) {
+    if (card.dataset.bound) return;
+    card.dataset.bound = '1';
+
+    card.querySelector('.simple-cond-mode')?.addEventListener('change', () => {
+      syncSimpleCondVisibility(card);
+      if (card.querySelector('.simple-cond-mode')?.value === 'custom') {
+        card.querySelector('details.q-advanced')?.setAttribute('open', '');
+      }
+    });
+    card.querySelector('.simple-score-preset')?.addEventListener('change', () => {
+      syncSimpleScoreVisibility(card);
+      syncPassConfigVisibility(card);
+      updateLiveWarnings();
+      if (card.querySelector('.simple-score-preset')?.value === 'custom') {
+        card.querySelector('details.q-advanced')?.setAttribute('open', '');
+      }
+    });
+    card.querySelector('.simple-score-enabled')?.addEventListener('change', () => {
+      syncSimpleScoreVisibility(card);
+      updateLiveWarnings();
+    });
+    card.querySelector('.edit-score-rule')?.addEventListener('change', () => syncPassConfigVisibility(card));
+
+    card.querySelectorAll(
+      '.edit-score-enabled, .edit-score-points, .simple-score-points, .simple-score-enabled, .edit-active, .edit-required, .edit-field-key'
+    ).forEach(el => {
+      el.addEventListener('change', updateLiveWarnings);
+      el.addEventListener('input', updateLiveWarnings);
+    });
+
+    bindExtraFields(card);
+  }
+
+  function newQuestionTemplate(answerType) {
+    const uid = Math.random().toString(36).slice(2, 10);
+    const field = 'custom_' + uid;
+    const prompts = {
+      yes_no: { q: 'Please answer yes or no.', retry: 'Just a quick yes or no is perfect.' },
+      long_text: { q: 'Please tell me more.', retry: 'Could you share a bit more detail?' },
+      number: { q: 'What number should I note?', retry: 'About how many would that be?' },
+      currency: { q: 'What amount should I record?', retry: 'Roughly how much per month?' },
+      date: { q: 'What date or timeframe works for you?', retry: 'When were you hoping for?' },
+      text: { q: 'New screening question', retry: 'Could you tell me more?' },
+    };
+    const p = prompts[answerType] || prompts.text;
+    return {
+      schema_version: 2,
+      id: 'CUSTOM_' + uid.toUpperCase(),
+      state: 'CUSTOM_' + uid.toUpperCase(),
+      question: p.q,
+      answer_type: answerType || 'text',
+      extract_fields: [field],
+      field_labels: { [field]: 'answer' },
+      validation: null,
+      retry_prompt: p.retry,
+      retry_prompt_2: '',
+      retry_prompt_3: '',
+      active: true,
+      order: document.querySelectorAll('.question-card').length + 1,
+      required: true,
+      requires_confirmation: false,
+      conditional: null,
+      scoring: { enabled: false, max_points: 0, rule_type: 'any_answer', pass_config: {} },
+      understanding_guide: '',
+    };
+  }
+
+  function buildCardHtml(q) {
+    return `
+    <div class="form-section question-card" data-state="${esc(q.state)}">
+      <div class="question-view"></div>
+      <div class="question-edit" style="display:none;margin-top:12px;"></div>
+      <script type="application/json" class="question-meta">${JSON.stringify(q)}<\/script>
+    </div>`;
+  }
+
+  function addQuestion() {
+    const type = document.getElementById('addQuestionType')?.value || 'text';
+    const q = newQuestionTemplate(type);
+    document.getElementById('questionsContainer').insertAdjacentHTML('beforeend', buildCardHtml(q));
+    const card = document.querySelector('.question-card:last-child');
+    renderCard(card, q);
+    renumberOrders();
+    card.querySelector('.question-edit').style.display = 'block';
+    card.querySelector('.question-view').style.display = 'none';
+    updateLiveWarnings();
+  }
+
+  function cardHasContactField(card) {
+    const meta = collectFromCard(card);
+    const key = (meta.extract_fields || [''])[0];
+    return Object.prototype.hasOwnProperty.call(CONTACT_FIELDS, key);
+  }
+
+  function deleteQuestion(btn) {
+    const cards = document.querySelectorAll('.question-card');
+    if (cards.length <= 1) { alert('At least one question is required.'); return; }
+    const card = btn.closest('.question-card');
+    let msg = 'Delete this question from the flow?';
+    if (cardHasContactField(card)) {
+      const key = (collectFromCard(card).extract_fields || [''])[0];
+      msg += '\n\nThis question collects contact info (' + (CONTACT_FIELDS[key] || 'identity') + '). Emails and CRM may not include it.';
+    }
+    if (!confirm(msg)) return;
+    card.remove();
+    renumberOrders();
+    document.querySelectorAll('.question-card').forEach(c => {
+      const prior = c.querySelector('.simple-cond-prior');
+      if (prior) {
+        const cond = buildConditionalFromSimple(c) || readQuestionMeta(c).conditional || {};
+        prior.innerHTML = priorQuestionOptionsHtml(c, cond.field || '');
+      }
+    });
+    updateLiveWarnings();
+  }
+
+  function moveQuestion(btn, dir) {
+    const card = btn.closest('.question-card');
+    const sib = dir < 0 ? card.previousElementSibling : card.nextElementSibling;
+    if (!sib || !sib.classList.contains('question-card')) return;
+    if (dir < 0) card.parentNode.insertBefore(card, sib);
+    else card.parentNode.insertBefore(sib, card);
+    renumberOrders();
+    document.querySelectorAll('.question-card').forEach(c => {
+      const prior = c.querySelector('.simple-cond-prior');
+      if (prior) {
+        const cond = buildConditionalFromSimple(c) || readQuestionMeta(c).conditional || {};
+        prior.innerHTML = priorQuestionOptionsHtml(c, cond.field || '');
+      }
+    });
+  }
+
+  function renumberOrders() {
+    document.querySelectorAll('.question-card').forEach((card, i) => {
       const meta = readQuestionMeta(card);
-      meta.question = card.querySelector('.edit-question').value.trim();
-      meta.retry_prompt = card.querySelector('.edit-retry1').value.trim();
-      meta.retry_prompt_2 = card.querySelector('.edit-retry2').value.trim();
-      meta.retry_prompt_3 = card.querySelector('.edit-retry3').value.trim();
-      meta.active = card.querySelector('.edit-active').checked;
-      return meta;
+      meta.order = i + 1;
+      writeQuestionMeta(card, meta);
+      if (card.querySelector('.question-edit').style.display === 'none') {
+        const q = collectFromCard(card);
+        card.querySelector('.question-view').innerHTML = buildViewHtml(q, i);
+        delete card.querySelector('.question-view')?.dataset.quickBound;
+        bindViewQuickToggles(card);
+      }
     });
   }
 
@@ -113,69 +850,176 @@
     const card = btn.closest('.question-card');
     const view = card.querySelector('.question-view');
     const edit = card.querySelector('.question-edit');
-    const showingEdit = edit.style.display === 'none';
-    if (showingEdit) {
-      edit.querySelector('.edit-question').value = card.querySelector('.question-text').textContent.trim();
-    } else {
-      card.querySelector('.question-text').textContent = edit.querySelector('.edit-question').value.trim();
+    const open = edit.style.display === 'none';
+    if (!open) {
+      const q = collectFromCard(card);
+      renderCard(card, q, cardIndex(card));
     }
-    view.style.display = showingEdit ? 'none' : 'block';
-    edit.style.display = showingEdit ? 'block' : 'none';
-    btn.textContent = showingEdit ? 'Done' : 'Edit';
+    edit.style.display = open ? 'block' : 'none';
+    view.style.display = open ? 'none' : 'block';
+    if (open) {
+      const prior = card.querySelector('.simple-cond-prior');
+      if (prior) {
+        const cond = readQuestionMeta(card).conditional || {};
+        prior.innerHTML = priorQuestionOptionsHtml(card, cond.field || '');
+      }
+      syncSimpleCondVisibility(card);
+      syncSimpleScoreVisibility(card);
+    }
+  }
+
+  function collectFromCard(card) {
+    const meta = readQuestionMeta(card);
+    const edit = card.querySelector('.question-edit');
+    if (!edit || !edit.querySelector('.edit-question')) {
+      return { ...meta };
+    }
+    const lockedPrimary = (meta.extract_fields || [''])[0];
+    const fieldKey = isCustomQuestion(meta)
+      ? (card.querySelector('.edit-field-key')?.value.trim() || lockedPrimary)
+      : lockedPrimary;
+    const fieldLabel = card.querySelector('.edit-field-label')?.value.trim() || fieldKey;
+    const extra = readExtraFields(card, fieldKey);
+    const extractFields = [fieldKey, ...extra.fields.filter(f => f && f !== fieldKey)];
+    const fieldLabels = { ...(meta.field_labels || {}), [fieldKey]: fieldLabel, ...extra.labels };
+
+    const scoreEnabled = card.querySelector('.simple-score-enabled')?.checked;
+    const advPreset = card.querySelector('.simple-score-preset')?.value || 'none';
+    let scoring;
+    if (!scoreEnabled) {
+      scoring = { enabled: false, max_points: 0, rule_type: 'any_answer', pass_config: {} };
+    } else if (advPreset === 'custom') {
+      scoring = readScoringFromAdvanced(card);
+    } else if (advPreset !== 'none') {
+      scoring = scoringFromPreset(card);
+    } else {
+      const maxPts = parseInt(card.querySelector('.simple-score-points')?.value || '0', 10);
+      scoring = { enabled: true, max_points: maxPts, rule_type: 'any_answer', pass_config: {} };
+    }
+
+    return {
+      ...meta,
+      question: card.querySelector('.edit-question').value.trim(),
+      answer_type: card.querySelector('.edit-answer-type').value,
+      extract_fields: extractFields,
+      field_labels: fieldLabels,
+      retry_prompt: card.querySelector('.edit-retry1').value.trim(),
+      retry_prompt_2: card.querySelector('.edit-retry2')?.value.trim() || '',
+      retry_prompt_3: card.querySelector('.edit-retry3')?.value.trim() || '',
+      active: card.querySelector('.edit-active').checked,
+      required: card.querySelector('.edit-required')?.checked ?? true,
+      requires_confirmation: card.querySelector('.edit-confirm').checked,
+      understanding_guide: card.querySelector('.edit-understanding-guide')?.value.trim() || '',
+      conditional: buildConditionalFromSimple(card),
+      scoring,
+      schema_version: 2,
+    };
+  }
+
+  function collectQuestions() {
+    return Array.from(document.querySelectorAll('.question-card')).map(collectFromCard);
+  }
+
+  function missingContactFields(questions) {
+    const present = new Set();
+    questions.forEach(q => {
+      if (!q.active) return;
+      (q.extract_fields || []).forEach(f => present.add(f));
+    });
+    return Object.entries(CONTACT_FIELDS)
+      .filter(([k]) => !present.has(k))
+      .map(([, label]) => label);
+  }
+
+  function scoringPointsTotal(questions) {
+    return questions.reduce((sum, q) => {
+      if (q.scoring && q.scoring.enabled) return sum + (q.scoring.max_points || 0);
+      return sum;
+    }, 0);
+  }
+
+  function updateLiveWarnings() {
+    const questions = collectQuestions();
+    const total = scoringPointsTotal(questions);
+    const scoringEl = document.getElementById('scoringTotal');
+    if (scoringEl) scoringEl.textContent = String(total);
+    const scoreWarn = document.getElementById('liveScoringWarn');
+    if (scoreWarn) {
+      if (total > 100) {
+        scoreWarn.style.display = 'block';
+        scoreWarn.textContent = 'Warning: Enabled scoring points total ' + total + ' exceeds 100; scores are normalized at runtime.';
+      } else {
+        scoreWarn.style.display = 'none';
+      }
+    }
+    const missing = missingContactFields(questions);
+    const idWarn = document.getElementById('liveIdentityWarn');
+    if (idWarn) {
+      if (missing.length) {
+        idWarn.style.display = 'block';
+        idWarn.textContent = 'Warning: No active question collects ' + missing.join(', ') + '. Result emails and CRM may lack contact info.';
+      } else {
+        idWarn.style.display = 'none';
+      }
+    }
+  }
+
+  function confirmSaveWarnings(questions) {
+    const missing = missingContactFields(questions);
+    const total = scoringPointsTotal(questions);
+    const notes = [];
+    if (missing.length) notes.push('Missing contact fields: ' + missing.join(', ') + '.');
+    if (total > 100) notes.push('Scoring points total is ' + total + ' (above 100).');
+    if (!notes.length) return true;
+    return confirm('Save anyway?\n\n' + notes.join('\n'));
   }
 
   async function saveAllQuestions() {
+    const questions = collectQuestions();
+    if (!confirmSaveWarnings(questions)) return;
     try {
-      const questions = collectQuestions();
       const r = await fetch('/api/settings/questions', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ questions }),
       });
-      if (!r.ok) {
-        const err = await r.json().catch(() => ({}));
-        throw new Error(err.detail || await r.text());
-      }
-      showMessage('✓ Questions saved');
-      setTimeout(() => location.reload(), 1000);
-    } catch (e) {
-      showMessage('✗ Error: ' + e.message, true);
-    }
+      if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || r.statusText); }
+      const data = await r.json().catch(() => ({}));
+      let msg = 'Questions saved.';
+      if (data.warnings && data.warnings.length) msg += ' Note: ' + data.warnings.join(' ');
+      showMessage(msg);
+      setTimeout(() => location.reload(), 1200);
+    } catch (e) { showMessage(e.message, true); }
   }
 
   async function resetQuestions() {
     if (!confirm('Reset all questions to system defaults?')) return;
     try {
       const r = await fetch('/api/settings/questions/reset', { method: 'POST' });
-      if (!r.ok) throw new Error(await r.text());
-      showMessage('✓ Questions reset to defaults');
-      setTimeout(() => location.reload(), 1000);
-    } catch (e) {
-      showMessage('✗ Error: ' + e.message, true);
-    }
+      if (!r.ok) throw new Error('Reset failed');
+      showMessage('Reset to defaults.');
+      setTimeout(() => location.reload(), 800);
+    } catch (e) { showMessage(e.message, true); }
   }
 
   async function previewFlow() {
-    const preview = document.getElementById('previewContainer');
-    const content = document.getElementById('previewContent');
-    const meta = document.getElementById('previewMeta');
-    preview.style.display = 'block';
-    content.innerHTML = '⏳ Loading preview...';
-    meta.textContent = '';
-
     try {
       const r = await fetch('/api/settings/questions/preview');
-      if (!r.ok) throw new Error(await r.text());
       const data = await r.json();
-      meta.textContent = `${data.flow_state_count} flow states · sample path (no pets, no eviction): ${data.active_question_count_sample} active questions`;
-      content.innerHTML = (data.flow || []).map(turn =>
-        `<div style="margin-bottom: 12px; padding: 8px; background: ${turn.speaker === 'AI' ? '#e3f2fd' : '#f3e5f5'}; border-radius: 4px;">
-          <strong>${turn.speaker}:</strong> ${turn.text || '(pause)'}
-        </div>`
-      ).join('');
-    } catch (e) {
-      content.innerHTML = '✗ Error: ' + e.message;
-    }
+      document.getElementById('previewContainer').style.display = 'block';
+      document.getElementById('previewMeta').textContent =
+        `${data.active_question_count_sample} questions on a sample path (no pets / no eviction)`;
+      document.getElementById('previewContent').innerHTML = (data.flow || []).map((turn, i) => {
+        const cls = (turn.speaker || '').toLowerCase().includes('ai') ? 'assistant' : 'caller';
+        const label = cls === 'assistant' ? 'Assistant' : 'Caller';
+        return `<div class="preview-turn ${cls}"><strong>${i + 1}. ${esc(label)}</strong><div style="margin-top:4px;">${esc(turn.text)}</div></div>`;
+      }).join('');
+    } catch (e) { showMessage(e.message, true); }
   }
+
+  document.querySelectorAll('.question-card').forEach((card, i) => {
+    renderCard(card, readQuestionMeta(card), i);
+  });
+  updateLiveWarnings();
 </script>
 {% endblock %}

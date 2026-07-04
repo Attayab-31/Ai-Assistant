@@ -15,7 +15,9 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.screening_flow import normalize_faqs, normalize_questions
+from app.core.question_flow import normalize_questions
+from app.core.screening_flow import normalize_faqs
+from app.core.voice_latency import resolve_voice_latency
 from config import DEFAULT_FAQS, DEFAULT_QUESTIONS
 from config import settings as env_settings
 
@@ -38,13 +40,21 @@ CALL_SETTINGS_KEYS = (
     "llm_fallback_provider",
     "stt_fallback_provider",
     "tts_fallback_provider",
-    "ai_agent_name",
     "property_name",
+    "greeting_message",
+    "closing_message",
+    "provider_failure_message",
     "screening_questions",
     "screening_faqs",
     "max_retries_per_question",
     "silence_timeout_seconds",
     "max_call_duration_seconds",
+    "llm_temperature",
+    "llm_max_tokens",
+    "qualified_score_threshold",
+    "review_score_threshold",
+    "voice_latency_profile",
+    "llm_streaming_enabled",
 )
 
 # Redis cache for the raw settings batch behind a call snapshot. A short TTL
@@ -71,13 +81,29 @@ class CallSettingsSnapshot:
     llm_fallback_provider: str
     stt_fallback_provider: str
     tts_fallback_provider: str
-    agent_name: str
     property_name: str
+    greeting_message: str
+    closing_message: str
+    provider_failure_message: str
     questions: list
     faqs: list
     max_retries: int
     silence_timeout_seconds: int
     max_call_duration_seconds: int
+    llm_temperature: float
+    llm_max_tokens: int
+    qualified_score_threshold: int = 75
+    review_score_threshold: int = 40
+    voice_latency_profile: str = "balanced"
+    llm_streaming_enabled: bool = True
+    turn_timeout_seconds: float = 15.0
+    llm_timeout_voice_seconds: float = 5.5
+    deepgram_endpointing_ms: int = 900
+    deepgram_utterance_end_ms: int = 1000
+    latency_alert_turn_p95_ms: int = 1200
+    latency_alert_timeout_rate_pct: float = 2.0
+    llm_models_by_provider: dict[str, str] = field(default_factory=dict)
+    tts_voices_by_provider: dict[str, str] = field(default_factory=dict)
     captured_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
 
 
@@ -96,6 +122,8 @@ class CallProviderBundle:
     llm_fallback_provider: str = "auto"
     stt_fallback_provider: str = "auto"
     tts_fallback_provider: str = "auto"
+    llm_by_name: dict = field(default_factory=dict)
+    tts_by_name: dict = field(default_factory=dict)
 
 
 def _parse_setting(key: str, raw: Any, default: Any) -> Any:
@@ -114,6 +142,9 @@ def _parse_setting(key: str, raw: Any, default: Any) -> Any:
         "max_retries_per_question",
         "silence_timeout_seconds",
         "max_call_duration_seconds",
+        "llm_max_tokens",
+        "qualified_score_threshold",
+        "review_score_threshold",
     ):
         try:
             return int(raw)
@@ -121,7 +152,7 @@ def _parse_setting(key: str, raw: Any, default: Any) -> Any:
             return default
     if key == "auto_fallback_enabled":
         return str(raw).lower() in ("true", "1", "yes")
-    if key == "tts_speed":
+    if key in ("tts_speed", "llm_temperature"):
         try:
             return float(raw)
         except (ValueError, TypeError):
@@ -163,10 +194,14 @@ def snapshot_from_map(values: dict[str, Any]) -> CallSettingsSnapshot:
         llm_fallback_provider=str(values.get("llm_fallback_provider") or "auto").lower(),
         stt_fallback_provider=str(values.get("stt_fallback_provider") or "auto").lower(),
         tts_fallback_provider=str(values.get("tts_fallback_provider") or "auto").lower(),
-        agent_name=str(values.get("ai_agent_name") or env_settings.default_agent_name),
         property_name=str(
             values.get("property_name") or env_settings.default_property_name
         ),
+        greeting_message=str(values.get("greeting_message") or "").strip(),
+        closing_message=str(values.get("closing_message") or "").strip(),
+        provider_failure_message=str(
+            values.get("provider_failure_message") or ""
+        ).strip(),
         questions=normalize_questions(
             _parse_setting(
                 "screening_questions",
@@ -190,6 +225,35 @@ def snapshot_from_map(values: dict[str, Any]) -> CallSettingsSnapshot:
         max_call_duration_seconds=_parse_setting(
             "max_call_duration_seconds", values.get("max_call_duration_seconds"), 600
         ),
+        llm_temperature=_parse_setting(
+            "llm_temperature", values.get("llm_temperature"), 0.3
+        ),
+        llm_max_tokens=_parse_setting(
+            "llm_max_tokens", values.get("llm_max_tokens"), 0
+        ),
+        qualified_score_threshold=_parse_setting(
+            "qualified_score_threshold", values.get("qualified_score_threshold"), 75
+        ),
+        review_score_threshold=_parse_setting(
+            "review_score_threshold", values.get("review_score_threshold"), 40
+        ),
+        llm_models_by_provider={k: str(v) for k, v in model_by_llm.items()},
+        tts_voices_by_provider={k: str(v) for k, v in voice_by_tts.items()},
+        **{
+            k: v
+            for k, v in resolve_voice_latency(values).items()
+            if k
+            in (
+                "voice_latency_profile",
+                "llm_streaming_enabled",
+                "turn_timeout_seconds",
+                "llm_timeout_voice_seconds",
+                "deepgram_endpointing_ms",
+                "deepgram_utterance_end_ms",
+                "latency_alert_turn_p95_ms",
+                "latency_alert_timeout_rate_pct",
+            )
+        },
     )
 
 
@@ -224,18 +288,18 @@ def build_call_provider_bundle(snapshot: CallSettingsSnapshot) -> CallProviderBu
     from app.providers.tts.google_tts import GoogleTTSProvider
 
     llm_factories = {
-        "groq": lambda: GroqLLMProvider(model=snapshot.llm_model),
-        "openai": lambda: OpenAILLMProvider(model=snapshot.llm_model),
-        "openrouter": lambda: OpenRouterLLMProvider(model=snapshot.llm_model),
-        "gemini": lambda: GeminiLLMProvider(model=snapshot.llm_model),
+        "groq": lambda m: GroqLLMProvider(model=m),
+        "openai": lambda m: OpenAILLMProvider(model=m),
+        "openrouter": lambda m: OpenRouterLLMProvider(model=m),
+        "gemini": lambda m: GeminiLLMProvider(model=m),
     }
     stt_factories = {
         "deepgram": lambda: DeepgramSTTProvider(model=snapshot.stt_model),
         "groq": lambda: GroqSTTProvider(model=snapshot.groq_stt_model),
     }
     tts_factories = {
-        "google": lambda: GoogleTTSProvider(voice=snapshot.tts_voice),
-        "deepgram": lambda: DeepgramTTSProvider(voice=snapshot.tts_voice),
+        "google": lambda v: GoogleTTSProvider(voice=v),
+        "deepgram": lambda v: DeepgramTTSProvider(voice=v),
     }
 
     llm_name = snapshot.llm_provider
@@ -249,10 +313,21 @@ def build_call_provider_bundle(snapshot: CallSettingsSnapshot) -> CallProviderBu
     if tts_name not in tts_factories:
         raise ValueError(f"Unknown TTS provider: {tts_name}")
 
+    llm_models = snapshot.llm_models_by_provider
+    tts_voices = snapshot.tts_voices_by_provider
+    llm_by_name = {
+        name: factory(str(llm_models.get(name, snapshot.llm_model)))
+        for name, factory in llm_factories.items()
+    }
+    tts_by_name = {
+        name: factory(str(tts_voices.get(name, snapshot.tts_voice)))
+        for name, factory in tts_factories.items()
+    }
+
     return CallProviderBundle(
-        llm=llm_factories[llm_name](),
+        llm=llm_by_name[llm_name],
         stt=stt_factories[stt_name](),
-        tts=tts_factories[tts_name](),
+        tts=tts_by_name[tts_name],
         llm_name=llm_name,
         stt_name=stt_name,
         tts_name=tts_name,
@@ -261,4 +336,6 @@ def build_call_provider_bundle(snapshot: CallSettingsSnapshot) -> CallProviderBu
         llm_fallback_provider=snapshot.llm_fallback_provider,
         stt_fallback_provider=snapshot.stt_fallback_provider,
         tts_fallback_provider=snapshot.tts_fallback_provider,
+        llm_by_name=llm_by_name,
+        tts_by_name=tts_by_name,
     )

@@ -34,7 +34,10 @@ class Tenant(Base):
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     call_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("calls.id", ondelete="CASCADE"), nullable=True
+        UUID(as_uuid=True),
+        ForeignKey("calls.id", ondelete="CASCADE"),
+        nullable=True,
+        unique=True,
     )
     phone_number: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
 

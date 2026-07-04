@@ -1,33 +1,31 @@
 {% extends "settings/base.html" %}
 {% block title %}Caller FAQs{% endblock %}
 {% block page_title %}Caller FAQs{% endblock %}
+{% block settings_page_sub %}<div class="sub">Answers the assistant gives when callers ask common questions during screening.</div>{% endblock %}
 {% block settings_content %}
 
-<div class="stack">
+<div class="stack settings-form">
   <div class="callout">
-    <span>💬</span>
-    <span>
-      These are the answers your assistant gives when a caller asks a common question during screening
-      (for example, “Do you accept Section 8?”). Just edit the <strong>answer</strong> in plain English —
-      it's read aloud to the caller, then the assistant continues the screening. There are
-      <strong>{{ faq_topic_count }}</strong> built-in topics; you can edit or turn them on/off, but you can't add or remove topics.
-    </span>
+    These are the answers your assistant gives when a caller asks a common question during screening
+    (for example, "Do you accept Section 8?"). Just edit the <strong>answer</strong> in plain English —
+    it's read aloud to the caller, then the assistant continues the screening. You have
+    <strong>{{ faq_topic_count }}</strong> FAQ topic(s) configured — edit answers, patterns, or turn them on/off.
   </div>
 
   <!-- Try a phrase -->
   <div class="form-section">
-    <h3 style="margin-top: 0;">🧪 Try a question</h3>
+    <h3 style="margin-top: 0;">Try a question</h3>
     <p class="text-muted" style="margin-top: 0;">Type something a caller might ask and see which answer would play.</p>
     <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-      <input type="text" id="tryPhrase" placeholder="e.g. Do you take housing vouchers?" style="flex: 1; min-width: 220px;" />
-      <button type="button" class="btn btn-secondary" onclick="tryPhrase()">Check</button>
+      <input type="text" id="tryPhrase" placeholder="e.g. Do you take housing vouchers?" aria-label="Question to test" style="flex: 1; min-width: 220px;" />
+      <button type="button" class="btn btn-secondary" onclick="withBtnLoading(this, tryPhrase, 'Checking\u2026')">Check</button>
     </div>
     <div id="tryResult" style="margin-top: 12px; display: none;"></div>
   </div>
 
   <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-    <button type="button" onclick="withBtnLoading(this, saveAllFaqs, 'Saving\u2026')" class="btn btn-primary">💾 Save all changes</button>
-    <button type="button" onclick="withBtnLoading(this, resetFaqs, 'Resetting\u2026')" class="btn btn-secondary">↻ Reset to defaults</button>
+    <button type="button" onclick="withBtnLoading(this, saveAllFaqs, 'Saving\u2026')" class="btn btn-primary settings-save">Save all changes</button>
+    <button type="button" onclick="withBtnLoading(this, resetFaqs, 'Resetting\u2026')" class="btn btn-secondary settings-edit-only">Reset to defaults</button>
   </div>
 
   {% if faqs %}
@@ -64,8 +62,8 @@
           </label>
 
           <details class="adv">
-            <summary>Advanced — keyword matching (optional, preview only)</summary>
-            <div class="warn-note">ℹ️ During live calls the AI assistant decides when this FAQ applies on its own — it does not use these keywords. This pattern only powers the "Try a phrase" preview below, so you can keep or ignore it.</div>
+            <summary>Advanced — keyword matching (optional)</summary>
+            <div class="warn-note"><strong>Tip:</strong> These keywords help live FAQ matching and also power the "Try a phrase" preview below. Keep patterns broad and simple to avoid missing valid caller questions.</div>
             <div class="form-group" style="margin-top: 10px; margin-bottom: 0;">
               <label>Match keywords (regex)</label>
               <textarea class="edit-pattern" rows="2">{{ faq.pattern }}</textarea>
@@ -82,7 +80,7 @@
     </div>
   {% else %}
     <div class="form-section">
-      <p class="text-muted">No FAQs configured yet. Click “Reset to defaults” to load the built-in set.</p>
+      <div class="empty" style="padding:20px 12px;"><span class="empty-title">No FAQs yet</span>Select <strong>Reset to defaults</strong> to load the built-in set of answers.</div>
     </div>
   {% endif %}
 </div>
@@ -123,32 +121,35 @@
     edit.style.display = showingEdit ? 'block' : 'none';
   }
 
-  function tryPhrase() {
+  async function tryPhrase() {
     const phrase = document.getElementById('tryPhrase').value.trim();
     const box = document.getElementById('tryResult');
     box.style.display = 'block';
     if (!phrase) { box.innerHTML = '<span class="text-muted">Type a question above first.</span>'; return; }
 
-    let matched = null;
-    for (const card of document.querySelectorAll('.faq-card')) {
-      const meta = readFaqMeta(card);
-      if (meta.active === false) continue;
-      const pattern = (card.querySelector('.edit-pattern').value || meta.pattern || '').trim();
-      if (!pattern) continue;
-      try {
-        if (new RegExp(pattern, 'i').test(phrase)) {
-          matched = { title: card.querySelector('.edit-title').value.trim(), answer: card.querySelector('.edit-answer').value.trim() };
-          break;
-        }
-      } catch (e) { /* ignore an invalid pattern */ }
-    }
-
-    if (matched) {
-      box.innerHTML = `<div class="alert alert-success" style="margin:0;">
-        <div style="font-weight:600; margin-bottom:4px;">✓ Matches: ${matched.title}</div>
-        <div>“${matched.answer}”</div></div>`;
-    } else {
-      box.innerHTML = `<div class="warn-note" style="margin:0;">No built-in keyword set matches this exactly. During a real call the assistant may still understand and answer it on its own — this quick check only tests the backup keywords.</div>`;
+    try {
+      const r = await fetch('/api/settings/faqs/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phrase, faqs: collectFaqs() }),
+      });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        throw new Error(err.detail || r.statusText);
+      }
+      const data = await r.json();
+      if (data.matched && data.matched.length) {
+        const hit = data.matched[0];
+        box.innerHTML = `<div class="alert alert-success" style="margin:0;">
+          <div style="font-weight:600; margin-bottom:4px;">Matches: ${hit.title}</div>
+          <div>“${hit.answer}”</div></div>`;
+      } else if (data.uses_question_heuristic) {
+        box.innerHTML = `<div class="warn-note" style="margin:0;">No keyword match, but this looks like a question — during a live call the assistant loads all approved FAQ answers for this turn.</div>`;
+      } else {
+        box.innerHTML = `<div class="warn-note" style="margin:0;">No FAQ match for this phrase. During a call the assistant will continue the screening flow unless the caller asks a clear question.</div>`;
+      }
+    } catch (e) {
+      box.innerHTML = `<div class="alert alert-error" style="margin:0;">Check failed: ${e.message}</div>`;
     }
   }
 
@@ -163,10 +164,10 @@
         const err = await r.json().catch(() => ({}));
         throw new Error(err.detail || await r.text());
       }
-      showMessage('✓ FAQs saved');
+      showMessage('FAQs saved');
       setTimeout(() => location.reload(), 1000);
     } catch (e) {
-      showMessage('✗ Error: ' + e.message, true);
+      showMessage('Error: ' + e.message, true);
     }
   }
 
@@ -175,10 +176,10 @@
     try {
       const r = await fetch('/api/settings/faqs/reset', { method: 'POST' });
       if (!r.ok) throw new Error(await r.text());
-      showMessage('✓ FAQs reset to defaults');
+      showMessage('FAQs reset to defaults');
       setTimeout(() => location.reload(), 1000);
     } catch (e) {
-      showMessage('✗ Error: ' + e.message, true);
+      showMessage('Error: ' + e.message, true);
     }
   }
 </script>

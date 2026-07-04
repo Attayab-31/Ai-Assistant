@@ -1,35 +1,53 @@
 {% extends "base.html" %}
-{% block title %}Tenants{% endblock %}
-{% block page_title %}Tenants{% endblock %}
+{% from "partials/macros.html" import list_pagination %}
+{% block title %}Applicants{% endblock %}
+{% block page_title %}Applicants{% endblock %}
+{% block page_sub %}<div class="sub">People who completed (or partially completed) a phone screening.</div>{% endblock %}
 {% block content %}
+<nav class="filter-pills" aria-label="Applicant queues">
+  <a href="/admin/tenants{% if filters.phone %}?phone={{ filters.phone|urlencode }}{% endif %}{% if filters.qualification %}{{ '&' if filters.phone else '?' }}qualification={{ filters.qualification }}{% endif %}" class="{{ 'active' if not filters.review else '' }}">All applicants</a>
+  <a href="/admin/tenants?review=unreviewed{% if filters.phone %}&phone={{ filters.phone|urlencode }}{% endif %}{% if filters.qualification %}&qualification={{ filters.qualification }}{% endif %}" class="{{ 'active' if filters.review == 'unreviewed' else '' }}">
+    Needs review
+    {% if needs_review_count %}<span class="count">{{ needs_review_count }}</span>{% endif %}
+  </a>
+  <a href="/admin/tenants?review=reviewed{% if filters.phone %}&phone={{ filters.phone|urlencode }}{% endif %}{% if filters.qualification %}&qualification={{ filters.qualification }}{% endif %}" class="{{ 'active' if filters.review == 'reviewed' else '' }}">Reviewed</a>
+</nav>
+
 <form class="toolbar" method="get" onsubmit="setBtnLoading(event.submitter, true, 'Filtering\u2026')">
-  <input name="phone" value="{{ filters.phone or '' }}" placeholder="Phone">
-  <select name="qualification">
-    <option value="">Any qualification</option>
+  {% if filters.review %}<input type="hidden" name="review" value="{{ filters.review }}">{% endif %}
+  <input name="phone" value="{{ filters.phone or '' }}" placeholder="Search by phone number" aria-label="Phone number">
+  <select name="qualification" aria-label="Applicant result">
+    <option value="">Any applicant result</option>
     {% for item in ["qualified", "review", "unqualified"] %}
-      <option value="{{ item }}" {{ "selected" if filters.qualification == item else "" }}>{{ item }}</option>
+      <option value="{{ item }}" {{ "selected" if filters.qualification == item else "" }}>{{ item|friendly_qualification }}</option>
     {% endfor %}
   </select>
-  <button type="submit">Filter</button>
+  <button type="submit" class="btn btn-primary">Apply filters</button>
 </form>
 <div class="table-wrap">
 <table>
-  <thead><tr><th>Phone</th><th>Status</th><th>Score</th><th>Income</th><th>Created</th></tr></thead>
+  <thead><tr><th scope="col">Caller</th><th scope="col">Result</th><th scope="col">Review</th><th scope="col">Score</th><th scope="col">Monthly income</th><th scope="col">Screened</th></tr></thead>
   <tbody>
   {% for tenant in tenants %}
     <tr>
       <td><a href="/admin/tenants/{{ tenant.id }}">{{ tenant.phone_number|phone_display }}</a></td>
-      <td><span class="badge" style="background: {{ tenant.qualification_status|status_color }}">{{ tenant.qualification_status }}</span></td>
-      <td style="color: {{ tenant.qualification_score|score_color }}">{{ tenant.qualification_score or 0 }}</td>
+      <td><span class="badge" style="background: {{ tenant.qualification_status|status_color }}">{{ tenant.qualification_status|friendly_qualification }}</span></td>
+      <td>
+        {% if tenant.reviewed_by_admin %}
+          <span class="pill"><span class="dot ok" aria-hidden="true"></span> Reviewed</span>
+        {% else %}
+          <span class="pill" style="background:#fffbeb;color:#92400e;"><span class="dot warn" aria-hidden="true"></span> Needs review</span>
+        {% endif %}
+      </td>
+      <td style="color: {{ tenant.qualification_score|score_color }}">{{ tenant.qualification_score or 0 }}/100</td>
       <td>{{ tenant.monthly_income|currency }}</td>
-      <td>{{ tenant.created_at|time_ago }}</td>
+      <td class="muted">{{ tenant.created_at|time_ago }}</td>
     </tr>
   {% else %}
-    <tr><td colspan="5" class="muted">No tenants found.</td></tr>
+    <tr><td colspan="6"><div class="empty"><span class="empty-title">No matching applicants</span>{% if filters.review == 'unreviewed' %}Everyone in this queue has been reviewed — nice work.{% else %}Applicants appear here after screening calls are scored.{% endif %}</div></td></tr>
   {% endfor %}
   </tbody>
 </table>
 </div>
-<p class="muted">Page {{ page }} of {{ total_pages }} | {{ total }} tenants</p>
+{{ list_pagination('/admin/tenants', page, total_pages, filters, total, 'applicant' if total == 1 else 'applicants') }}
 {% endblock %}
-

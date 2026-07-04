@@ -83,8 +83,10 @@ class DeepgramStreamingSession:
         self.language = language
         self.encoding = encoding
         self.sample_rate = sample_rate
+        from app.core.voice_latency import _clamp_utterance_end_ms
+
         self.endpointing_ms = endpointing_ms
-        self.utterance_end_ms = utterance_end_ms
+        self.utterance_end_ms = _clamp_utterance_end_ms(utterance_end_ms)
         self.keyterms = keyterms or ()
         self.on_interim = on_interim
         self.on_speech_started = on_speech_started

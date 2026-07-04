@@ -207,9 +207,31 @@ async def get_internal_usage(db, days: int = 30) -> dict[str, Any]:
         select(
             func.count(Call.id),
             func.coalesce(func.sum(Call.duration_seconds), 0),
+            func.coalesce(func.sum(Call.prompt_tokens), 0),
+            func.coalesce(func.sum(Call.completion_tokens), 0),
+            func.coalesce(func.sum(Call.total_tokens), 0),
+            func.coalesce(func.sum(Call.llm_calls), 0),
+            # Latency: turn-weighted sums so we can derive true weighted averages.
+            func.coalesce(func.sum(Call.avg_llm_ms * Call.turn_count), 0),
+            func.coalesce(func.sum(Call.avg_tts_ms * Call.turn_count), 0),
+            func.coalesce(func.sum(Call.avg_turn_ms * Call.turn_count), 0),
+            func.coalesce(func.sum(Call.turn_count), 0),
+            func.coalesce(func.max(Call.max_turn_ms), 0),
         ).where(Call.is_deleted == False, Call.created_at >= since)  # noqa: E712
     )
-    total_calls, total_seconds = totals.one()
+    (
+        total_calls,
+        total_seconds,
+        prompt_tokens,
+        completion_tokens,
+        total_tokens,
+        llm_calls,
+        llm_ms_weighted,
+        tts_ms_weighted,
+        turn_ms_weighted,
+        turn_samples,
+        max_turn_ms,
+    ) = totals.one()
 
     async def _by(column):
         rows = await db.execute(
@@ -223,21 +245,56 @@ async def get_internal_usage(db, days: int = 30) -> dict[str, Any]:
         )
         return {str(name): int(count) for name, count in rows.all()}
 
+    calls = int(total_calls or 0)
+    total_tok = int(total_tokens or 0)
+    samples = int(turn_samples or 0)
+
+    def _wavg(weighted) -> int:
+        return round(int(weighted or 0) / samples) if samples else 0
+
+    avg_llm = _wavg(llm_ms_weighted)
+    avg_tts = _wavg(tts_ms_weighted)
+    avg_turn = _wavg(turn_ms_weighted)
+    # "Other" = full turn minus the two measured stages (STT-final assembly,
+    # normalization, queueing). Clamped so rounding noise never goes negative.
+    avg_other = max(0, avg_turn - avg_llm - avg_tts)
     return {
         "days": days,
-        "total_calls": int(total_calls or 0),
+        "total_calls": calls,
         "total_minutes": round(int(total_seconds or 0) / 60, 1),
         "by_llm": await _by(Call.llm_provider),
         "by_stt": await _by(Call.stt_provider),
         "by_tts": await _by(Call.tts_provider),
+        "tokens": {
+            "prompt": int(prompt_tokens or 0),
+            "completion": int(completion_tokens or 0),
+            "total": total_tok,
+            "llm_calls": int(llm_calls or 0),
+            "avg_per_call": round(total_tok / calls) if calls else 0,
+        },
+        "latency": {
+            "turn_samples": samples,
+            "avg_turn_ms": avg_turn,
+            "avg_llm_ms": avg_llm,
+            "avg_tts_ms": avg_tts,
+            "avg_other_ms": avg_other,
+            "max_turn_ms": int(max_turn_ms or 0),
+            # Convenience percentages for the breakdown bar.
+            "llm_pct": round(avg_llm / avg_turn * 100) if avg_turn else 0,
+            "tts_pct": round(avg_tts / avg_turn * 100) if avg_turn else 0,
+            "other_pct": round(avg_other / avg_turn * 100) if avg_turn else 0,
+        },
     }
 
 
-async def get_provider_overview(db, days: int = 30) -> dict[str, Any]:
+async def get_provider_overview(
+    db, days: int = 30, *, status: dict | None = None
+) -> dict[str, Any]:
     """Full provider monitoring payload: live balances + internal usage + config."""
     from config import provider_registry
 
-    status = provider_registry.get_status()
+    if status is None:
+        status = provider_registry.get_status()
     openrouter = await _openrouter_balance()
     deepgram = await _deepgram_balance()
     usage = await get_internal_usage(db, days=days)

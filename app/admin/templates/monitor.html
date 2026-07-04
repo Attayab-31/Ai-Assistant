@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Live Monitor{% endblock %}
 {% block page_title %}Live Monitor{% endblock %}
-{% block page_sub %}<div class="sub">See who's on a call right now, system health, and how much of each API you're using.</div>{% endblock %}
+{% block page_sub %}<div class="sub">Watch live calls and check that the system is healthy.</div>{% endblock %}
 
 {% block content %}
 <div class="toolbar" style="justify-content: space-between;">
@@ -9,60 +9,83 @@
   <span class="muted" id="lastUpdated">Loading…</span>
 </div>
 
-<!-- Quick stats -->
-<section class="grid stats">
-  <div class="card stat-tile"><div class="label"><span class="ico">🟢</span> On a call now</div><div class="metric" id="m_active">–</div></div>
-  <div class="card stat-tile"><div class="label"><span class="ico">📞</span> Calls today</div><div class="metric" id="m_today">–</div></div>
-  <div class="card stat-tile"><div class="label"><span class="ico">✅</span> Qualified (month)</div><div class="metric" id="m_qualified">–</div></div>
-  <div class="card stat-tile"><div class="label"><span class="ico">⏱️</span> Avg call length</div><div class="metric" id="m_avg">–</div></div>
+<!-- Live-only stat (historical KPIs live on Home + Analytics) -->
+<section class="grid stats" style="grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); max-width: 320px;">
+  <div class="card stat-tile"><div class="label">On a call now</div><div class="metric" id="m_active">–</div></div>
 </section>
+<p class="muted" style="margin-top: -8px; margin-bottom: 16px;">
+  Totals &amp; trends: <a href="/admin/dashboard">Home</a> · <a href="/admin/analytics">Analytics</a>
+</p>
 
 <section class="grid two-col" style="margin-top: 16px;">
   <!-- Active calls -->
   <div class="card">
     <div class="card-head">
-      <h2>📡 Calls happening right now</h2>
+      <h2>Calls happening right now</h2>
       <span class="muted" id="activeBadge"></span>
     </div>
     <div id="activeCalls">
-      <div class="empty"><span class="ico">😴</span> No active calls at the moment.</div>
+      <div class="empty"><span class="empty-title">No active calls</span>When someone is on a screening call, it will appear here.</div>
     </div>
   </div>
 
   <!-- System health -->
   <div class="card">
-    <div class="card-head"><h2>💚 System health</h2></div>
+    <div class="card-head"><h2>System health</h2></div>
     <div id="health" class="stack" style="gap: 10px;">
       <div class="muted">Loading…</div>
     </div>
   </div>
 </section>
 
-<!-- How much you've used (reliable, from your own call records) -->
-<section class="card" style="margin-top: 16px;">
+<details class="tech-panel" style="margin-top: 16px;">
+  <summary>
+    Usage &amp; diagnostics
+    <span class="muted" style="font-weight: 500;">latency, API usage, provider balances</span>
+  </summary>
+  <div class="tech-panel-body stack">
+
+<!-- Response latency: where is the wait coming from? -->
+<section class="card">
   <div class="card-head">
-    <h2>📈 How much you've used</h2>
+    <h2>Response latency</h2>
+    <span class="muted">Last 30 days · <a href="/admin/analytics">full analytics</a></span>
+  </div>
+  <p class="muted" style="margin-top: 0;">Time from when the caller stops speaking to when the assistant starts replying. For day-to-day monitoring, focus on live calls above; open this when troubleshooting slow replies.</p>
+  <div id="latencyRollup">
+    <div class="muted">Loading…</div>
+  </div>
+</section>
+
+<!-- How much you've used (reliable, from your own call records) -->
+<section class="card">
+  <div class="card-head">
+    <h2>Usage summary</h2>
     <span class="muted">Last 30 days</span>
   </div>
-  <p class="muted" style="margin-top: 0;">These numbers come straight from your own call records, so they're always accurate. This is the best way to see how heavily each API is being used.</p>
+  <p class="muted" style="margin-top: 0;">These numbers come from your call records. See <a href="/admin/analytics">Analytics</a> for trends over time.</p>
   <div class="grid" id="usageRollup" style="grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));">
     <div class="muted">Loading…</div>
   </div>
 </section>
 
 <!-- Remaining balance (best-effort: only some providers expose this) -->
-<section class="card" style="margin-top: 16px;">
+<section class="card">
   <div class="card-head">
-    <h2>💳 Remaining balance</h2>
+    <h2>Provider balances</h2>
   </div>
   <div class="callout" style="margin-bottom: 14px;">
-    <span>ℹ️</span>
-    <span>A live "money left" figure can only be shown when the provider offers it <em>and</em> your API key is allowed to read billing. Groq, OpenAI and Google don't offer this at all — check spend in their own dashboards. A green dot means the engine is connected and working, even if its balance can't be shown here.</span>
+    A live balance figure is only shown when the provider exposes billing data and your provider key can read it.
+    Groq, OpenAI, and Google often do not support this here — check their dashboards for spend.
+    A green status dot means the engine is connected and working, even when no balance is shown.
   </div>
   <div class="grid" id="balances" style="grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));">
     <div class="muted">Loading…</div>
   </div>
 </section>
+
+  </div>
+</details>
 {% endblock %}
 
 {% block scripts %}
@@ -87,7 +110,7 @@
     const box = $('activeCalls');
     $('activeBadge').textContent = calls.length ? `${calls.length} live` : '';
     if (!calls.length) {
-      box.innerHTML = '<div class="empty"><span class="ico">😴</span> No active calls at the moment.</div>';
+      box.innerHTML = '<div class="empty"><span class="empty-title">No active calls</span>When someone is on a screening call, it will appear here.</div>';
       return;
     }
     box.innerHTML = calls.map((c) => `
@@ -98,11 +121,39 @@
             <b style="font-size:15px;">${esc(c.phone_display)}</b>
             <span class="pill">${esc(c.state_label)}</span>
           </div>
-          <span class="muted">⏱️ ${esc(c.duration_label)} · ${esc(c.questions_answered)} answered</span>
+          <span class="muted">${esc(c.duration_label)} · ${esc(c.questions_answered)} answered</span>
         </div>
         <div class="progress" style="margin-top:10px;"><span style="width:${c.progress_pct}%;"></span></div>
+        ${liveLatencyRow(c)}
       </div>
     `).join('');
+  }
+
+  // Colour a latency number: green < 2.5s, amber < 4s, red beyond.
+  function latencyClass(ms) {
+    if (!ms) return '';
+    if (ms < 2500) return 'ok';
+    if (ms < 4000) return 'warn';
+    return 'bad';
+  }
+
+  function msLabel(ms) {
+    if (ms == null || ms === 0) return '–';
+    return (ms / 1000).toFixed(ms < 1000 ? 2 : 1) + 's';
+  }
+
+  function liveLatencyRow(c) {
+    const last = c.last_turn_latency_ms || 0;
+    const avg = c.avg_turn_latency_ms || 0;
+    if (!last && !avg) {
+      return `<div class="hint" style="margin-top:8px;">Waiting for first reply…</div>`;
+    }
+    const dotClass = latencyClass(last || avg);
+    return `<div class="hint" style="margin-top:8px; display:flex; gap:14px; flex-wrap:wrap; align-items:center;">
+      <span style="display:flex;align-items:center;gap:6px;"><span class="dot ${dotClass}" aria-hidden="true"></span> Last reply <b>${esc(msLabel(last))}</b></span>
+      <span>Average <b>${esc(msLabel(avg))}</b></span>
+      <span class="muted">AI thinking ${esc(msLabel(c.avg_llm_latency_ms))} · Spoken reply ${esc(msLabel(c.avg_tts_latency_ms))}</span>
+    </div>`;
   }
 
   function healthRow(label, ok, detail) {
@@ -119,15 +170,15 @@
     const allProv = p.initialized;
     $('health').innerHTML = [
       healthRow('Database', h.database),
-      healthRow('Cache (Redis)', h.redis, h.redis ? 'Connected' : 'Optional — not connected'),
+      healthRow('Speed cache', h.redis, h.redis ? 'Connected' : 'Optional — not connected'),
       healthRow('Voice providers', !!allProv, allProv ? 'Ready' : 'Not ready'),
-      `<div style="display:flex; align-items:center; justify-content:space-between;"><span style="display:flex; align-items:center; gap:8px;"><span class="dot ok"></span> Uptime</span><span class="muted">${uptimeLabel(h.uptime_seconds)}</span></div>`,
+      `<div style="display:flex; align-items:center; justify-content:space-between;"><span style="display:flex; align-items:center; gap:8px;"><span class="dot ok"></span> Server uptime</span><span class="muted">${uptimeLabel(h.uptime_seconds)}</span></div>`,
       `<hr style="border:none; border-top:1px solid var(--line-soft); margin:4px 0;">`,
-      `<div class="muted" style="font-size:12px;">Active engines</div>`,
+      `<div class="muted" style="font-size:12px;">Active engines <a href="/admin/settings/providers" style="font-weight:normal;">(configure)</a></div>`,
       `<div style="display:flex; gap:6px; flex-wrap:wrap;">
-        <span class="pill">🧠 ${esc(p.llm || '—')}</span>
-        <span class="pill">🎧 ${esc(p.stt || '—')}</span>
-        <span class="pill">🔊 ${esc(p.tts || '—')}</span>
+        <span class="pill">AI assistant: ${esc(p.llm || '—')}</span>
+        <span class="pill">Speech recognition: ${esc(p.stt || '—')}</span>
+        <span class="pill">Spoken replies: ${esc(p.tts || '—')}</span>
       </div>`,
     ].join('');
   }
@@ -141,7 +192,7 @@
     if (!prov.configured) {
       dotClass = '';
       statusText = 'Not set up';
-      body = `<div class="muted" style="font-size:13px;">No API key entered for this provider.</div>`;
+      body = `<div class="muted" style="font-size:13px;">No provider key entered.</div>`;
     } else if (b.available) {
       dotClass = 'ok';
       statusText = 'Working';
@@ -189,13 +240,74 @@
       : '<span class="muted">No providers configured.</span>';
 
     const u = usage.usage || {};
+    const tok = u.tokens || {};
+    const fmt = (n) => (n == null ? '–' : Number(n).toLocaleString());
     $('usageRollup').innerHTML = [
       usageTile('Calls handled', u.total_calls != null ? u.total_calls : '–'),
       usageTile('Minutes of audio', u.total_minutes != null ? u.total_minutes : '–'),
-      usageTile('AI brain (by provider)', u.by_llm || {}),
-      usageTile('Speech-to-text (by provider)', u.by_stt || {}),
-      usageTile('Voice (by provider)', u.by_tts || {}),
+      usageTile('AI usage', {
+        'Total': fmt(tok.total),
+        'Input text': fmt(tok.prompt),
+        'Output text': fmt(tok.completion),
+        'Avg per call': fmt(tok.avg_per_call),
+        'AI requests': fmt(tok.llm_calls),
+      }),
+      usageTile('Speech recognition (by provider)', u.by_stt || {}),
+      usageTile('Spoken replies (by provider)', u.by_tts || {}),
     ].join('');
+    // LLM-by-provider breakdown lives on Analytics (range-scoped chart).
+  }
+
+  function latencyStat(title, ms, hint, color) {
+    return `<div class="card" style="box-shadow:none;">
+      <div class="hint" style="margin-bottom:6px;">${esc(title)}</div>
+      <div class="metric" style="font-size:22px; ${color ? `color:${color};` : ''}">${esc(msLabel(ms))}</div>
+      ${hint ? `<div class="hint">${esc(hint)}</div>` : ''}
+    </div>`;
+  }
+
+  function renderLatency(u) {
+    const box = $('latencyRollup');
+    const L = u.latency || {};
+    if (!L.turn_samples) {
+      box.innerHTML = '<div class="empty"><span class="empty-title">No latency data yet</span>Latency appears here after completed calls with measured turns.</div>';
+      return;
+    }
+    const total = L.avg_turn_ms || 0;
+    const cls = latencyClass(total);
+    const verdict = cls === 'ok' ? 'Fast' : (cls === 'warn' ? 'Moderate' : 'Slow');
+    const verdictColor = cls === 'ok' ? 'var(--ok, #16a34a)' : (cls === 'warn' ? '#d97706' : '#dc2626');
+
+    // Stacked proportion bar: LLM (brain) | TTS (voice) | Other (STT + overhead).
+    const seg = (pct, color, label) => pct > 0
+      ? `<span title="${esc(label)}: ${pct}%" style="width:${pct}%; background:${color}; display:flex; align-items:center; justify-content:center; color:#fff; font-size:11px; font-weight:600; white-space:nowrap; overflow:hidden;">${pct >= 10 ? pct + '%' : ''}</span>`
+      : '';
+    const bar = `<div style="display:flex; height:30px; border-radius:8px; overflow:hidden; border:1px solid var(--line-soft); margin:14px 0 8px;">
+      ${seg(L.llm_pct, '#6366f1', 'AI brain')}
+      ${seg(L.tts_pct, '#0ea5e9', 'Voice')}
+      ${seg(L.other_pct, '#94a3b8', 'Other')}
+    </div>
+    <div class="hint" style="display:flex; gap:16px; flex-wrap:wrap; margin-bottom:14px;">
+      <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#6366f1;"></span> AI assistant</span>
+      <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#0ea5e9;"></span> Spoken replies</span>
+      <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#94a3b8;"></span> Other (listening + overhead)</span>
+    </div>`;
+
+    box.innerHTML = `
+      <div style="display:flex; align-items:baseline; gap:12px; flex-wrap:wrap;">
+        <div class="metric" style="font-size:34px; color:${verdictColor};">${esc(msLabel(total))}</div>
+        <div>
+          <span class="pill" style="font-size:12px;"><span class="dot ${cls}"></span> ${esc(verdict)}</span>
+          <div class="hint">average reply time across ${esc(Number(L.turn_samples).toLocaleString())} turns</div>
+        </div>
+      </div>
+      ${bar}
+      <div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));">
+        ${latencyStat('AI assistant', L.avg_llm_ms, 'thinking and writing the reply', '#6366f1')}
+        ${latencyStat('Spoken replies', L.avg_tts_ms, 'turning text into speech', '#0ea5e9')}
+        ${latencyStat('Other', L.avg_other_ms, 'speech detection and overhead', '#64748b')}
+        ${latencyStat('Slowest turn', L.max_turn_ms, 'worst single reply')}
+      </div>`;
   }
 
   async function refresh() {
@@ -206,14 +318,11 @@
       const data = await res.json();
 
       $('m_active').textContent = data.active_count;
-      $('m_today').textContent = (data.stats && data.stats.calls_today) || 0;
-      $('m_qualified').textContent = (data.stats && data.stats.qualified_this_month) || 0;
-      const avg = (data.stats && data.stats.avg_duration_seconds) || 0;
-      $('m_avg').textContent = avg ? `${Math.floor(avg / 60)}m ${avg % 60}s` : '0s';
 
       renderActiveCalls(data.active_calls || []);
       renderHealth(data.health || {});
       renderUsage(data.usage || {});
+      renderLatency((data.usage && data.usage.usage) || {});
 
       $('lastUpdated').textContent = 'Updated ' + new Date().toLocaleTimeString();
     } catch (err) {

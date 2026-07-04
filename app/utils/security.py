@@ -105,6 +105,21 @@ def decrypt_value(value: str) -> str:
     return _fernet().decrypt(value.encode()).decode()
 
 
+_SENSITIVE_SETTING_KEYS = frozenset({"crm_webhook_secret"})
+
+
+def is_sensitive_setting_key(key: str) -> bool:
+    """True for secrets that must be masked in API responses and audit logs."""
+    return key in _SENSITIVE_SETTING_KEYS or key.endswith("_api_key_encrypted")
+
+
+def redact_for_audit(data: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy of ``data`` with sensitive values replaced for audit storage."""
+    return {
+        k: ("***" if is_sensitive_setting_key(k) else v) for k, v in data.items()
+    }
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # PII redaction (for logs)
 # ──────────────────────────────────────────────────────────────────────────────

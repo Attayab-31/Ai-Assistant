@@ -21,11 +21,18 @@ from collections.abc import Awaitable, Callable
 import orjson
 from fastapi import WebSocket, WebSocketDisconnect
 
+from app.core.call_logging import Phase, vdebug, verror, vinfo, vwarn
 from app.core import call_handler
 from app.core.call_settings import CallProviderBundle
 from app.core.conversation import (
     ConversationSession,
     is_echo_of_agent,
+    mark_recovery_played,
+    STT_EMPTY_STRIKE_LIMIT,
+    plan_turn_timeout_recovery,
+    reset_turn_streaming,
+    should_suppress_silence_nudge,
+    unsynthesized_speech_remainder,
 )
 from app.core.streaming_stt import DeepgramStreamingSession
 from app.utils.audio import (
@@ -64,6 +71,13 @@ MIN_SPEECH_CHUNKS = 5
 FORCE_FLUSH_BYTES = 16000 * 2
 MAX_BUFFER_BYTES = 16000 * 10  # ~10 s safety cap
 TURN_PAUSE_SECONDS = 0.18  # natural pause between ack and next question
+TURN_TIMEOUT_SECONDS = 15.0  # default outer budget when session has no admin profile
+
+
+def _turn_budget_seconds(session: ConversationSession) -> float:
+    from app.core.conversation import turn_budget_seconds
+
+    return turn_budget_seconds(session)
 
 # Interruption/barge-in support
 BARGE_IN_ENABLED = True
@@ -183,9 +197,16 @@ async def transcribe_buffer(
 
     duration_sec = audio_duration_seconds(audio_bytes, input_format)
     timeout = stt_timeout_for_duration(duration_sec)
-    logger.info(
-        f"STT input: {len(audio_bytes)} bytes {input_format} "
-        f"(~{duration_sec:.1f}s, timeout={timeout:.0f}s)"
+    vinfo(
+        logger,
+        f"STT input {len(audio_bytes)} bytes {input_format} (~{duration_sec:.1f}s)",
+        session=session,
+        phase=Phase.STT,
+        service="stt",
+        provider=providers.stt_name,
+        bytes=len(audio_bytes),
+        duration_s=round(duration_sec, 2),
+        timeout_s=timeout,
     )
 
     async def _primary() -> str:
@@ -200,15 +221,47 @@ async def transcribe_buffer(
     try:
         transcript = await asyncio.wait_for(_primary(), timeout=timeout)
         if transcript.strip():
-            logger.info("STT result: %r", transcript[:80])
+            vinfo(
+                logger,
+                f"STT result: {transcript[:80]!r}",
+                session=session,
+                phase=Phase.STT,
+                service="stt",
+                provider=providers.stt_name,
+            )
             if session is not None:
                 session.stt_provider = providers.stt_name
             return transcript
-        logger.warning("Primary STT returned empty transcript")
+        vwarn(
+            logger,
+            "Primary STT returned empty transcript",
+            session=session,
+            phase=Phase.STT,
+            service="stt",
+            provider=providers.stt_name,
+            reason="empty",
+        )
     except TimeoutError:
-        logger.warning("STT timeout after %.0fs, falling back to Groq Whisper", timeout)
+        vwarn(
+            logger,
+            f"STT timeout after {timeout:.0f}s — trying fallback",
+            session=session,
+            phase=Phase.STT,
+            service="stt",
+            provider=providers.stt_name,
+            reason="timeout",
+            timeout_s=timeout,
+        )
     except Exception as e:
-        logger.error("Primary STT error: %s", e)
+        verror(
+            logger,
+            f"Primary STT error: {e}",
+            session=session,
+            phase=Phase.STT,
+            service="stt",
+            provider=providers.stt_name,
+            reason="error",
+        )
 
     if not providers.auto_fallback_enabled:
         return ""
@@ -255,14 +308,35 @@ async def transcribe_buffer(
                 timeout=timeout,
             )
             if transcript.strip():
-                logger.info("%s STT fallback: %r", chosen, transcript[:80])
+                vinfo(
+                    logger,
+                    f"STT fallback ({chosen}): {transcript[:80]!r}",
+                    session=session,
+                    phase=Phase.STT_FALLBACK,
+                    service="stt",
+                    provider=chosen,
+                )
                 if session is not None:
                     session.stt_provider = chosen
                 return transcript
     except TimeoutError:
-        logger.error("STT fallback timed out")
+        verror(
+            logger,
+            "STT fallback timed out",
+            session=session,
+            phase=Phase.STT_FALLBACK,
+            service="stt",
+            reason="timeout",
+        )
     except Exception as e:
-        logger.error("Fallback STT also failed: %s", e)
+        verror(
+            logger,
+            f"STT fallback failed: {e}",
+            session=session,
+            phase=Phase.STT_FALLBACK,
+            service="stt",
+            reason="error",
+        )
 
     return ""
 
@@ -301,6 +375,8 @@ async def run_bidirectional_audio_stream(
     tenant_may_speak = asyncio.Event()
     listen_active = asyncio.Event()
     stop_event = asyncio.Event()
+    turn_in_progress = asyncio.Event()
+    current_turn_task: list[asyncio.Task | None] = [None]
     call_handler.register_stream_stop(call_id, stop_event)
     # A hangup may have landed while this WebSocket was still connecting (before
     # the stop_event existed). If so, wind down immediately instead of running a
@@ -315,7 +391,7 @@ async def run_bidirectional_audio_stream(
     # deadline. Covers the echo tail right after the agent stops (speaker decay
     # re-entering the mic on hands-free) so it can't self-trigger a barge-in.
     barge_in_cooldown_until = 0.0
-    BARGE_IN_COOLDOWN_S = 0.6
+    BARGE_IN_COOLDOWN_S = 0.2
     # Telnyx: bidirectional RTP is not ready until the stream "start" (or first
     # media) arrives. Greeting audio sent before that can clip the opening.
     stream_ready = asyncio.Event()
@@ -330,13 +406,53 @@ async def run_bidirectional_audio_stream(
         """Queue one or more mulaw segments; only the last marks end-of-turn."""
         if isinstance(audio, list):
             parts = [p for p in audio if p]
+            if not parts:
+                if turn_end:
+                    vdebug(
+                        logger,
+                        "Enqueue empty flush (turn_end)",
+                        session=session,
+                        call_id=call_id,
+                        phase=Phase.AUDIO_ENQUEUE,
+                        detail="turn_end=True bytes=0",
+                    )
+                    await outbound_queue.put((b"", True))
+                return
             for i, part in enumerate(parts):
                 is_last = turn_end and i == len(parts) - 1
+                vdebug(
+                    logger,
+                    f"Enqueue audio part {i + 1}/{len(parts)} ({len(part)} bytes)",
+                    session=session,
+                    call_id=call_id,
+                    phase=Phase.AUDIO_ENQUEUE,
+                    bytes=len(part),
+                    detail=f"turn_end={is_last}",
+                )
                 await outbound_queue.put((part, is_last))
                 if not is_last:
                     await asyncio.sleep(TURN_PAUSE_SECONDS)
         elif audio:
+            vdebug(
+                logger,
+                f"Enqueue audio ({len(audio)} bytes)",
+                session=session,
+                call_id=call_id,
+                phase=Phase.AUDIO_ENQUEUE,
+                bytes=len(audio),
+                detail=f"turn_end={turn_end}",
+            )
             await outbound_queue.put((audio, turn_end))
+        elif turn_end:
+            vdebug(
+                logger,
+                "Enqueue empty flush (turn_end)",
+                session=session,
+                call_id=call_id,
+                phase=Phase.AUDIO_ENQUEUE,
+                detail="turn_end=True bytes=0",
+            )
+            await outbound_queue.put((b"", True))
 
     async def _await_outbound_playback_done(*, timeout: float = 120.0) -> None:
         """Wait until all queued outbound audio has finished playing."""
@@ -389,6 +505,9 @@ async def run_bidirectional_audio_stream(
                 break
         ai_speaking.clear()
         tenant_may_speak.set()
+        task = current_turn_task[0]
+        if task is not None and not task.done():
+            task.cancel()
         # Tell the test-console browser to stop its local playback immediately
         # (the server is the barge-in authority; the browser just obeys).
         if emit_debug_events:
@@ -408,10 +527,9 @@ async def run_bidirectional_audio_stream(
             logger.debug("[%s] debug emit failed: %s", call_id, e)
 
     def _should_feed_stt() -> bool:
-        # Always feed the live STT, including while the agent is speaking, so the
-        # caller can barge in and Deepgram can transcribe the interruption.
-        # Production uses a caller-only track (no agent echo); the test console
-        # relies on browser echo cancellation plus the post-playback cooldown.
+        # Keep feeding live STT during LLM think time so transcript-gated
+        # barge-in can fire as soon as the caller speaks. Stale finalized
+        # transcripts are dropped in stt_bridge / drained at turn start.
         return True
 
     async def _on_speech_started(text: str) -> None:
@@ -450,7 +568,15 @@ async def run_bidirectional_audio_stream(
         barge_in_speech_chunks = 0
         try:
             while not stop_event.is_set():
-                raw_message = await websocket.receive_text()
+                try:
+                    raw_message = await asyncio.wait_for(
+                        websocket.receive_text(), timeout=1.0
+                    )
+                except TimeoutError:
+                    if await call_handler.check_stream_stop_signal(call_id):
+                        stop_event.set()
+                        break
+                    continue
                 try:
                     message = orjson.loads(raw_message)
                 except orjson.JSONDecodeError:
@@ -627,12 +753,22 @@ async def run_bidirectional_audio_stream(
             model=_model,
             encoding=_stt_encoding,
             sample_rate=8000,
+            endpointing_ms=int(getattr(session, "deepgram_endpointing_ms", 900) or 900),
+            utterance_end_ms=int(getattr(session, "deepgram_utterance_end_ms", 1000) or 1000),
             on_interim=_on_interim if emit_debug_events else None,
             on_speech_started=_on_speech_started,
         )
         await streaming_stt.start()
         session.stt_provider = _providers.stt_name
-        logger.info("[%s] Streaming STT active (%s)", call_id, _stt_encoding)
+        vinfo(
+            logger,
+            f"Streaming STT active ({_stt_encoding})",
+            session=session,
+            call_id=call_id,
+            phase=Phase.STT_STREAM,
+            service="stt",
+            provider=_providers.stt_name,
+        )
 
     async def worker() -> None:
         try:
@@ -647,6 +783,12 @@ async def run_bidirectional_audio_stream(
                             call_id,
                         )
                 greeting_audio = await call_handler.handle_call_answered(session)
+                if session.control_flags.get("provider_failure"):
+                    if greeting_audio:
+                        await enqueue_audio(greeting_audio, turn_end=True)
+                    await _await_outbound_playback_done()
+                    stop_event.set()
+                    return
                 if greeting_audio:
                     await enqueue_audio(greeting_audio, turn_end=True)
                     if emit_debug_events:
@@ -713,6 +855,13 @@ async def run_bidirectional_audio_stream(
                         tenant_may_speak.set()
                         continue
                     logger.info(f"[{call_id}] No speech within {listen_timeout}s")
+                    if should_suppress_silence_nudge(session):
+                        logger.debug(
+                            "[%s] Silence nudge suppressed — recent recovery",
+                            call_id,
+                        )
+                        tenant_may_speak.set()
+                        continue
                     (
                         silence_text,
                         audio_parts,
@@ -737,6 +886,7 @@ async def run_bidirectional_audio_stream(
 
                 listen_active.clear()
                 session.silence_count = 0
+                session.stt_empty_strikes = 0
 
                 if streaming_stt_enabled:
                     if transcript is None:
@@ -768,6 +918,34 @@ async def run_bidirectional_audio_stream(
                             f"[{call_id}] STT empty "
                             f"({len(utterance)} bytes {audio_format}, {stt_ms:.0f}ms)"
                         )
+                        session.stt_empty_strikes += 1
+                        if session.stt_empty_strikes >= STT_EMPTY_STRIKE_LIMIT:
+                            (
+                                fail_text,
+                                fail_parts,
+                                is_complete,
+                            ) = await call_handler.end_call_for_provider_failure(
+                                session,
+                                "stt",
+                                (
+                                    f"{session.stt_empty_strikes} consecutive "
+                                    "empty transcriptions"
+                                ),
+                            )
+                            if fail_text:
+                                await _emit(
+                                    "response",
+                                    text=fail_text,
+                                    speaker="AI",
+                                    session=session.to_dict(),
+                                )
+                            if fail_parts:
+                                await enqueue_audio(fail_parts, turn_end=True)
+                            if is_complete:
+                                await _await_outbound_playback_done()
+                                stop_event.set()
+                                break
+                            continue
                         retry_text = (
                             "Sorry, I didn't catch that. Could you repeat that for me?"
                         )
@@ -792,7 +970,15 @@ async def run_bidirectional_audio_stream(
                     tenant_may_speak.set()
                     continue
 
-                logger.info("[%s] Turn transcript: %r", call_id, transcript[:80])
+                vinfo(
+                    logger,
+                    f"Turn transcript: {transcript[:80]!r}",
+                    session=session,
+                    call_id=call_id,
+                    phase=Phase.TURN_START,
+                    service="turn",
+                    budget_s=round(_turn_budget_seconds(session), 1),
+                )
 
                 # Drop a duplicate STT result only when it repeats an answer we
                 # already ACCEPTED on the same question within a few seconds (a
@@ -800,7 +986,7 @@ async def run_bidirectional_audio_stream(
                 # attempt must fall through so the caller can re-answer.
                 norm = re.sub(r"[^a-z0-9]+", " ", transcript.lower()).strip()
                 now = time.monotonic()
-                current_state = session.current_state.value
+                current_state = session.current_state
                 is_short_answer = norm in _DEDUP_SHORT_ANSWERS
                 if (
                     norm
@@ -809,14 +995,28 @@ async def run_bidirectional_audio_stream(
                     and current_state == last_accepted_state
                     and (now - last_accepted_at) < 6.0
                 ):
-                    logger.info("[%s] Ignoring duplicate: %r", call_id, transcript)
+                    vinfo(
+                        logger,
+                        f"Ignoring duplicate transcript: {transcript[:80]!r}",
+                        session=session,
+                        call_id=call_id,
+                        phase=Phase.ECHO,
+                        reason="duplicate",
+                    )
                     tenant_may_speak.set()
                     continue
 
                 # Technical mic guard only: drop the agent's own voice echoing
                 # back. All understanding of the caller happens in the LLM.
                 if is_echo_of_agent(transcript, session):
-                    logger.info("[%s] Ignoring echo: %r", call_id, transcript)
+                    vinfo(
+                        logger,
+                        f"Ignoring agent echo: {transcript[:80]!r}",
+                        session=session,
+                        call_id=call_id,
+                        phase=Phase.ECHO,
+                        reason="agent_echo",
+                    )
                     await _emit("debug", message="Still listening…")
                     tenant_may_speak.set()
                     continue
@@ -826,20 +1026,182 @@ async def run_bidirectional_audio_stream(
                 # Snapshot state so we can tell whether this turn was accepted
                 # (advanced the flow, stored data, or opened a read-back). Only
                 # an accepted answer arms duplicate suppression.
-                pre_state = session.current_state.value
+                pre_state = session.current_state
                 pre_data_keys = len(session.extracted_data)
                 pre_pending = session.pending_confirmation is not None
+                turn_llm_before = session.llm_latency_ms_total
+                turn_tts_before = session.tts_latency_ms_total
 
                 t1 = time.monotonic()
-                (
-                    response_text,
-                    audio_parts,
-                    is_complete,
-                ) = await call_handler.process_tenant_speech(session, transcript)
+                first_audio_ms: float | None = None
+                audio_streamed = False
+                stream_turn_end_sent = False
+
+                async def _stream_audio_part(audio: bytes, is_last: bool) -> None:
+                    nonlocal first_audio_ms, audio_streamed, stream_turn_end_sent
+                    if first_audio_ms is None:
+                        first_audio_ms = (time.monotonic() - t1) * 1000
+                    audio_streamed = True
+                    if is_last:
+                        stream_turn_end_sent = True
+                    _prefix_preview = repr((session.streamed_speakable_prefix or "")[:60])
+                    vinfo(
+                        logger,
+                        f"Streaming TTS chunk ({len(audio)} bytes, is_last={is_last})",
+                        session=session,
+                        call_id=call_id,
+                        phase=Phase.STREAM_TTS,
+                        service="tts",
+                        bytes=len(audio),
+                        detail=f"prefix={_prefix_preview}",
+                    )
+                    await enqueue_audio([audio], turn_end=is_last)
+
+                async def _stream_text_update(text: str) -> None:
+                    if not (text or "").strip():
+                        return
+                    vinfo(
+                        logger,
+                        f"UI stream text update: {text[:80]!r}",
+                        session=session,
+                        call_id=call_id,
+                        phase=Phase.UI_STREAM,
+                        detail=f"len={len(text.strip())}",
+                    )
+                    await _emit(
+                        "response",
+                        text=text.strip(),
+                        speaker="AI",
+                        streaming=True,
+                        session=session.to_dict(),
+                    )
+
+                # Internal budget marker used by call_handler to avoid spending
+                # the entire 15s outer guard on deep fallback chains.
+                turn_budget = _turn_budget_seconds(session)
+                session.turn_deadline_monotonic = t1 + turn_budget
+                turn_in_progress.set()
+                _drain_pending_input()
+                current_turn_task[0] = asyncio.create_task(
+                    asyncio.wait_for(
+                        call_handler.process_tenant_speech(
+                            session,
+                            transcript,
+                            on_audio_part=_stream_audio_part,
+                            on_stream_text=_stream_text_update,
+                        ),
+                        timeout=turn_budget,
+                    )
+                )
+                try:
+                    (
+                        response_text,
+                        audio_parts,
+                        is_complete,
+                    ) = await current_turn_task[0]
+                except asyncio.CancelledError:
+                    vinfo(
+                        logger,
+                        "Turn cancelled (barge-in or hangup)",
+                        session=session,
+                        call_id=call_id,
+                        phase=Phase.BARGE_IN,
+                    )
+                    tenant_may_speak.set()
+                    continue
+                except TimeoutError:
+                    vwarn(
+                        logger,
+                        f"Turn timed out after {turn_budget:.0f}s",
+                        session=session,
+                        call_id=call_id,
+                        phase=Phase.TURN_TIMEOUT,
+                        service="turn",
+                        timeout_s=turn_budget,
+                        detail=f"llm={session.llm_provider} tts={session.tts_provider}",
+                    )
+                    task = current_turn_task[0]
+                    if task is not None and not task.done():
+                        task.cancel()
+                        try:
+                            await task
+                        except asyncio.CancelledError:
+                            pass
+                    session.add_error(
+                        "turn_timeout",
+                        f"Exceeded {turn_budget:.0f}s turn budget",
+                    )
+                    session.record_turn_trace(
+                        {
+                            "state": pre_state,
+                            "turn_ms": int(turn_budget * 1000),
+                            "llm_ms": int(
+                                session.llm_latency_ms_total - turn_llm_before
+                            ),
+                            "tts_ms": int(
+                                session.tts_latency_ms_total - turn_tts_before
+                            ),
+                            "timed_out": True,
+                        }
+                    )
+                    retry_text = plan_turn_timeout_recovery(session, transcript)
+                    vinfo(
+                        logger,
+                        f"Turn timeout recovery: {retry_text[:80]!r}",
+                        session=session,
+                        call_id=call_id,
+                        phase=Phase.TURN_RECOVERY,
+                        service="turn",
+                    )
+                    if (
+                        session.transcript
+                        and session.transcript[-1].speaker == "AI"
+                        and session.transcript[-1].text.strip() == retry_text.strip()
+                    ):
+                        pass
+                    else:
+                        session.add_transcript("AI", retry_text)
+                    await _emit(
+                        "response",
+                        text=retry_text,
+                        speaker="AI",
+                        session=session.to_dict(),
+                    )
+                    mark_recovery_played(session)
+                    reset_turn_streaming(session, full=True)
+                    session.turn_streaming_finalize = None
+                    retry_audio = await call_handler.synthesize_with_fallback(
+                        retry_text, session
+                    )
+                    if retry_audio:
+                        await enqueue_audio([retry_audio], turn_end=True)
+                    else:
+                        tenant_may_speak.set()
+                    continue
+                finally:
+                    turn_in_progress.clear()
+                    current_turn_task[0] = None
+                    session.turn_deadline_monotonic = None
                 turn_ms = (time.monotonic() - t1) * 1000
+                session.record_turn_latency(turn_ms)
+                session.record_turn_trace(
+                    {
+                        "state": pre_state,
+                        "turn_ms": int(round(turn_ms)),
+                        "llm_ms": int(session.llm_latency_ms_total - turn_llm_before),
+                        "tts_ms": int(session.tts_latency_ms_total - turn_tts_before),
+                        "ttfa_ms": int(round(first_audio_ms))
+                        if first_audio_ms is not None
+                        else None,
+                        "audio_parts": len(audio_parts) if audio_parts else 0,
+                        "streamed": audio_streamed,
+                        "llm_streamed": getattr(session, "llm_streamed_during_turn", False),
+                        "complete": is_complete,
+                    }
+                )
 
                 accepted = (
-                    session.current_state.value != pre_state
+                    session.current_state != pre_state
                     or len(session.extracted_data) != pre_data_keys
                     or (session.pending_confirmation is not None and not pre_pending)
                     or is_complete
@@ -848,12 +1210,25 @@ async def run_bidirectional_audio_stream(
                     last_accepted_norm = norm
                     last_accepted_at = now
                     last_accepted_state = pre_state
-                logger.info("[%s] LLM+TTS turn %.0fms", call_id, turn_ms)
-                logger.debug(
-                    "[%s] Response text: %r, Audio parts: %s",
-                    call_id,
-                    response_text,
-                    len(audio_parts) if audio_parts else 0,
+                vinfo(
+                    logger,
+                    f"Turn complete in {turn_ms:.0f}ms",
+                    session=session,
+                    call_id=call_id,
+                    phase=Phase.TURN_END,
+                    service="turn",
+                    latency_ms=int(turn_ms),
+                    detail=(
+                        f"llm={session.llm_provider} tts={session.tts_provider} "
+                        f"accepted={accepted} complete={is_complete}"
+                    ),
+                )
+                vdebug(
+                    logger,
+                    f"Response text: {response_text!r}, audio_parts={len(audio_parts) if audio_parts else 0}",
+                    session=session,
+                    call_id=call_id,
+                    phase=Phase.TURN_END,
                 )
 
                 if not response_text and not audio_parts:
@@ -864,13 +1239,29 @@ async def run_bidirectional_audio_stream(
                     continue
 
                 if response_text:
-                    logger.debug(
-                        "[%s] Emitting response event: %s", call_id, response_text[:100]
+                    last_ai = ""
+                    if session.transcript and session.transcript[-1].speaker == "AI":
+                        last_ai = (session.transcript[-1].text or "").strip()
+                    final_text = response_text.strip()
+                    ui_duplicate = bool(last_ai and last_ai == final_text)
+                    vinfo(
+                        logger,
+                        f"UI final response emit (duplicate_line={ui_duplicate})",
+                        session=session,
+                        call_id=call_id,
+                        phase=Phase.UI_FINAL,
+                        reason="duplicate_append" if ui_duplicate else "new_line",
+                        detail=(
+                            f"text={final_text[:80]!r} "
+                            f"streamed={audio_streamed} "
+                            f"audio_parts={len(audio_parts) if audio_parts else 0}"
+                        ),
                     )
                     await _emit(
                         "response",
-                        text=response_text.strip(),
+                        text=final_text,
                         speaker="AI",
+                        streaming=ui_duplicate,
                         session=session.to_dict(),
                     )
                 elif emit_debug_events:
@@ -886,8 +1277,91 @@ async def run_bidirectional_audio_stream(
                 if stop_event.is_set():
                     break
 
-                if audio_parts:
+                if audio_streamed:
+                    fin = getattr(session, "turn_streaming_finalize", None) or {}
+                    if stream_turn_end_sent:
+                        vinfo(
+                            logger,
+                            "Skipping remainder TTS — batch audio already ended turn",
+                            session=session,
+                            call_id=call_id,
+                            phase=Phase.TTS_DEDUP_SKIP,
+                            detail=f"intended={(fin.get('intended') or response_text or '')[:80]!r}",
+                        )
+                    else:
+                        remainder = unsynthesized_speech_remainder(
+                            response_text, session
+                        )
+                        vinfo(
+                            logger,
+                            f"Post-stream audio path remainder={remainder[:60]!r}"
+                            if remainder
+                            else "Post-stream audio path (no remainder)",
+                            session=session,
+                            call_id=call_id,
+                            phase=Phase.TTS_REMAINDER if remainder else Phase.TTS_DEDUP_SKIP,
+                            detail=(
+                                f"streamed_prefix={fin.get('streamed_prefix', '')[:60]!r} "
+                                f"intended={fin.get('intended', '')[:60]!r} "
+                                f"streamed_sent={fin.get('streamed_sent')}"
+                            ),
+                        )
+                        if remainder:
+                            retry_audio = await call_handler.synthesize_with_fallback(
+                                remainder, session
+                            )
+                            if retry_audio:
+                                vinfo(
+                                    logger,
+                                    f"Remainder TTS synthesized ({len(retry_audio)} bytes)",
+                                    session=session,
+                                    call_id=call_id,
+                                    phase=Phase.TTS_REMAINDER,
+                                    bytes=len(retry_audio),
+                                    detail=f"text={remainder[:80]!r}",
+                                )
+                                await enqueue_audio([retry_audio], turn_end=True)
+                            else:
+                                await enqueue_audio([], turn_end=True)
+                        else:
+                            await enqueue_audio([], turn_end=True)
+                    session.turn_streaming_finalize = None
+                elif audio_parts:
+                    vinfo(
+                        logger,
+                        f"Batch TTS enqueue {len(audio_parts)} part(s)",
+                        session=session,
+                        call_id=call_id,
+                        phase=Phase.TTS_FINISH,
+                        detail=f"total_bytes={sum(len(p) for p in audio_parts)}",
+                    )
                     await enqueue_audio(audio_parts, turn_end=True)
+                elif response_text and not is_complete:
+                    # Last-mile guard: if turn produced text but no audio chunks,
+                    # synthesize once more so state does not drift silently.
+                    retry_audio = await call_handler.synthesize_with_fallback(
+                        response_text.strip(), session
+                    )
+                    if retry_audio:
+                        await enqueue_audio([retry_audio], turn_end=True)
+                    else:
+                        fail_text, fail_parts, is_complete = (
+                            await call_handler.end_call_for_provider_failure(
+                                session,
+                                "tts",
+                                "Response speech synthesis failed",
+                            )
+                        )
+                        if fail_text:
+                            await _emit(
+                                "response",
+                                text=fail_text,
+                                speaker="AI",
+                                session=session.to_dict(),
+                            )
+                        if fail_parts:
+                            await enqueue_audio(fail_parts, turn_end=True)
+                    session.turn_streaming_finalize = None
                 elif not is_complete:
                     # All TTS providers failed — release the listen gate so
                     # the call does not hang until max_call_duration.
@@ -918,6 +1392,11 @@ async def run_bidirectional_audio_stream(
                     audio, turn_end = item, True
 
                 if not audio:
+                    if turn_end:
+                        tenant_may_speak.set()
+                        logger.debug("[%s] Agent turn complete — listening", call_id)
+                        if emit_debug_events:
+                            await _emit("agent_done")
                     continue
 
                 tenant_may_speak.clear()
@@ -982,7 +1461,14 @@ async def run_bidirectional_audio_stream(
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=max_call_duration)
         except TimeoutError:
-            logger.warning("[%s] max call duration reached, ending call", call_id)
+            vwarn(
+                logger,
+                "Max call duration reached — ending call",
+                session=session,
+                call_id=call_id,
+                phase=Phase.CALL_END,
+                reason="max_duration",
+            )
             session.add_error("max_duration", f"Exceeded {max_call_duration}s")
             stop_event.set()
 
@@ -1000,6 +1486,9 @@ async def run_bidirectional_audio_stream(
         await stop_event.wait()
     finally:
         call_handler.unregister_stream_stop(call_id)
+        from app.core.redis_client import clear_stream_stop_signal
+
+        await clear_stream_stop_signal(call_id)
         try:
             audio_feed_queue.put_nowait(None)
         except asyncio.QueueFull:
@@ -1031,6 +1520,8 @@ async def run_bidirectional_audio_stream(
                 await on_complete()
             except Exception as e:
                 logger.error("[%s] on_complete callback failed: %s", call_id, e)
+
+        call_handler.finish_stream_session(call_id)
 
         try:
             await websocket.close()

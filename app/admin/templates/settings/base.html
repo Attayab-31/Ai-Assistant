@@ -2,44 +2,47 @@
 {% block head %}
 <style>
   .settings-nav { display: flex; gap: 2px; border-bottom: 2px solid var(--line); margin-bottom: 24px; flex-wrap: wrap; }
-  .settings-nav a { 
-    padding: 11px 14px; 
-    border-bottom: 3px solid transparent; 
+  .settings-nav a {
+    padding: 11px 14px;
+    border-bottom: 3px solid transparent;
     margin-bottom: -2px;
-    color: var(--muted); 
+    color: var(--muted);
     font-weight: 500;
     white-space: nowrap;
+    text-decoration: none;
   }
-  .settings-nav a.active { 
-    border-bottom-color: var(--accent); 
+  .settings-nav a.active {
+    border-bottom-color: var(--accent);
     color: var(--ink);
+    font-weight: 600;
   }
-  .settings-nav a:hover { color: var(--ink); }
+  .settings-nav a:hover { color: var(--ink); text-decoration: none; }
   .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
-  .form-section { background: var(--panel); padding: 20px; border-radius: 8px; border: 1px solid var(--line); }
+  .form-section {
+    background: var(--panel);
+    padding: 20px;
+    border-radius: var(--radius);
+    border: 1px solid var(--line);
+    box-shadow: var(--shadow);
+  }
   .form-group { margin-bottom: 16px; }
-  .form-group label { display: block; font-weight: 500; margin-bottom: 6px; }
-  .form-group input, .form-group select, .form-group textarea { 
-    width: 100%; 
-    padding: 10px; 
-    border: 1px solid var(--line); 
-    border-radius: 6px; 
-    font-size: 14px; 
+  .form-group label { display: block; font-weight: 600; margin-bottom: 6px; color: var(--ink-soft); }
+  .form-group input, .form-group select, .form-group textarea {
+    width: 100%;
+    max-width: 100%;
+    padding: 9px 11px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    font-size: 14px;
   }
   .form-group textarea { resize: vertical; min-height: 100px; }
   .form-actions { display: flex; gap: 8px; margin-top: 24px; flex-wrap: wrap; }
-  .btn { padding: 10px 20px; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 14px; }
-  .btn-primary { background: var(--accent); color: white; }
-  .btn-secondary { background: var(--line); color: var(--ink); }
-  .btn-danger { background: #dc2626; color: white; }
-  .btn:hover { opacity: 0.9; }
-  .alert { padding: 12px 16px; margin-bottom: 16px; border-radius: 6px; }
+  .alert { padding: 12px 16px; margin-bottom: 16px; border-radius: var(--radius-sm); }
   .alert-success { background: #d1fae5; color: #065f46; border: 1px solid #a7f3d0; }
   .alert-error { background: #fee2e2; color: #991b1b; border: 1px solid #fca5a5; }
-  .text-muted { color: var(--muted); font-size: 13px; }
 
   /* Friendly helpers shared across settings pages */
-  details.adv { margin-top: 12px; border: 1px dashed var(--line); border-radius: 8px; padding: 0 12px; background: #fbfcfe; }
+  details.adv { margin-top: 12px; border: 1px dashed var(--line); border-radius: var(--radius-sm); padding: 0 12px; background: #fbfcfe; }
   details.adv > summary { cursor: pointer; font-weight: 600; color: var(--muted); font-size: 13px; padding: 10px 0; list-style: none; }
   details.adv > summary::-webkit-details-marker { display: none; }
   details.adv > summary::before { content: "▸ "; }
@@ -52,12 +55,108 @@
   .status-row:last-child { border-bottom: none; }
   .engine-name { font-weight: 700; }
   .engine-desc { color: var(--muted); font-size: 13px; margin: 2px 0 10px; }
-  .warn-note { background: #fffbeb; border: 1px solid #fde68a; color: #92400e; border-radius: 8px; padding: 8px 10px; font-size: 12px; margin-top: 8px; }
+  .warn-note { background: #fffbeb; border: 1px solid #fde68a; color: #92400e; border-radius: var(--radius-sm); padding: 8px 10px; font-size: 12px; margin-top: 8px; }
+
+  /* In-page section tabs (General settings wizard) */
+  .section-tabs {
+    display: flex;
+    gap: 4px;
+    flex-wrap: wrap;
+    margin-bottom: 20px;
+    padding-bottom: 2px;
+    border-bottom: 2px solid var(--line);
+  }
+  .section-tabs button {
+    padding: 10px 14px;
+    border: none;
+    border-bottom: 3px solid transparent;
+    margin-bottom: -2px;
+    background: none;
+    color: var(--muted);
+    font-weight: 500;
+    font-size: 14px;
+    cursor: pointer;
+    border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  }
+  .section-tabs button:hover { color: var(--ink); background: var(--line-soft); }
+  .section-tabs button.active {
+    color: var(--ink);
+    font-weight: 600;
+    border-bottom-color: var(--accent);
+  }
+  .settings-tab-panel { display: none; }
+  .settings-tab-panel.active { display: block; }
+
+  /* Simple / Advanced mode toggle (AI & Voice) */
+  .settings-mode-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 16px;
+  }
+  .settings-mode-toggle {
+    display: inline-flex;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    overflow: hidden;
+    background: var(--line-soft);
+  }
+  .settings-mode-toggle button {
+    border: none;
+    background: none;
+    padding: 8px 16px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--muted);
+    cursor: pointer;
+  }
+  .settings-mode-toggle button.active {
+    background: var(--panel);
+    color: var(--ink);
+    box-shadow: var(--shadow);
+  }
+  .provider-simple-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 14px;
+  }
+  .provider-simple-card {
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 16px;
+    background: var(--panel);
+    box-shadow: var(--shadow);
+  }
+  .provider-simple-card .role { color: var(--muted); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+  .provider-simple-card .name { font-size: 18px; font-weight: 700; margin: 6px 0 4px; }
+  .provider-simple-card .detail { color: var(--muted); font-size: 13px; }
+
+  /* Sticky save bar for single-form settings pages */
+  .settings-sticky-save {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 900;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+    padding: 12px 24px;
+    background: var(--panel);
+    border-top: 1px solid var(--line);
+    box-shadow: 0 -4px 20px rgba(15, 23, 42, .08);
+  }
+  .settings-sticky-save[hidden] { display: none !important; }
+  body.settings-dirty-pad .main { padding-bottom: 80px; }
 </style>
 {% endblock %}
+{% block page_sub %}{% block settings_page_sub %}{% endblock %}{% endblock %}
 {% block content %}
-<div id="msg"></div>
-
+{% set settings_readonly = user and not user.can_edit %}
 <div class="settings-nav">
   <a class="{{ 'active' if section == 'general' else '' }}" href="/admin/settings/general">General</a>
   <a class="{{ 'active' if section == 'providers' else '' }}" href="/admin/settings/providers">AI &amp; Voice</a>
@@ -66,14 +165,88 @@
   <a class="{{ 'active' if section == 'email' else '' }}" href="/admin/settings/email">Email</a>
 </div>
 
+{% if settings_readonly %}
+<div class="callout" style="margin-bottom: 16px;" role="status">
+  Settings are <strong>read-only</strong> for your account. You can review configuration but cannot save changes.
+</div>
+{% endif %}
+
 {% block settings_content %}{% endblock %}
 
+{% if settings_readonly %}
 <script>
-  function showMessage(text, isError = false) {
-    const msg = document.getElementById('msg');
-    msg.className = isError ? 'alert alert-error' : 'alert alert-success';
-    msg.textContent = text;
-    setTimeout(() => { msg.textContent = ''; msg.className = ''; }, 5000);
+  document.addEventListener('DOMContentLoaded', function () {
+    document.querySelectorAll('.settings-save, .settings-edit-only').forEach(function (el) {
+      el.style.display = 'none';
+    });
+    document.querySelectorAll('.settings-form input, .settings-form select, .settings-form textarea').forEach(function (el) {
+      el.disabled = true;
+    });
+  });
+</script>
+{% endif %}
+<script>
+  function initSettingsTabs(navSelector) {
+    const nav = document.querySelector(navSelector);
+    if (!nav) return;
+    const buttons = nav.querySelectorAll('button[data-tab]');
+    const panels = document.querySelectorAll('.settings-tab-panel');
+    function show(tab) {
+      buttons.forEach((b) => b.classList.toggle('active', b.dataset.tab === tab));
+      panels.forEach((p) => p.classList.toggle('active', p.dataset.tab === tab));
+      try { localStorage.setItem('settingsTab:' + navSelector, tab); } catch (_) {}
+    }
+    const saved = (() => { try { return localStorage.getItem('settingsTab:' + navSelector); } catch (_) { return null; } })();
+    if (saved && nav.querySelector(`button[data-tab="${saved}"]`)) show(saved);
+    buttons.forEach((b) => b.addEventListener('click', () => show(b.dataset.tab)));
   }
+
+  function initSettingsDirtyBar(formId, barId) {
+    const form = document.getElementById(formId);
+    const bar = document.getElementById(barId);
+    if (!form || !bar) return;
+    const snap = () => {
+      const data = {};
+      form.querySelectorAll('input, select, textarea').forEach((el) => {
+        if (!el.id || el.type === 'password') return;
+        data[el.id] = el.type === 'checkbox' ? el.checked : el.value;
+      });
+      return JSON.stringify(data);
+    };
+    let baseline = snap();
+    function setDirty(dirty) {
+      bar.hidden = !dirty;
+      document.body.classList.toggle('settings-dirty-pad', dirty);
+    }
+    form.addEventListener('input', () => setDirty(snap() !== baseline));
+    form.addEventListener('change', () => setDirty(snap() !== baseline));
+    form.addEventListener('submit', () => { baseline = snap(); setDirty(false); });
+    bar.querySelectorAll('[data-discard]').forEach((btn) => {
+      btn.addEventListener('click', () => location.reload());
+    });
+  }
+
+  function initProvidersMode() {
+    const simple = document.getElementById('providersSimple');
+    const advanced = document.getElementById('providersAdvanced');
+    const btns = document.querySelectorAll('[data-providers-mode]');
+    if (!simple || !advanced || !btns.length) return;
+    function setMode(mode) {
+      const isSimple = mode === 'simple';
+      simple.hidden = !isSimple;
+      advanced.hidden = isSimple;
+      btns.forEach((b) => b.classList.toggle('active', b.dataset.providersMode === mode));
+      try { localStorage.setItem('providersMode', mode); } catch (_) {}
+    }
+    const saved = (() => { try { return localStorage.getItem('providersMode'); } catch (_) { return null; } })();
+    setMode(saved === 'advanced' ? 'advanced' : 'simple');
+    btns.forEach((b) => b.addEventListener('click', () => setMode(b.dataset.providersMode)));
+  }
+
+  document.addEventListener('DOMContentLoaded', () => {
+    initSettingsTabs('#generalSectionTabs');
+    initSettingsDirtyBar('generalSettingsForm', 'generalStickySave');
+    initProvidersMode();
+  });
 </script>
 {% endblock %}

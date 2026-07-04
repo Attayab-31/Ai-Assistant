@@ -18,6 +18,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import call_handler
+from app.core.ratelimit import limiter
 from app.db.crud import create_call, get_setting_value
 from app.db.database import AsyncSessionLocal, get_db
 from app.services.telnyx_service import telnyx_service, verify_telnyx_webhook_signature
@@ -96,6 +97,7 @@ async def verify_webhook(request: Request) -> bytes:
 
 
 @router.post("/webhook")
+@limiter.limit("120/minute")
 async def telnyx_webhook(request: Request, db: AsyncSession = Depends(get_db)):
     """
     Main Telnyx Call Control webhook endpoint.
@@ -155,7 +157,9 @@ async def handle_call_initiated(db: AsyncSession, call_payload: dict) -> None:
     from app.core.redis_client import acquire_once
 
     if call_control_id and not await acquire_once(
-        f"webhook:initiated:{call_control_id}", 3600
+        f"webhook:initiated:{call_control_id}",
+        3600,
+        fail_closed=settings.is_production,
     ):
         logger.info("Duplicate call.initiated for %s — ignoring", call_control_id)
         return
@@ -211,7 +215,9 @@ async def handle_call_answered_event(db: AsyncSession, call_payload: dict) -> No
     from app.core.redis_client import acquire_once
 
     if call_control_id and not await acquire_once(
-        f"webhook:answered:{call_control_id}", 3600
+        f"webhook:answered:{call_control_id}",
+        3600,
+        fail_closed=settings.is_production,
     ):
         logger.info("Duplicate call.answered for %s — ignoring", call_control_id)
         return
@@ -271,7 +277,9 @@ async def handle_call_hangup(db: AsyncSession, call_payload: dict) -> None:
     from app.core.redis_client import acquire_once
 
     if call_control_id and not await acquire_once(
-        f"webhook:hangup:{call_control_id}", 3600
+        f"webhook:hangup:{call_control_id}",
+        3600,
+        fail_closed=settings.is_production,
     ):
         logger.info("Duplicate call.hangup for %s — ignoring", call_control_id)
         return
@@ -288,17 +296,26 @@ async def handle_call_hangup(db: AsyncSession, call_payload: dict) -> None:
         # waits a grace period — by then the stream has either started (and stopped
         # itself via pending_hangup, finalizing via on_complete) or never connected
         # (the timeout finalizes it). Either way we avoid finalizing mid-startup.
-        call_handler.request_stream_stop(call_control_id)
+        await call_handler.request_stream_stop(call_control_id)
         asyncio.create_task(
             call_handler.finalize_after_stream_timeout(call_control_id)
         )
         return
     else:
-        # Call ended without ever being answered/streamed (e.g., abandoned)
+        # Session may live on another worker — signal stream stop via Redis and
+        # avoid marking an in-progress call abandoned while audio is still live.
+        await call_handler.request_stream_stop(call_control_id)
         from app.db.crud import get_call_by_call_id, update_call
 
         existing = await get_call_by_call_id(db, call_control_id)
-        if existing and existing.status not in ("completed", "failed"):
+        if existing and existing.status == "in_progress":
+            logger.info(
+                "Hangup for in_progress call %s — stream stop signaled "
+                "(session on another worker)",
+                call_control_id,
+            )
+            return
+        if existing and existing.status not in ("completed", "failed", "abandoned"):
             await update_call(
                 db,
                 call_control_id,
@@ -398,6 +415,18 @@ async def telnyx_audio_stream(websocket: WebSocket, call_id: str):
                 from app.db.crud import get_call_by_call_id
 
                 call = await get_call_by_call_id(setup_db, call_id)
+                if call is None:
+                    # Authentic connection (the stream token is verified above)
+                    # but the call.initiated/answered webhook hasn't landed yet
+                    # or hit another worker. Proceed so we don't drop a real
+                    # call; finalize will create the call row and coerce the
+                    # unknown phone. Logged so the webhook-ordering gap is
+                    # visible in production.
+                    logger.warning(
+                        "No call row for %s at stream start — proceeding with "
+                        "unknown phone (webhook ordering/another worker)",
+                        call_id,
+                    )
                 phone_number = call.phone_number if call else ""
                 session = await call_handler.create_session(
                     call_id=call_id,

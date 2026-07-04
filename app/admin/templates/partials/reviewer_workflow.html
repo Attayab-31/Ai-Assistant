@@ -1,0 +1,55 @@
+{# Reviewer status strip + action bar (call detail + applicant profile) #}
+
+{% macro review_status_strip(tenant, call, active_question_count=0) %}
+{% if tenant %}
+<div class="review-status-strip" role="status">
+  <span id="reviewStatePill" class="review-chip {{ 'needs-review' if not tenant.reviewed_by_admin else 'reviewed' }}">
+    {% if tenant.reviewed_by_admin %}
+      <span class="dot ok" aria-hidden="true"></span> Reviewed
+    {% else %}
+      <span class="dot warn" aria-hidden="true"></span> Needs your review
+    {% endif %}
+  </span>
+  <span class="review-sep" aria-hidden="true">·</span>
+  <span class="review-chip">
+    <span class="badge" style="background: {{ tenant.qualification_status|status_color }}">{{ tenant.qualification_status|friendly_qualification }}</span>
+  </span>
+  <span class="review-sep" aria-hidden="true">·</span>
+  <span class="review-chip">Score <strong style="color: {{ tenant.qualification_score|score_color }}">{{ tenant.qualification_score or 0 }}/100</strong></span>
+  {% if call %}
+  <span class="review-sep" aria-hidden="true">·</span>
+  <span class="review-chip">
+    {% if active_question_count %}
+      {{ call.questions_answered or 0 }} of {{ active_question_count }} question{{ '' if active_question_count == 1 else 's' }} answered
+    {% else %}
+      {{ call.questions_answered or 0 }} question{{ '' if (call.questions_answered or 0) == 1 else 's' }} answered
+    {% endif %}
+    {% if call.call_completed %}<span class="pill" style="margin-left:6px;">Complete</span>{% endif %}
+  </span>
+  {% endif %}
+</div>
+{% endif %}
+{% endmacro %}
+
+{% macro reviewer_action_bar(call_id, tenant, user, show_delete=true) %}
+{% if user and user.can_edit and tenant and call_id %}
+<nav class="reviewer-actions" aria-label="Reviewer actions">
+  <button type="button" class="btn btn-primary" id="reviewBtn" onclick="withBtnLoading(this, toggleReviewed, 'Saving\u2026')">
+    {{ "Mark unreviewed" if tenant.reviewed_by_admin else "Mark as reviewed" }}
+  </button>
+  <div class="reviewer-result-group">
+    <label class="muted" for="qualOverride">Change result</label>
+    <select id="qualOverride">
+      {% for opt in ["qualified", "review", "unqualified"] %}
+      <option value="{{ opt }}" {{ "selected" if tenant.qualification_status == opt else "" }}>{{ opt|friendly_qualification }}</option>
+      {% endfor %}
+    </select>
+    <button type="button" class="btn btn-secondary" onclick="withBtnLoading(this, saveQualification, 'Saving\u2026')">Save result</button>
+  </div>
+  <button type="button" class="btn btn-secondary" onclick="withBtnLoading(this, resendEmail, 'Sending\u2026')">Resend result email</button>
+  {% if show_delete %}
+  <button type="button" class="btn btn-danger reviewer-danger" onclick="withBtnLoading(this, deleteCall, 'Deleting\u2026')">Delete call</button>
+  {% endif %}
+</nav>
+{% endif %}
+{% endmacro %}

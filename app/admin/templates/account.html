@@ -1,11 +1,9 @@
 {% extends "base.html" %}
 {% block title %}Team Accounts{% endblock %}
 {% block page_title %}Team Accounts{% endblock %}
+{% block page_sub %}<div class="sub">Create accounts and control who can view or change each area of the panel.</div>{% endblock %}
 {% block content %}
 <style>
-  .alert { padding: 12px 16px; margin-bottom: 16px; border-radius: 6px; }
-  .alert-success { background: #d1fae5; color: #065f46; border: 1px solid #a7f3d0; }
-  .alert-error { background: #fee2e2; color: #991b1b; border: 1px solid #fca5a5; }
   .text-muted { color: var(--muted); font-size: 13px; }
   .role-badge { display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px; font-weight:700; background:var(--line-soft); color:var(--ink-soft); }
   .role-badge.super_admin { background:#fef3c7; color:#92400e; }
@@ -23,20 +21,15 @@
   .inactive-row { opacity:.55; }
 </style>
 
-<div id="acctMsg"></div>
-
 <div class="callout" style="margin-bottom:16px;">
-  <span>🔑</span>
-  <span>
-    You are the <strong>super admin</strong> (set via <code>ADMIN_EMAIL</code> in your environment).
-    Create team accounts here and choose what each person can see and do.
-    <strong>Admin</strong> = full panel access. <strong>Staff</strong> = custom areas, can edit.
-    <strong>Viewer</strong> = custom areas, read-only.
-  </span>
+  You are the <strong>super admin</strong> for this installation.
+  Create team accounts here and choose what each person can see and do.
+  <strong>Admin</strong> = full panel access. <strong>Staff</strong> = custom areas, can edit.
+  <strong>Viewer</strong> = custom areas, read-only.
 </div>
 
 <div class="card" style="margin-bottom:20px;">
-  <h2 style="margin:0 0 14px;">➕ Create account</h2>
+  <div class="card-head"><h2>Create account</h2></div>
   <form id="createForm" class="form-grid" onsubmit="return withFormLoading(event, createUser, 'Creating\u2026')">
     <label>Full name <input name="full_name" required placeholder="Jane Smith"></label>
     <label>Email <input name="email" type="email" required autocomplete="off" placeholder="jane@company.com"></label>
@@ -56,7 +49,7 @@
         {% endfor %}
       </div>
     </div>
-    <div><button type="submit">Create account</button></div>
+    <div><button type="submit" class="btn btn-primary">Create account</button></div>
   </form>
 </div>
 
@@ -64,7 +57,7 @@
 <table>
   <thead>
     <tr>
-      <th>Email</th><th>Name</th><th>Access</th><th>Areas</th><th>Active</th><th style="text-align:right;">Actions</th>
+      <th scope="col">Email</th><th scope="col">Name</th><th scope="col">Access</th><th scope="col">Areas</th><th scope="col">Active</th><th scope="col" style="text-align:right;">Actions</th>
     </tr>
   </thead>
   <tbody>
@@ -98,15 +91,15 @@
             data-name="{{ item.full_name or '' }}"
             data-role="{{ item.role }}"
             data-scopes="{{ item.effective_scopes|join(',') }}"
-            data-active="{{ 'true' if item.is_active else 'false' }}">✏️ Edit</button>
+            data-active="{{ 'true' if item.is_active else 'false' }}">Edit</button>
           {% endif %}
-          <button type="button" class="btn btn-danger btn-sm"
-            onclick="withBtnLoading(this, () => deleteUser('{{ item.id }}', '{{ item.email|e }}'), 'Deleting\u2026')">🗑️</button>
+          <button type="button" class="btn btn-danger btn-sm" aria-label="Delete account"
+            onclick="withBtnLoading(this, () => deleteUser('{{ item.id }}', '{{ item.email|e }}'), 'Deleting\u2026')">Delete</button>
         {% endif %}
       </td>
     </tr>
   {% else %}
-    <tr><td colspan="6" class="muted">No users found.</td></tr>
+    <tr><td colspan="6"><div class="empty"><span class="empty-title">No team accounts yet</span>Create an account above to give someone access.</div></td></tr>
   {% endfor %}
   </tbody>
 </table>
@@ -114,11 +107,14 @@
 
 <!-- Edit panel -->
 <div id="editPanel" class="card" style="display:none; margin-top:20px;">
-  <h2 style="margin:0 0 14px;">✏️ Edit account</h2>
+  <div class="card-head"><h2>Edit account</h2></div>
   <form id="editForm" class="form-grid" onsubmit="return withFormLoading(event, saveEdit, 'Saving\u2026')">
     <input type="hidden" id="editId">
     <p class="text-muted" id="editEmail" style="margin:0;"></p>
     <label>Full name <input id="editName" required></label>
+    <label>New password <span class="text-muted">(optional)</span>
+      <input id="editPassword" type="password" minlength="8" autocomplete="new-password" placeholder="Leave blank to keep current password" />
+    </label>
     <label>Access level
       <select id="editRole" onchange="toggleScopePanel('edit')">
         <option value="admin">Admin — full access</option>
@@ -137,21 +133,14 @@
     <label style="display:flex;align-items:center;gap:8px;font-weight:500;">
       <input type="checkbox" id="editActive" style="width:auto;max-width:none;"> Account is active
     </label>
-    <div style="display:flex;gap:8px;">
-      <button type="submit">Save changes</button>
+    <div class="form-actions">
+      <button type="submit" class="btn btn-primary">Save changes</button>
       <button type="button" class="btn btn-secondary" onclick="closeEdit()">Cancel</button>
     </div>
   </form>
 </div>
 
 <script>
-  function showAcctMsg(text, isError) {
-    const el = document.getElementById('acctMsg');
-    el.className = isError ? 'alert alert-error' : 'alert alert-success';
-    el.textContent = text;
-    setTimeout(() => { el.textContent = ''; el.className = ''; }, 5000);
-  }
-
   function toggleScopePanel(mode) {
     const role = document.getElementById(mode === 'create' ? 'createRole' : 'editRole').value;
     const panel = document.getElementById(mode === 'create' ? 'createScopes' : 'editScopes');
@@ -181,9 +170,9 @@
         body: JSON.stringify(body),
       });
       if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || r.statusText); }
-      showAcctMsg('✓ Account created: ' + body.email);
+      showMessage('Account created: ' + body.email);
       setTimeout(() => location.reload(), 900);
-    } catch (e) { showAcctMsg('✗ ' + e.message, true); }
+    } catch (e) { showMessage(e.message, true); }
   }
 
   function openEditFromBtn(btn) {
@@ -226,6 +215,8 @@
         ? Array.from(document.querySelectorAll('.edit-scope:checked')).map(cb => cb.value)
         : [],
     };
+    const newPassword = document.getElementById('editPassword').value.trim();
+    if (newPassword) body.password = newPassword;
     try {
       const r = await fetch('/admin/api/users/' + id, {
         method: 'PATCH',
@@ -233,9 +224,9 @@
         body: JSON.stringify(body),
       });
       if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || r.statusText); }
-      showAcctMsg('✓ Account updated');
+      showMessage('Account updated');
       setTimeout(() => location.reload(), 900);
-    } catch (e) { showAcctMsg('✗ ' + e.message, true); }
+    } catch (e) { showMessage(e.message, true); }
   }
 
   async function deleteUser(userId, email) {
@@ -243,9 +234,9 @@
     try {
       const r = await fetch('/admin/api/users/' + userId, { method: 'DELETE' });
       if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || r.statusText); }
-      showAcctMsg('✓ Account deleted: ' + email);
+      showMessage('Account deleted: ' + email);
       setTimeout(() => location.reload(), 900);
-    } catch (e) { showAcctMsg('✗ ' + e.message, true); }
+    } catch (e) { showMessage(e.message, true); }
   }
 
   toggleScopePanel('create');

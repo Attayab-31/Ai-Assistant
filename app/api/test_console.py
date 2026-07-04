@@ -47,7 +47,9 @@ from app.utils.audio import (
     any_audio_to_mulaw,
     mulaw_to_wav,
 )
+from app.db.crud import get_user_by_id
 from app.utils.dependencies import ACCESS_TOKEN_COOKIE_NAME, get_current_user
+from app.utils.helpers import friendly_provider_name
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -65,7 +67,6 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 class StartCallRequest(BaseModel):
     phone_number: str = "+15555550123"
-    agent_name: str | None = None
     property_name: str | None = None
     # "text" | "voice" — voice skips greeting (WS delivers it)
     mode: str = "text"
@@ -101,7 +102,7 @@ def _session_snapshot(session) -> dict:
     return {
         "call_id": session.call_id,
         "phone_number": session.phone_number,
-        "state": session.current_state.value,
+        "state": session.current_state,
         "questions_answered": session.questions_answered,
         "active_question_count": session.active_question_count(),
         "is_screening_complete": session.is_screening_complete(),
@@ -133,7 +134,7 @@ async def require_test_console_access(
     request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> None:
-    """Require admin login to use the test console.
+    """Require Settings edit access to use the test console.
 
     Always enforced in production. In non-production it is also enforced for
     any non-loopback client, so a dev instance exposed on a network can't be
@@ -142,15 +143,25 @@ async def require_test_console_access(
     client_host = request.client.host if request.client else None
     if not settings.is_production and _is_loopback(client_host):
         return
-    await get_current_user(request, db)
+    user = await get_current_user(request, db)
+    if not user.can("settings"):
+        raise HTTPException(
+            status_code=403,
+            detail="Test console requires Settings access.",
+        )
+    if not user.can_edit:
+        raise HTTPException(
+            status_code=403,
+            detail="Your account is read-only.",
+        )
 
 
-def _verify_ws_auth(websocket: WebSocket) -> bool:
-    """Verify admin cookie on WebSocket connect.
+async def _verify_ws_auth(websocket: WebSocket) -> bool:
+    """Verify admin cookie and Settings edit access on WebSocket connect.
 
     Always enforced in production. In non-production, loopback connections are
     allowed without auth for local QA; non-loopback connections must present a
-    valid admin token.
+    valid admin token with Settings edit permission.
     """
     client_host = websocket.client.host if websocket.client else None
     if not settings.is_production and _is_loopback(client_host):
@@ -162,7 +173,19 @@ def _verify_ws_auth(websocket: WebSocket) -> bool:
     if not token:
         return False
     payload = decode_access_token(token)
-    return bool(payload and payload.get("sub"))
+    if not payload or not payload.get("sub"):
+        return False
+
+    try:
+        user_id = uuid.UUID(str(payload["sub"]))
+    except ValueError:
+        return False
+
+    async with AsyncSessionLocal() as db:
+        user = await get_user_by_id(db, user_id)
+        if not user or not user.is_active:
+            return False
+        return user.can("settings") and user.can_edit
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -179,11 +202,19 @@ async def test_console_page(
     """Render the test interface."""
     from config import provider_registry
 
+    raw = provider_registry.get_status()
+    provider_labels = {
+        "llm": friendly_provider_name(raw.get("llm"), "llm"),
+        "stt": friendly_provider_name(raw.get("stt"), "stt"),
+        "tts": friendly_provider_name(raw.get("tts"), "tts"),
+    }
+
     return templates.TemplateResponse(
         "test_console.html",
         {
             "request": request,
-            "providers": provider_registry.get_status(),
+            "providers": raw,
+            "provider_labels": provider_labels,
             "app_url": settings.app_url,
         },
     )
@@ -212,6 +243,7 @@ async def client_call_page(
 
 @router.post("/api/start")
 async def start_test_call(
+    request: Request,
     payload: StartCallRequest,
     db: AsyncSession = Depends(get_db),
     _auth: None = Depends(require_test_console_access),
@@ -226,15 +258,12 @@ async def start_test_call(
         call_id=call_id,
         phone_number=payload.phone_number,
         db=db,
-        agent_name=payload.agent_name,
         property_name=payload.property_name,
     )
 
     ws_path = f"/test/api/stream/{call_id}"
-    ws_url = (
-        settings.app_url.replace("https://", "wss://").replace("http://", "ws://")
-        + ws_path
-    )
+    ws_scheme = "wss" if request.url.scheme == "https" else "ws"
+    ws_url = f"{ws_scheme}://{request.url.netloc}{ws_path}"
 
     # Voice mode: session only — greeting arrives over the WebSocket (same as Telnyx).
     if payload.mode == "voice":
@@ -359,8 +388,8 @@ async def end_test_call(
         raise HTTPException(status_code=404, detail="Session not found")
 
     # Force state to ENDED for clean scoring
-    if session.current_state not in (CallState.WRAP_UP, CallState.ENDED):
-        session.current_state = CallState.ENDED
+    if session.current_state not in (CallState.WRAP_UP.value, CallState.ENDED.value):
+        session.current_state = CallState.ENDED.value
 
     # Build a fake call row so finalize_call can write results to DB
     summary = {
@@ -380,9 +409,14 @@ async def end_test_call(
                     phone_number=session.phone_number,
                     direction="test",
                     status="in_progress",
+                    commit=False,
                 )
             result = await call_handler.finalize_call(session, bg_db)
         summary.update(result)
+        if result.get("db_persisted") is False:
+            summary["finalize_warning"] = (
+                "Score computed but tenant record was not saved — check server logs."
+            )
     except Exception as e:
         logger.error("Test finalize failed: %s", e, exc_info=True)
         summary["finalize_error"] = str(e)
@@ -435,7 +469,7 @@ async def test_stream(websocket: WebSocket, call_id: str):
     Emits debug events (transcript, response, complete) for the test UI.
     """
     await websocket.accept()
-    if not _verify_ws_auth(websocket):
+    if not await _verify_ws_auth(websocket):
         await websocket.send_json(
             {"event": "error", "message": "authentication required"}
         )

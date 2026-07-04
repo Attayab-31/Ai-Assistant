@@ -1,106 +1,105 @@
 {% extends "settings/base.html" %}
 {% block title %}General Settings{% endblock %}
 {% block page_title %}General Settings{% endblock %}
+{% block settings_page_sub %}<div class="sub">Set up your property, scoring rules, and how calls behave — advanced options are tucked away at the end.</div>{% endblock %}
 {% block settings_content %}
 
-<form onsubmit="withFormLoading(event, saveSettings, 'Saving\u2026')" class="stack">
-  <div class="form-grid">
-    <div class="form-section">
-      <h3 style="margin-top: 0;">Property Information</h3>
-      <div class="form-group">
-        <label>Property Name</label>
-        <input type="text" id="property_name" value="{{ settings.get('property_name', 'Ready Rentals Online') }}" placeholder="e.g. Ready Rentals Online" />
-        <p class="text-muted">Used in the spoken greeting ("thank you for calling [name]!") and as the business the AI assistant represents during the call.</p>
+<nav class="section-tabs" id="generalSectionTabs" aria-label="General settings sections">
+  <button type="button" class="active" data-tab="property">Your property</button>
+  <button type="button" data-tab="scoring">Scoring rules</button>
+  <button type="button" data-tab="behavior">Call behavior</button>
+  <button type="button" data-tab="advanced">Advanced &amp; maintenance</button>
+</nav>
+
+<form id="generalSettingsForm" onsubmit="withFormLoading(event, saveSettings, 'Saving\u2026')" class="stack settings-form">
+
+  <div class="settings-tab-panel active" data-tab="property">
+    <div class="form-grid">
+      <div class="form-section">
+        <h3 style="margin-top: 0;">Property information</h3>
+        <div class="form-group">
+          <label>Property name</label>
+          <input type="text" id="property_name" value="{{ settings.get('property_name', 'Ready Rentals Online') }}" placeholder="e.g. Ready Rentals Online" />
+          <p class="text-muted">Used in the spoken greeting ("thank you for calling [name]!") and as the business the assistant represents during the call.</p>
+        </div>
+        <div class="form-group">
+          <label>Timezone</label>
+          {% set cur_tz = settings.get('timezone', 'America/New_York') %}
+          {% set tz_options = ['America/New_York', 'America/Chicago', 'America/Denver', 'America/Phoenix', 'America/Los_Angeles', 'America/Anchorage', 'Pacific/Honolulu', 'UTC', 'Europe/London', 'Europe/Berlin', 'Asia/Karachi', 'Asia/Kolkata', 'Asia/Dubai', 'Australia/Sydney'] %}
+          <select id="timezone">
+            {% for tz in tz_options %}
+            <option value="{{ tz }}" {% if cur_tz == tz %}selected{% endif %}>{{ tz }}</option>
+            {% endfor %}
+            {% if cur_tz not in tz_options %}<option value="{{ cur_tz }}" selected>{{ cur_tz }}</option>{% endif %}
+          </select>
+          <p class="text-muted">Used for dates and times in email notifications.</p>
+        </div>
+      </div>
+
+      <div class="form-section">
+        <h3 style="margin-top: 0;">What the assistant says</h3>
+        <p class="text-muted" style="margin-top: 0;">Customize the opening and closing lines. Leave blank to use the built-in wording. Use <code>{property_name}</code> where you want the business name inserted.</p>
+        <div class="form-group">
+          <label>Greeting (opening)</label>
+          <textarea id="greeting_message" rows="3" placeholder="Leave blank for the default greeting">{{ settings.get('greeting_message', '') }}</textarea>
+          <p class="text-muted">Spoken before the first question.</p>
+        </div>
+        <div class="form-group">
+          <label>Closing (wrap-up)</label>
+          <textarea id="closing_message" rows="2" placeholder="Leave blank for the default closing">{{ settings.get('closing_message', '') }}</textarea>
+          <p class="text-muted">Spoken after screening completes.</p>
+        </div>
+        <div class="form-group">
+          <label>When the system is down</label>
+          <textarea id="provider_failure_message" rows="3" placeholder="Leave blank for the default message">{{ settings.get('provider_failure_message', '') }}</textarea>
+          <p class="text-muted">Spoken when the AI or phone engines are unavailable. The applicant is marked for human review.</p>
+        </div>
       </div>
     </div>
+  </div>
 
-    <div class="form-section">
-      <h3 style="margin-top: 0;">Income Policy</h3>
-      <div class="form-group">
-        <label>Income Multiplier (× monthly rent)</label>
-        <input type="number" id="income_multiplier" value="{{ settings.get('income_multiplier', '3.0') }}" min="1" max="10" step="0.1" />
-        <p class="text-muted">Required income as a multiple of rent. 3.0 means the standard 3× rent.</p>
+  <div class="settings-tab-panel" data-tab="scoring">
+    <div class="form-section" style="max-width: 640px;">
+      <h3 style="margin-top: 0;">Who gets qualified?</h3>
+      <p class="text-muted" style="margin-top: 0;">Each question adds points in the <a href="/admin/settings/questions">Questions</a> builder. The total becomes a score from 0 to 100. These cutoffs decide the final result for <strong>new calls</strong> — calls already in progress keep the rules they started with.</p>
+      <div class="callout" style="margin-bottom: 16px;">
+        <strong>Example</strong> with defaults (qualified ≥ 75, review ≥ 40):<br>
+        Score <strong>82</strong> → Qualified · Score <strong>55</strong> → Needs review · Score <strong>25</strong> → Not qualified
       </div>
-      <div class="form-group">
-        <label>Monthly Rent for Income Ratio ($)</label>
-        <input type="number" id="monthly_rent_for_income_ratio" value="{{ settings.get('monthly_rent_for_income_ratio', 0) }}" min="0" step="50" />
-        <p class="text-muted">When set, income is scored against the multiplier × rent. 0 disables the ratio.</p>
-      </div>
-      <div class="form-group">
-        <label>Minimum Income Threshold ($)</label>
-        <input type="number" id="min_income_threshold" value="{{ settings.get('min_income_threshold', 0) }}" min="0" step="100" />
-        <p class="text-muted">Fallback minimum monthly income when no rent ratio is set. 0 = review only.</p>
-      </div>
-      <div class="form-group">
-        <label>Eviction Handling</label>
-        <select id="disqualify_on_eviction">
-          <option value="false" {% if settings.get('disqualify_on_eviction', 'false')|string|lower != 'true' %}selected{% endif %}>Review individually</option>
-          <option value="true" {% if settings.get('disqualify_on_eviction', 'false')|string|lower == 'true' %}selected{% endif %}>Auto-disqualify</option>
-        </select>
-        <p class="text-muted">Whether a disclosed eviction automatically disqualifies.</p>
-      </div>
-    </div>
-
-    <div class="form-section">
-      <h3 style="margin-top: 0;">Qualification Status Thresholds</h3>
       <div class="form-group">
         <label>Qualified at score ≥</label>
         <input type="number" id="qualified_score_threshold" value="{{ settings.get('qualified_score_threshold', 75) }}" min="0" max="100" step="1" />
-        <p class="text-muted">Minimum score (0–100) for "qualified" status, when there are no review flags.</p>
+        <p class="text-muted">Applicants at or above this score are marked qualified (unless a question flags them for review).</p>
       </div>
       <div class="form-group">
-        <label>Review at score ≥</label>
+        <label>Needs review at score ≥</label>
         <input type="number" id="review_score_threshold" value="{{ settings.get('review_score_threshold', 40) }}" min="0" max="100" step="1" />
-        <p class="text-muted">Minimum score for "review"; below this is "unqualified". Must be ≤ the qualified cutoff.</p>
+        <p class="text-muted">Between this score and the qualified cutoff → needs review. Below this → not qualified. Must be ≤ the qualified cutoff.</p>
       </div>
     </div>
+  </div>
 
-    <div class="form-section">
-      <h3 style="margin-top: 0;">Qualification Scoring Weights</h3>
-      <p class="text-muted" id="weightTotal" style="margin-top: 0;"></p>
-      <div class="form-group">
-        <label>Income Weight</label>
-        <input type="number" class="weight" id="score_weight_income" value="{{ settings.get('score_weight_income', 35) }}" min="0" max="100" oninput="updateWeightTotal()" />
+  <div class="settings-tab-panel" data-tab="behavior">
+    <div class="form-section" style="max-width: 640px;">
+      <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 12px;">
+        <h3 style="margin: 0;">During a call</h3>
+        <button type="button" class="btn btn-secondary btn-sm settings-edit-only" onclick="applyRecommendedBehavior()">Use recommended defaults</button>
       </div>
+      <p class="text-muted" style="margin-top: 0;">These control patience and length. The recommended preset works well for most property managers.</p>
       <div class="form-group">
-        <label>Completion Weight</label>
-        <input type="number" class="weight" id="score_weight_completion" value="{{ settings.get('score_weight_completion', 25) }}" min="0" max="100" oninput="updateWeightTotal()" />
-      </div>
-      <div class="form-group">
-        <label>Eviction Weight</label>
-        <input type="number" class="weight" id="score_weight_eviction" value="{{ settings.get('score_weight_eviction', 15) }}" min="0" max="100" oninput="updateWeightTotal()" />
-      </div>
-      <div class="form-group">
-        <label>Rental History Weight</label>
-        <input type="number" class="weight" id="score_weight_rental_history" value="{{ settings.get('score_weight_rental_history', 10) }}" min="0" max="100" oninput="updateWeightTotal()" />
-      </div>
-      <div class="form-group">
-        <label>Move Date Weight</label>
-        <input type="number" class="weight" id="score_weight_move_date" value="{{ settings.get('score_weight_move_date', 10) }}" min="0" max="100" oninput="updateWeightTotal()" />
-      </div>
-      <div class="form-group">
-        <label>Household Fit Weight</label>
-        <input type="number" class="weight" id="score_weight_household_fit" value="{{ settings.get('score_weight_household_fit', 5) }}" min="0" max="100" oninput="updateWeightTotal()" />
-      </div>
-      <p class="text-muted">All six weights must total 100.</p>
-    </div>
-
-    <div class="form-section">
-      <h3 style="margin-top: 0;">Call Behavior</h3>
-      <div class="form-group">
-        <label>Max Retries per Question</label>
+        <label>Max retries per question</label>
         <input type="number" id="max_retries_per_question" value="{{ settings.get('max_retries_per_question', 2) }}" min="1" max="5" />
-        <p class="text-muted">How many times to retry a question before advancing</p>
+        <p class="text-muted">How many times to re-ask before moving on (recommended: 2).</p>
       </div>
       <div class="form-group">
-        <label>Silence Timeout (seconds)</label>
+        <label>Silence timeout (seconds)</label>
         <input type="number" id="silence_timeout_seconds" value="{{ settings.get('silence_timeout_seconds', 12) }}" min="2" max="30" />
-        <p class="text-muted">Seconds of silence before timeout</p>
+        <p class="text-muted">How long to wait when the caller goes quiet (recommended: 12 seconds).</p>
       </div>
       <div class="form-group">
-        <label>Max Call Duration (seconds)</label>
+        <label>Max call length (seconds)</label>
         <input type="number" id="max_call_duration_seconds" value="{{ settings.get('max_call_duration_seconds', 600) }}" min="60" max="3600" />
-        <p class="text-muted">Maximum allowed call length (10 min default)</p>
+        <p class="text-muted">Hard limit on call duration (600 = 10 minutes).</p>
       </div>
       <div class="form-group">
         <label>Record calls?</label>
@@ -111,80 +110,161 @@
         <p class="text-muted">When on, inbound calls are recorded via your phone provider.</p>
       </div>
     </div>
+  </div>
 
-    <div class="form-section">
-      <h3 style="margin-top: 0;">CRM Webhook (optional)</h3>
-      <p class="text-muted" style="margin-top: 0;">Send each finished screening to another system. Leave blank if you don't use one.</p>
-      <div class="form-group">
-        <label>Webhook URL</label>
-        <input type="text" id="crm_webhook_url" value="{{ settings.get('crm_webhook_url', '') }}" placeholder="https://your-crm.example.com/hooks/screening" />
-        <p class="text-muted">Results are POSTed here when a call finishes.</p>
+  <div class="settings-tab-panel" data-tab="advanced">
+    <div class="banner banner-warn" style="margin-bottom: 16px;">These options are for power users and IT setup. Most accounts can leave them at the defaults.</div>
+    <div class="form-grid">
+      <div class="form-section">
+        <h3 style="margin-top: 0;">AI reply tuning</h3>
+        <p class="text-muted" style="margin-top: 0;">Fine-tune how creative and long the assistant's replies are. Defaults are tuned for voice calls.</p>
+        <div class="form-group">
+          <label>Reply creativity</label>
+          <input type="number" id="llm_temperature" value="{{ settings.get('llm_temperature', '0.3') }}" min="0" max="1" step="0.05" />
+          <p class="text-muted">0 = very consistent, 1 = more varied. Default 0.3.</p>
+        </div>
+        <div class="form-group">
+          <label>Max reply length</label>
+          <input type="number" id="llm_max_tokens" value="{{ settings.get('llm_max_tokens', 0) }}" min="0" max="2000" step="10" />
+          <p class="text-muted">0 = use the tuned default (keeps replies short for phone calls).</p>
+        </div>
       </div>
-      <div class="form-group">
-        <label>Signing secret (optional)</label>
-        <input type="password" id="crm_webhook_secret" placeholder="Leave blank to keep the current secret" autocomplete="new-password" />
-        <p class="text-muted">Used to sign the webhook so your CRM can verify it. Leave blank to keep what's already saved.</p>
+
+      <div class="form-section">
+        <h3 style="margin-top: 0;">Data retention</h3>
+        <p class="text-muted" style="margin-top: 0;">A daily job removes old data so storage doesn't grow forever. Set any window to <strong>0</strong> to keep that data indefinitely.</p>
+        <div class="form-group">
+          <label>Run automatic cleanup?</label>
+          <select id="retention_enabled">
+            <option value="true" {% if settings.get('retention_enabled', 'true')|string|lower == 'true' %}selected{% endif %}>Yes — clean up daily</option>
+            <option value="false" {% if settings.get('retention_enabled', 'true')|string|lower != 'true' %}selected{% endif %}>No — keep everything</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Delete calls + applicants older than (days)</label>
+          <input type="number" id="retention_calls_days" value="{{ settings.get('retention_calls_days', 365) }}" min="0" max="3650" step="1" />
+        </div>
+        <div class="form-group">
+          <label>Delete recordings older than (days)</label>
+          <input type="number" id="retention_recording_days" value="{{ settings.get('retention_recording_days', 90) }}" min="0" max="3650" step="1" />
+        </div>
+        <div class="form-group">
+          <label>Delete activity-log entries older than (days)</label>
+          <input type="number" id="retention_audit_days" value="{{ settings.get('retention_audit_days', 365) }}" min="0" max="3650" step="1" />
+        </div>
+        <div class="form-group">
+          <label>Purge deleted calls after (days)</label>
+          <input type="number" id="retention_soft_deleted_days" value="{{ settings.get('retention_soft_deleted_days', 30) }}" min="0" max="365" step="1" />
+        </div>
+        <div class="form-group">
+          <label>Close stuck calls after (hours)</label>
+          <input type="number" id="retention_stale_call_hours" value="{{ settings.get('retention_stale_call_hours', 24) }}" min="0" max="720" step="1" />
+          <p class="text-muted">Calls left starting or in progress longer than this are marked failed. 0 = disable.</p>
+        </div>
+      </div>
+
+      <div class="form-section">
+        <h3 style="margin-top: 0;">Send results to another system</h3>
+        <p class="text-muted" style="margin-top: 0;">Optional — automatically send each finished screening to a CRM or other URL. Leave blank if you don't use one.</p>
+        <div class="form-group">
+          <label>Destination URL</label>
+          <input type="text" id="crm_webhook_url" value="{{ settings.get('crm_webhook_url', '') }}" placeholder="https://your-crm.example.com/hooks/screening" />
+        </div>
+        <div class="form-group">
+          <label>Signing secret (optional)</label>
+          <input type="password" id="crm_webhook_secret" placeholder="Leave blank to keep the current secret" autocomplete="new-password" />
+          <p class="text-muted">Lets your other system verify the message is genuine. Leave blank to keep what's already saved.</p>
+        </div>
+      </div>
+
+      <div class="form-section">
+        <h3 style="margin-top: 0;">Do-not-call list</h3>
+        <p class="text-muted" style="margin-top: 0;">Calls from numbers on this list are declined automatically.</p>
+        <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px;">
+          <label for="blacklistPhone" class="sr-only">Phone number to add</label>
+          <input type="text" id="blacklistPhone" placeholder="e.g. +15551234567" aria-label="Phone number to add" style="flex: 1; min-width: 220px;" />
+          <button type="button" class="btn btn-primary settings-edit-only" onclick="withBtnLoading(this, addBlacklist, 'Adding\u2026')">Add to list</button>
+        </div>
+        <div id="blacklistList"><p class="text-muted">Loading…</p></div>
       </div>
     </div>
   </div>
 
   <div class="form-actions">
-    <button type="submit" class="btn btn-primary">💾 Save Settings</button>
-    <button type="button" class="btn btn-secondary" onclick="location.reload()">↺ Reset</button>
+    <button type="submit" class="btn btn-primary settings-save">Save settings</button>
+    <button type="button" class="btn btn-secondary settings-edit-only" onclick="withBtnLoading(this, resetGeneralDefaults, 'Resetting\u2026')">Reset to defaults</button>
+    <button type="button" class="btn btn-secondary" data-discard>Discard changes</button>
   </div>
 </form>
 
-<div class="form-section" style="margin-top: 20px;">
-  <h3 style="margin-top: 0;">🚫 Blocked callers</h3>
-  <p class="text-muted" style="margin-top: 0;">Calls from these numbers are rejected automatically. Add a number to stop it from reaching the assistant.</p>
-  <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px;">
-    <input type="text" id="blacklistPhone" placeholder="e.g. +15551234567" style="flex: 1; min-width: 220px;" />
-    <button type="button" class="btn btn-primary" onclick="withBtnLoading(this, addBlacklist, 'Blocking\u2026')">Block number</button>
+<div id="generalStickySave" class="settings-sticky-save" hidden>
+  <span class="muted">You have unsaved changes on this page.</span>
+  <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+    <button type="submit" form="generalSettingsForm" class="btn btn-primary settings-save">Save settings</button>
+    <button type="button" class="btn btn-secondary" data-discard>Discard changes</button>
   </div>
-  <div id="blacklistList"><p class="text-muted">Loading…</p></div>
 </div>
 
 <script>
-  function weightSum() {
-    return Array.from(document.querySelectorAll('.weight'))
-      .reduce((sum, el) => sum + (parseInt(el.value) || 0), 0);
+  function applyRecommendedBehavior() {
+    document.getElementById('max_retries_per_question').value = 2;
+    document.getElementById('silence_timeout_seconds').value = 12;
+    document.getElementById('max_call_duration_seconds').value = 600;
+    document.getElementById('call_recording_enabled').value = 'false';
+    document.getElementById('max_retries_per_question').dispatchEvent(new Event('input', { bubbles: true }));
+    showMessage('Recommended call behavior applied — click Save settings to keep.');
   }
 
-  function updateWeightTotal() {
-    const total = weightSum();
-    const el = document.getElementById('weightTotal');
-    el.textContent = `Weights total: ${total} / 100`;
-    el.style.color = total === 100 ? 'var(--muted)' : '#dc2626';
+  async function resetGeneralDefaults() {
+    if (!confirm('Reset general settings to built-in defaults? Blocked callers and AI provider settings are not changed.')) return;
+    try {
+      const r = await fetch('/api/settings/general/reset', { method: 'POST' });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        throw new Error(err.detail || r.statusText);
+      }
+      const result = await r.json();
+      let msg = 'General settings reset to defaults';
+      if (result.warnings && result.warnings.length) {
+        msg += ' — ' + result.warnings.join(' ');
+      }
+      showMessage(msg, !!(result.warnings && result.warnings.length));
+      setTimeout(() => location.reload(), 1500);
+    } catch (e) {
+      showMessage('Error: ' + e.message, true);
+    }
   }
 
   async function saveSettings(e) {
     e.preventDefault();
-    const total = weightSum();
-    if (total !== 100) {
-      showMessage(`✗ Scoring weights must total 100 (currently ${total})`, true);
-      return;
-    }
     const num = (id, fallback) => parseInt(document.getElementById(id).value) || fallback;
+    const intOr = (id, fallback) => {
+      const v = parseInt(document.getElementById(id).value);
+      return isNaN(v) ? fallback : v;
+    };
     const data = {
       property_name: document.getElementById('property_name').value,
-      income_multiplier: parseFloat(document.getElementById('income_multiplier').value) || 3.0,
-      monthly_rent_for_income_ratio: num('monthly_rent_for_income_ratio', 0),
-      min_income_threshold: num('min_income_threshold', 0),
+      timezone: document.getElementById('timezone').value,
+      greeting_message: document.getElementById('greeting_message').value.trim(),
+      closing_message: document.getElementById('closing_message').value.trim(),
+      provider_failure_message: document.getElementById('provider_failure_message').value.trim(),
       qualified_score_threshold: num('qualified_score_threshold', 75),
       review_score_threshold: num('review_score_threshold', 40),
-      disqualify_on_eviction: document.getElementById('disqualify_on_eviction').value === 'true',
-      score_weight_income: num('score_weight_income', 35),
-      score_weight_completion: num('score_weight_completion', 25),
-      score_weight_eviction: num('score_weight_eviction', 15),
-      score_weight_rental_history: num('score_weight_rental_history', 10),
-      score_weight_move_date: num('score_weight_move_date', 10),
-      score_weight_household_fit: num('score_weight_household_fit', 5),
       max_retries_per_question: num('max_retries_per_question', 2),
       silence_timeout_seconds: num('silence_timeout_seconds', 12),
       max_call_duration_seconds: num('max_call_duration_seconds', 600),
+      llm_temperature: parseFloat(document.getElementById('llm_temperature').value),
+      llm_max_tokens: num('llm_max_tokens', 0),
       call_recording_enabled: document.getElementById('call_recording_enabled').value === 'true',
+      retention_enabled: document.getElementById('retention_enabled').value === 'true',
+      retention_calls_days: intOr('retention_calls_days', 365),
+      retention_recording_days: intOr('retention_recording_days', 90),
+      retention_audit_days: intOr('retention_audit_days', 365),
+      retention_soft_deleted_days: intOr('retention_soft_deleted_days', 30),
+      retention_stale_call_hours: intOr('retention_stale_call_hours', 24),
       crm_webhook_url: document.getElementById('crm_webhook_url').value.trim(),
     };
+    if (isNaN(data.llm_temperature)) delete data.llm_temperature;
     const secret = document.getElementById('crm_webhook_secret').value.trim();
     if (secret) data.crm_webhook_secret = secret;
 
@@ -198,14 +278,17 @@
         const err = await r.json().catch(() => ({}));
         throw new Error(err.detail || await r.text() || r.statusText);
       }
-      showMessage('✓ General settings saved');
+      const result = await r.json();
+      let msg = 'General settings saved';
+      if (result.warnings && result.warnings.length) {
+        msg += ' — ' + result.warnings.join(' ');
+      }
+      showMessage(msg, !!(result.warnings && result.warnings.length));
       setTimeout(() => location.reload(), 1500);
     } catch (e) {
-      showMessage('✗ Error: ' + e.message, true);
+      showMessage('Error: ' + e.message, true);
     }
   }
-
-  updateWeightTotal();
 
   async function loadBlacklist() {
     const box = document.getElementById('blacklistList');
@@ -215,16 +298,16 @@
       const data = await r.json();
       const list = data.blacklist || [];
       if (!list.length) {
-        box.innerHTML = '<p class="text-muted">No blocked numbers yet.</p>';
+        box.innerHTML = '<div class="empty" style="padding:16px 12px;"><span class="empty-title">No numbers yet</span>Numbers you add to the do-not-call list will appear here.</div>';
         return;
       }
       box.innerHTML = list.map(num => `
         <div class="status-row" style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line);">
           <span>${num}</span>
-          <button type="button" class="btn btn-secondary" style="padding:4px 10px;font-size:13px;" onclick="withBtnLoading(this, () => removeBlacklist('${encodeURIComponent(num)}'), 'Unblocking\u2026')">Unblock</button>
+          <button type="button" class="btn btn-secondary" style="padding:4px 10px;font-size:13px;" onclick="withBtnLoading(this, () => removeBlacklist('${encodeURIComponent(num)}'), 'Removing\u2026')">Remove</button>
         </div>`).join('');
     } catch (e) {
-      box.innerHTML = `<p class="text-muted">Couldn't load blocked numbers: ${e.message}</p>`;
+      box.innerHTML = `<p class="text-muted">Couldn't load the do-not-call list: ${e.message}</p>`;
     }
   }
 
@@ -243,10 +326,10 @@
         throw new Error(err.detail || r.statusText);
       }
       input.value = '';
-      showMessage('✓ Number blocked');
+      showMessage('Added to the do-not-call list');
       loadBlacklist();
     } catch (e) {
-      showMessage('✗ ' + e.message, true);
+      showMessage(e.message, true);
     }
   }
 
@@ -254,10 +337,10 @@
     try {
       const r = await fetch(`/api/settings/blacklist/${num}`, { method: 'DELETE' });
       if (!r.ok) throw new Error(r.statusText);
-      showMessage('✓ Number unblocked');
+      showMessage('Removed from the do-not-call list');
       loadBlacklist();
     } catch (e) {
-      showMessage('✗ ' + e.message, true);
+      showMessage(e.message, true);
     }
   }
 

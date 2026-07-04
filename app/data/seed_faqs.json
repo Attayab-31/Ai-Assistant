@@ -1,0 +1,137 @@
+[
+  {
+    "id": "FAQ1",
+    "topic": "available_properties",
+    "title": "Available properties",
+    "pattern": "\\b(available|availability|listings?|homes?|properties?)\\b",
+    "answer": "We have several homes available and new listings coming soon. I can help match you with the best options based on your move-in date, budget, and household needs.",
+    "active": true,
+    "order": 1
+  },
+  {
+    "id": "FAQ2",
+    "topic": "viewing_scheduling",
+    "title": "Schedule a viewing",
+    "pattern": "\\b(view|tour|showing|schedule|appointment|see it)\\b",
+    "answer": "Once you complete our quick pre-screening questions, I'll send your information to our leasing specialist. They will then find the best possible options to fit your needs.",
+    "active": true,
+    "order": 2
+  },
+  {
+    "id": "FAQ3",
+    "topic": "income_requirements",
+    "title": "Income requirements",
+    "pattern": "\\b(3x|three times|income requirement|income required|qualify income|min(imum)? income)\\b",
+    "answer": "Income is one of several things our leasing team reviews, and we look at every applicant individually rather than relying on a single cutoff. Share your monthly household income and we'll factor it in alongside everything else to find the best home for your situation.",
+    "active": true,
+    "order": 3
+  },
+  {
+    "id": "FAQ4",
+    "topic": "section_8_vouchers",
+    "title": "Section 8 / housing vouchers",
+    "pattern": "\\b(section 8|voucher|vouchers|housing assistance)\\b",
+    "answer": "Absolutely, we are here and have been part of the community for over 30 years.",
+    "active": true,
+    "order": 4
+  },
+  {
+    "id": "FAQ5",
+    "topic": "pet_policy",
+    "title": "Pet policy",
+    "pattern": "\\b(pet[- ]?friendly|allow pets|pet policy|pets allowed)\\b",
+    "answer": "Some properties are pet friendly. I'll just need to know the type, breed, and weight of your pet to confirm availability. You would need to meet a few requirements to make sure it's a safe living environment for everyone.",
+    "active": true,
+    "order": 5
+  },
+  {
+    "id": "FAQ6",
+    "topic": "eviction_policy",
+    "title": "Eviction history",
+    "pattern": "\\b(eviction|evicted|landlord[- ]tenant|court filing)\\b.*\\b(disqualify|deny|problem|automatic|allowed|review)\\b|\\b(disqualify|deny|problem|automatic|allowed|review)\\b.*\\b(eviction|evicted|landlord[- ]tenant|court filing)\\b",
+    "answer": "We do ask about eviction history, but we review each situation individually. We look at you as a whole person, not just your past.",
+    "active": true,
+    "order": 6
+  },
+  {
+    "id": "FAQ7",
+    "topic": "application_fee",
+    "title": "Application fee",
+    "pattern": "\\b(application fee|app fee|fee|cost to apply|apply cost)\\b",
+    "answer": "Our application fee is typically around fifty dollars, depending on the property. This covers credit, background, and verification checks. It is paid to an independent third-party processor.",
+    "active": true,
+    "order": 7
+  },
+  {
+    "id": "FAQ8",
+    "topic": "documents",
+    "title": "Required documents",
+    "pattern": "\\b(documents?|paperwork|proof of income|photo id|id needed)\\b",
+    "answer": "You'll need a photo ID, proof of income, and your rental history. I can send you the application link when you're ready.",
+    "active": true,
+    "order": 8
+  },
+  {
+    "id": "FAQ9",
+    "topic": "approval_time",
+    "title": "Approval timeline",
+    "pattern": "\\b(approval|approved|how long|24|48|turnaround)\\b",
+    "answer": "Most applications are processed within 24 to 48 hours once all documents are submitted.",
+    "active": true,
+    "order": 9
+  },
+  {
+    "id": "FAQ10",
+    "topic": "bad_credit",
+    "title": "Bad credit",
+    "pattern": "\\b(bad credit|credit score|poor credit|credit alone|low credit)\\b",
+    "answer": "We consider the full picture \u2014 income, rental history, stability, and more. Credit alone does not automatically disqualify you.",
+    "active": true,
+    "order": 10
+  },
+  {
+    "id": "FAQ11",
+    "topic": "maintenance",
+    "title": "Emergency maintenance",
+    "pattern": "\\b(maintenance|repair|emergency)\\b",
+    "answer": "Yes. For emergencies like flooding or safety hazards, we respond immediately. For non-emergencies, we create a maintenance ticket right away.",
+    "active": true,
+    "order": 11
+  },
+  {
+    "id": "FAQ12",
+    "topic": "rent_payment",
+    "title": "Rent payment methods",
+    "pattern": "\\b(pay rent|rent payment|payment methods?|money order|mobile app|pickup)\\b",
+    "answer": "Rent can be paid in several ways: online, check, money order, mobile apps \u2014 we even offer a pickup service.",
+    "active": true,
+    "order": 12
+  },
+  {
+    "id": "FAQ13",
+    "topic": "home_sales",
+    "title": "Home sales",
+    "pattern": "\\b(home sale|buy a home|sell my home|sales?|purchase)\\b",
+    "answer": "Yes, we offer home sale solutions and can connect you with a specialist if you're interested in buying or selling.",
+    "active": true,
+    "order": 13
+  },
+  {
+    "id": "FAQ14",
+    "topic": "why_ai",
+    "title": "Why an AI assistant",
+    "pattern": "\\b(why.*ai|robot|virtual assistant|are you ai|automation)\\b",
+    "answer": "Our virtual assistant helps you quickly get the information you need and ensures your details reach the right team member. We've been in this business for over 30 years, and this system helps us serve you faster and more accurately.",
+    "active": true,
+    "order": 14
+  },
+  {
+    "id": "FAQ15",
+    "topic": "speak_to_person",
+    "title": "Speak to a real person",
+    "pattern": "\\b(real person|speak to (a )?(person|human|team member|someone)|talk to (a )?(person|human|agent|team member|someone))\\b",
+    "answer": "Of course. If you'd like to speak with a team member, I can forward your information and have someone reach out as soon as possible.",
+    "active": true,
+    "order": 15
+  }
+]

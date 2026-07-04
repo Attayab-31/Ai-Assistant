@@ -1,6 +1,8 @@
 {% extends "base.html" %}
+{% from "partials/macros.html" import stat_tile, glossary %}
 {% block title %}Analytics{% endblock %}
 {% block page_title %}Analytics{% endblock %}
+{% block page_sub %}<div class="sub">Trends and breakdowns for screening calls over the selected period.</div>{% endblock %}
 {% block head %}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <style>
@@ -19,39 +21,39 @@
   {% for d in [7, 30, 90] %}
     <a href="/admin/analytics?days={{ d }}" class="{{ 'active' if days == d else '' }}">{{ d }} days</a>
   {% endfor %}
-  <a href="/admin/api/analytics/export?days={{ days }}" style="margin-left:auto;">⬇ Export CSV</a>
+  <a href="/admin/api/analytics/export?days={{ days }}" class="btn btn-secondary btn-sm" style="margin-left:auto;">Export CSV</a>
 </div>
 
 <div class="grid stats">
-  <div class="card"><div class="muted">Total Calls</div><div class="metric">{{ stats.total_calls or 0 }}</div></div>
-  <div class="card"><div class="muted">Qualified This Month</div><div class="metric">{{ stats.qualified_this_month or 0 }}</div></div>
-  <div class="card"><div class="muted">Disqualified This Month</div><div class="metric">{{ stats.disqualified_this_month or 0 }}</div></div>
-  <div class="card"><div class="muted">Avg Qualified Score</div><div class="metric">{{ analytics.avg_qualified_score or 0 }}</div></div>
+  {{ stat_tile('Total calls (last ' ~ days ~ ' days)', range_stats.total_calls or 0) }}
+  {{ stat_tile('Qualified (last ' ~ days ~ ' days)', range_stats.qualified or 0) }}
+  {{ stat_tile('Not qualified (last ' ~ days ~ ' days)', range_stats.unqualified or 0) }}
+  {{ stat_tile('Avg qualified score', range_stats.avg_qualified_score or 0) }}
 </div>
 
 <div class="chart-grid">
   <div class="chart-card" style="grid-column: 1 / -1;">
-    <h3>Calls per Day (last {{ days }} days)</h3>
+    <h3>Calls per day (last {{ days }} days)</h3>
     <div class="chart-wrap"><canvas id="callsByDay"></canvas></div>
   </div>
   <div class="chart-card">
-    <h3>Qualification Breakdown</h3>
+    <h3>Applicant results</h3>
     <div class="chart-wrap"><canvas id="qualBreakdown"></canvas></div>
   </div>
   <div class="chart-card">
-    <h3>Call Status</h3>
+    <h3>Call status</h3>
     <div class="chart-wrap"><canvas id="statusBreakdown"></canvas></div>
   </div>
   <div class="chart-card">
-    <h3>Calls by Hour of Day</h3>
+    <h3>Calls by hour of day</h3>
     <div class="chart-wrap"><canvas id="callsByHour"></canvas></div>
   </div>
   <div class="chart-card">
-    <h3>Questions Answered Distribution</h3>
+    <h3>Questions answered</h3>
     <div class="chart-wrap"><canvas id="questionsDist"></canvas></div>
   </div>
   <div class="chart-card">
-    <h3>LLM Provider Usage</h3>
+    <h3>{{ glossary('llm') }} usage by provider</h3>
     <div class="chart-wrap"><canvas id="llmUsage"></canvas></div>
   </div>
 </div>
@@ -67,6 +69,29 @@
     accent: '#2563eb',
     palette: ['#2563eb', '#22c55e', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#ec4899', '#94a3b8'],
   };
+
+  const QUAL_LABELS = {
+    qualified: 'Qualified',
+    review: 'Needs review',
+    unqualified: 'Not qualified',
+    unknown: 'Unknown',
+  };
+
+  const STATUS_LABELS = {
+    initiated: 'Starting',
+    in_progress: 'On call',
+    completed: 'Completed',
+    failed: 'Failed',
+    abandoned: 'Abandoned',
+  };
+
+  function friendlyQualLabel(key) {
+    return QUAL_LABELS[key] || key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  }
+
+  function friendlyStatusLabel(key) {
+    return STATUS_LABELS[key] || key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  }
 
   const noData = (obj) => !obj || (Array.isArray(obj) ? obj.length === 0 : Object.keys(obj).length === 0);
 
@@ -109,7 +134,7 @@
     new Chart(document.getElementById('qualBreakdown'), {
       type: 'doughnut',
       data: {
-        labels,
+        labels: labels.map(friendlyQualLabel),
         datasets: [{ data: labels.map(k => data[k]), backgroundColor: labels.map(k => COLORS[k] || COLORS.unknown) }],
       },
       options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom' } } },
@@ -123,7 +148,7 @@
     const labels = Object.keys(data);
     new Chart(document.getElementById('statusBreakdown'), {
       type: 'bar',
-      data: { labels, datasets: [{ label: 'Calls', data: labels.map(k => data[k]), backgroundColor: COLORS.accent }] },
+      data: { labels: labels.map(friendlyStatusLabel), datasets: [{ label: 'Calls', data: labels.map(k => data[k]), backgroundColor: COLORS.accent }] },
       options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, ticks: { precision: 0 } } } },
     });
   })();

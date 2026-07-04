@@ -225,6 +225,7 @@ if database_url.get_backend_name() == "postgresql":
                 "pool_size": settings.database_pool_size,
                 "max_overflow": settings.database_max_overflow,
                 "pool_recycle": settings.database_pool_recycle_seconds,
+                "pool_timeout": 30,
             }
         )
 

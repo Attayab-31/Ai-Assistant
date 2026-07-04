@@ -1,17 +1,22 @@
 """Celery application configuration for background tasks."""
 
 from celery import Celery
+from celery.schedules import crontab
 
-from config import settings
+from config import celery_redis_ssl_options, settings
 
 celery_app = Celery(
     "ai_tenant_screener",
     broker=settings.celery_broker_url,
     backend=settings.celery_result_backend,
-    include=["app.services.email_service"],
+    include=[
+        "app.services.email_service",
+        "app.services.retention_service",
+    ],
 )
 
-celery_app.conf.update(
+_ssl = celery_redis_ssl_options()
+_celery_conf = dict(
     task_serializer="json",
     accept_content=["json"],
     result_serializer="json",
@@ -38,5 +43,14 @@ celery_app.conf.update(
             "task": "app.services.email_service.send_daily_digest_task",
             "schedule": 86400.0,
         },
+        "daily-data-retention-cleanup": {
+            "task": "app.services.retention_service.purge_expired_data_task",
+            "schedule": crontab(hour=3, minute=0),
+        },
     },
 )
+if _ssl:
+    _celery_conf["broker_use_ssl"] = _ssl
+    _celery_conf["redis_backend_use_ssl"] = _ssl
+
+celery_app.conf.update(_celery_conf)

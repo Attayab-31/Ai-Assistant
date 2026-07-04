@@ -123,36 +123,32 @@
 
   <audio id="audioPlayer" playsinline webkit-playsinline style="display:none"></audio>
 
+  <script src="/static/js/voice-call.js"></script>
   <script>
     const $ = (id) => document.getElementById(id);
-    const APP_URL = {{ app_url|tojson }};
 
-    // Minimal silent WAV — played synchronously on tap so mobile browsers allow
-    // later WebSocket-driven audio.play() calls (iOS/Android autoplay policy).
-    const SILENT_WAV =
-      "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAAAAAA==";
-
-    function unlockAudioPlayback() {
-      const player = $("audioPlayer");
-      if (!player || player.dataset.audioUnlocked === "1") return;
-      player.src = SILENT_WAV;
-      player.volume = 0.001;
-      const p = player.play();
-      if (p && typeof p.then === "function") {
-        p.then(() => {
-          player.dataset.audioUnlocked = "1";
-          try { player.pause(); player.currentTime = 0; } catch (e) {}
-          player.removeAttribute("src");
-          try { player.load(); } catch (e) {}
-          player.volume = 0.9;
-        }).catch(() => {});
-      }
-    }
-
-    // call lifecycle: idle | connecting | live | ended
     let phase = "idle";
     let callId = null;
     let ws = null;
+    let voiceMic = null;
+
+    const playback = VoiceCall.createPlaybackManager({
+      playerId: "audioPlayer",
+      volume: 0.9,
+      getMic: () => voiceMic,
+      onSpeaking() {
+        if (phase === "live") $("caption").textContent = "Assistant speaking…";
+      },
+      onMicLive() {
+        if (phase === "live") $("caption").textContent = "Listening…";
+      },
+      onStopPlayback() {},
+    });
+    const {
+      enqueueAgentAudio,
+      stopAgentPlayback,
+      clearPendingUnmute,
+    } = playback;
 
     function setPhase(p, caption) {
       phase = p;
@@ -170,135 +166,6 @@
       if (caption !== undefined) $("caption").textContent = caption;
     }
 
-    /* ───────────────── Mic: streams PCM16 @ 8kHz (same as full console) ───────────────── */
-    class VoiceStreamingMic {
-      constructor(ws) { this.ws = ws; this.stream = null; this.ctx = null; this.processor = null; this.active = false; this.muted = true; this.agentSpeaking = false; }
-      async start() {
-        this.stream = await navigator.mediaDevices.getUserMedia({
-          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
-        });
-        this.ctx = new (window.AudioContext || window.webkitAudioContext)();
-        const source = this.ctx.createMediaStreamSource(this.stream);
-        this.processor = this.ctx.createScriptProcessor(2048, 1, 1);
-        this.processor.onaudioprocess = (e) => this._onAudio(e);
-        source.connect(this.processor);
-        const silent = this.ctx.createGain(); silent.gain.value = 0;
-        this.processor.connect(silent); silent.connect(this.ctx.destination);
-        this.active = true;
-      }
-      _floatToPcm16Chunk(input) {
-        const ratio = this.ctx.sampleRate / 8000;
-        const outLen = Math.max(1, Math.floor(input.length / ratio));
-        const int16 = new Int16Array(outLen);
-        for (let i = 0; i < outLen; i++) {
-          const idx = Math.min(input.length - 1, Math.floor(i * ratio));
-          int16[i] = Math.max(-32768, Math.min(32767, Math.round(input[idx] * 32767)));
-        }
-        return int16;
-      }
-      _sendMediaChunk(int16) {
-        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-        const bytes = new Uint8Array(int16.buffer);
-        let bin = ""; for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-        this.ws.send(JSON.stringify({ event: "media", media: { payload: btoa(bin), encoding: "linear16", sample_rate: 8000 } }));
-      }
-      _onAudio(e) {
-        if (!this.active) return;
-        const input = e.inputBuffer.getChannelData(0);
-        if (this.agentSpeaking) { this._sendMediaChunk(this._floatToPcm16Chunk(input)); return; }
-        if (this.muted) return;
-        this._sendMediaChunk(this._floatToPcm16Chunk(input));
-      }
-      unmute() { this.muted = false; this.agentSpeaking = false; }
-      mute() { this.muted = true; this.agentSpeaking = false; }
-      stop() {
-        this.active = false; this.mute();
-        if (this.processor) { this.processor.disconnect(); this.processor = null; }
-        if (this.ctx) { this.ctx.close().catch(() => {}); this.ctx = null; }
-        if (this.stream) { this.stream.getTracks().forEach(t => t.stop()); this.stream = null; }
-      }
-    }
-
-    let voiceMic = null;
-    const agentAudioQueue = [];
-    let agentAudioPlaying = false;
-    let playSessionId = 0;
-    let activeBlobUrl = null;
-    let playbackWatchdog = null;
-    let pendingUnmute = false;
-    let agentQuietUntil = 0;
-    const POST_PLAYBACK_MUTE_MS = 350;
-
-    function isPlayerBusy() { const p = $("audioPlayer"); return !!(p.src && !p.paused && !p.ended); }
-    function invalidatePlayback() { playSessionId += 1; }
-    function resetAudioElement() {
-      const p = $("audioPlayer"); p.onended = null; p.onerror = null;
-      try { p.pause(); p.currentTime = 0; } catch (e) {}
-      if (activeBlobUrl) { URL.revokeObjectURL(activeBlobUrl); activeBlobUrl = null; }
-      p.removeAttribute("src"); try { p.load(); } catch (e) {}
-    }
-    function ensureAgentPlayback() {
-      if (!agentAudioQueue.length) { agentAudioPlaying = false; return; }
-      if (agentAudioPlaying && isPlayerBusy()) return;
-      if (agentAudioPlaying && !isPlayerBusy()) agentAudioPlaying = false;
-      playNextAgentAudio();
-    }
-    function schedulePlaybackWatchdog() {
-      if (playbackWatchdog) clearTimeout(playbackWatchdog);
-      playbackWatchdog = setTimeout(() => {
-        playbackWatchdog = null;
-        if (!agentAudioQueue.length) return;
-        if (!isPlayerBusy()) { agentAudioPlaying = false; playNextAgentAudio(); }
-      }, 2000);
-    }
-    function stopAgentPlayback() {
-      invalidatePlayback(); resetAudioElement();
-      agentAudioQueue.length = 0; agentAudioPlaying = false; pendingUnmute = false;
-      if (playbackWatchdog) { clearTimeout(playbackWatchdog); playbackWatchdog = null; }
-      if (voiceMic) { voiceMic.agentSpeaking = false; voiceMic.muted = false; }
-    }
-    function onAgentSpeaking() { pendingUnmute = false; if (voiceMic) voiceMic.agentSpeaking = true; }
-    function tryUnmuteMic() {
-      if (!pendingUnmute || !voiceMic) return;
-      const wait = agentQuietUntil - Date.now();
-      if (wait > 0) { setTimeout(tryUnmuteMic, wait); return; }
-      pendingUnmute = false; voiceMic.unmute();
-      if (phase === "live") $("caption").textContent = "Listening…";
-    }
-    function onAgentDone() {
-      if (voiceMic) voiceMic.agentSpeaking = false;
-      pendingUnmute = true; agentQuietUntil = Date.now() + POST_PLAYBACK_MUTE_MS;
-      tryUnmuteMic();
-    }
-    function playNextAgentAudio() {
-      if (!agentAudioQueue.length) { agentAudioPlaying = false; return; }
-      agentAudioPlaying = true; onAgentSpeaking();
-      if (phase === "live") $("caption").textContent = "Assistant speaking…";
-      const { b64, turnEnd } = agentAudioQueue.shift();
-      const session = playSessionId;
-      playAudio(b64, () => { if (session !== playSessionId) return; if (turnEnd) onAgentDone(); playNextAgentAudio(); });
-    }
-    function enqueueAgentAudio(b64, turnEnd = true) {
-      agentAudioQueue.push({ b64, turnEnd: turnEnd !== false });
-      ensureAgentPlayback(); schedulePlaybackWatchdog();
-    }
-    function playAudio(b64, onEnded) {
-      if (!b64) { if (onEnded) onEnded(); return; }
-      const session = playSessionId; const player = $("audioPlayer");
-      const finish = () => { if (session !== playSessionId) return; if (onEnded) onEnded(); };
-      player.onended = finish; player.onerror = () => finish();
-      if (activeBlobUrl) { URL.revokeObjectURL(activeBlobUrl); activeBlobUrl = null; }
-      try {
-        const bin = atob(b64); const arr = new Uint8Array(bin.length);
-        for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
-        const blob = new Blob([arr], { type: "audio/wav" });
-        activeBlobUrl = URL.createObjectURL(blob); player.src = activeBlobUrl;
-      } catch (e) { player.src = "data:audio/wav;base64," + b64; }
-      player.volume = 0.9;
-      player.play().catch(() => finish());
-    }
-
-    /* ───────────────── Call control ───────────────── */
     async function api(path, body) {
       const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
       if (!r.ok) throw new Error((await r.text()) || r.statusText);
@@ -315,7 +182,7 @@
         ws.onopen = async () => {
           ws.send(JSON.stringify({ event: "start" }));
           try {
-            voiceMic = new VoiceStreamingMic(ws);
+            voiceMic = new VoiceCall.VoiceStreamingMic(ws);
             await voiceMic.start();
             setPhase("live", "Connected — say hello!");
           } catch (e) {
@@ -350,9 +217,8 @@
 
     function cleanup() {
       if (voiceMic) { voiceMic.stop(); voiceMic = null; }
-      pendingUnmute = false; invalidatePlayback();
-      agentAudioQueue.length = 0; agentAudioPlaying = false;
-      resetAudioElement();
+      clearPendingUnmute();
+      playback.stopAgentPlayback();
       if (ws) { try { ws.send(JSON.stringify({ event: "stop" })); } catch (_) {} try { ws.close(); } catch (_) {} ws = null; }
     }
 
@@ -366,7 +232,7 @@
     }
 
     $("orb").addEventListener("click", () => {
-      unlockAudioPlayback();
+      VoiceCall.unlockAudioPlayback("audioPlayer", 0.9);
       if (phase === "idle" || phase === "ended") startCall();
       else if (phase === "live") endCall("Call ended.");
       // ignore taps while connecting

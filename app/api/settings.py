@@ -7,7 +7,6 @@ providers from the admin panel without restarting the server.
 
 import json
 import logging
-import time
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,8 +20,6 @@ from app.schemas.settings import (
     GeneralSettingsUpdate,
     LLMProviderSwitch,
     ProviderApiKeyUpdate,
-    ProviderTestRequest,
-    ProviderTestResponse,
     QuestionsUpdateRequest,
     STTProviderSwitch,
     TTSProviderSwitch,
@@ -213,12 +210,16 @@ async def set_provider_api_key(
     encrypted = encrypt_value(payload.api_key)
     await crud.set_setting(db, key_name, encrypted, updated_by=user.id)
 
+    reload_applied = True
+    reload_error = None
     try:
         await provider_registry.reload_from_db(db)
     except Exception as e:
         # Persist the key even if a rebuild fails (e.g. the key is for a backup
         # provider that isn't active); it still takes effect on the next call.
         logger.warning("Registry reload after API key update failed: %s", e)
+        reload_applied = False
+        reload_error = str(e)
 
     await crud.create_audit_log(
         db,
@@ -230,7 +231,12 @@ async def set_provider_api_key(
     )
 
     logger.info(f"API key set/rotated for {payload.provider} by {user.email}")
-    return {"success": True, "provider": payload.provider}
+    return {
+        "success": True,
+        "provider": payload.provider,
+        "reload_applied": reload_applied,
+        "reload_error": reload_error,
+    }
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -238,138 +244,90 @@ async def set_provider_api_key(
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-@router.post("/test", response_model=ProviderTestResponse)
-async def test_provider(
-    payload: ProviderTestRequest,
-    user: AdminUser = Depends(require_scope("settings")),
-):
-    """
-    Test a provider by sending a sample request and measuring latency.
-    Used by the "Test" buttons in the admin providers panel.
-    """
-    start = time.time()
-    try:
-        if payload.provider_type == "llm":
-            instance = _get_llm_instance(payload.provider)
-            response = await instance.get_response(
-                system_prompt="You are a helpful test assistant.",
-                messages=[{"role": "user", "content": payload.test_text}],
-                max_tokens=50,
-            )
-            latency_ms = round((time.time() - start) * 1000, 1)
-            return ProviderTestResponse(
-                success=True, latency_ms=latency_ms, response=response
-            )
-
-        elif payload.provider_type == "tts":
-            instance = _get_tts_instance(payload.provider)
-            audio = await instance.synthesize(payload.test_text)
-            latency_ms = round((time.time() - start) * 1000, 1)
-            return ProviderTestResponse(
-                success=len(audio) > 0,
-                latency_ms=latency_ms,
-                response=f"Generated {len(audio)} bytes of audio",
-            )
-
-        elif payload.provider_type == "stt":
-            instance = _get_stt_instance(payload.provider)
-            ok, latency = await instance.ping()
-            return ProviderTestResponse(
-                success=ok,
-                latency_ms=latency,
-                response="STT health check passed" if ok else None,
-            )
-
-        else:
-            raise HTTPException(status_code=400, detail="Invalid provider_type")
-
-    except Exception as e:
-        latency_ms = round((time.time() - start) * 1000, 1)
-        logger.error(
-            f"Provider test failed ({payload.provider_type}/{payload.provider}): {e}"
-        )
-        return ProviderTestResponse(success=False, latency_ms=latency_ms, error=str(e))
-
-
-def _get_llm_instance(provider: str):
-    from app.providers.llm.gemini_llm import GeminiLLMProvider
-    from app.providers.llm.groq_llm import GroqLLMProvider
-    from app.providers.llm.openai_llm import OpenAILLMProvider
-    from app.providers.llm.openrouter_llm import OpenRouterLLMProvider
-
-    mapping = {
-        "groq": GroqLLMProvider,
-        "openai": OpenAILLMProvider,
-        "openrouter": OpenRouterLLMProvider,
-        "gemini": GeminiLLMProvider,
-    }
-    cls = mapping.get(provider)
-    if not cls:
-        raise ValueError(f"Unknown LLM provider: {provider}")
-    return cls()
-
-
-def _get_tts_instance(provider: str):
-    from app.providers.tts.deepgram_tts import DeepgramTTSProvider
-    from app.providers.tts.google_tts import GoogleTTSProvider
-
-    mapping = {"google": GoogleTTSProvider, "deepgram": DeepgramTTSProvider}
-    cls = mapping.get(provider)
-    if not cls:
-        raise ValueError(f"Unknown TTS provider: {provider}")
-    return cls()
-
-
-def _get_stt_instance(provider: str):
-    from app.providers.stt.deepgram_stt import DeepgramSTTProvider
-    from app.providers.stt.groq_stt import GroqSTTProvider
-
-    mapping = {"deepgram": DeepgramSTTProvider, "groq": GroqSTTProvider}
-    cls = mapping.get(provider)
-    if not cls:
-        raise ValueError(f"Unknown STT provider: {provider}")
-    return cls()
-
-
 # ──────────────────────────────────────────────────────────────────────────────
-# Provider Status / Health
+# Provider Health
 # ──────────────────────────────────────────────────────────────────────────────
-
-
-@router.get("/status")
-async def get_provider_status(user: AdminUser = Depends(require_scope("settings"))):
-    """Get current active provider status for the admin dashboard panel."""
-    return provider_registry.get_status()
 
 
 @router.get("/health")
-async def check_provider_health(user: AdminUser = Depends(require_scope("settings"))):
-    """Ping all active providers and return health/latency info."""
-    results = {}
+async def check_provider_health(
+    db: AsyncSession = Depends(get_db),
+    user: AdminUser = Depends(require_scope("settings")),
+):
+    """Ping active providers and configured backups; return health/latency info."""
+    from app.core.call_settings import build_call_provider_bundle, load_call_settings_snapshot
+    from app.providers.stt.deepgram_stt import DeepgramSTTProvider
+    from app.providers.stt.groq_stt import GroqSTTProvider
+    from config import settings as env_settings
 
-    checks = [
-        ("llm", provider_registry._llm, provider_registry.llm_name),
-        ("stt", provider_registry._stt, provider_registry.stt_name),
-        ("tts", provider_registry._tts, provider_registry.tts_name),
-    ]
+    snapshot = await load_call_settings_snapshot(db)
+    bundle = build_call_provider_bundle(snapshot)
 
-    for ptype, instance, name in checks:
-        if instance:
-            try:
-                healthy, latency = await instance.ping()
-                results[ptype] = {
-                    "provider": name,
-                    "healthy": healthy,
-                    "latency_ms": latency,
-                }
-            except Exception as e:
-                results[ptype] = {"provider": name, "healthy": False, "error": str(e)}
-        else:
-            results[ptype] = {
+    def _has_key(provider: str) -> bool:
+        env_map = {
+            "groq": "groq_api_key",
+            "openai": "openai_api_key",
+            "openrouter": "openrouter_api_key",
+            "gemini": "gemini_api_key",
+            "deepgram": "deepgram_api_key",
+        }
+        attr = env_map.get(provider)
+        if attr and (getattr(env_settings, attr, "") or "").strip():
+            return True
+        return False
+
+    async def _ping(instance, name: str, *, role: str = "primary") -> dict:
+        if instance is None:
+            return {"provider": name, "healthy": False, "role": role, "error": "Not configured"}
+        try:
+            healthy, latency = await instance.ping()
+            return {
                 "provider": name,
-                "healthy": False,
-                "error": "Not initialized",
+                "healthy": healthy,
+                "latency_ms": latency,
+                "role": role,
             }
+        except Exception as e:
+            return {"provider": name, "healthy": False, "role": role, "error": str(e)}
+
+    results: dict = {}
+
+    llm_primary = await _ping(bundle.llm, bundle.llm_name, role="primary")
+    llm_backups = []
+    for name, inst in bundle.llm_by_name.items():
+        if name != bundle.llm_name:
+            llm_backups.append(await _ping(inst, name, role="backup"))
+    results["llm"] = llm_primary
+    results["llm_backups"] = llm_backups
+
+    stt_primary = await _ping(bundle.stt, bundle.stt_name, role="primary")
+    stt_backups = []
+    for name, factory_model in (
+        ("deepgram", snapshot.stt_model),
+        ("groq", snapshot.groq_stt_model),
+    ):
+        if name == bundle.stt_name:
+            continue
+        if name == "deepgram" and not _has_key("deepgram"):
+            continue
+        if name == "groq" and not _has_key("groq"):
+            continue
+        inst = (
+            DeepgramSTTProvider(model=factory_model)
+            if name == "deepgram"
+            else GroqSTTProvider(model=factory_model)
+        )
+        stt_backups.append(await _ping(inst, name, role="backup"))
+    results["stt"] = stt_primary
+    results["stt_backups"] = stt_backups
+
+    tts_primary = await _ping(bundle.tts, bundle.tts_name, role="primary")
+    tts_backups = []
+    for name, inst in bundle.tts_by_name.items():
+        if name != bundle.tts_name:
+            tts_backups.append(await _ping(inst, name, role="backup"))
+    results["tts"] = tts_primary
+    results["tts_backups"] = tts_backups
 
     return results
 
@@ -379,22 +337,6 @@ async def check_provider_health(user: AdminUser = Depends(require_scope("setting
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-@router.get("/questions")
-async def get_questions(
-    db: AsyncSession = Depends(get_db),
-    user: AdminUser = Depends(require_scope("settings")),
-):
-    """Get current screening questions configuration."""
-    from app.core.screening_flow import FLOW_STATE_VALUES, normalize_questions
-
-    raw = await crud.get_setting_value(db, "screening_questions", [])
-    questions = normalize_questions(raw)
-    return {
-        "questions": questions,
-        "flow_state_count": len(FLOW_STATE_VALUES),
-    }
-
-
 @router.put("/questions")
 async def update_questions(
     payload: QuestionsUpdateRequest,
@@ -402,8 +344,8 @@ async def update_questions(
     db: AsyncSession = Depends(get_db),
     user: AdminUser = Depends(require_scope("settings", edit=True)),
 ):
-    """Update screening question wording while preserving the canonical flow states."""
-    from app.core.screening_flow import validate_questions_for_save
+    """Update screening questions (add, delete, reorder, scoring)."""
+    from app.core.question_flow import validate_questions_for_save
 
     old_questions = await crud.get_setting_value(db, "screening_questions", [])
     try:
@@ -413,6 +355,9 @@ async def update_questions(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    from app.core.question_flow import question_save_warnings
+
+    warnings = question_save_warnings(new_questions)
     await crud.set_setting(
         db, "screening_questions", json.dumps(new_questions), updated_by=user.id
     )
@@ -427,7 +372,7 @@ async def update_questions(
         ip_address=request.client.host if request.client else None,
     )
 
-    return {"success": True, "questions": new_questions}
+    return {"success": True, "questions": new_questions, "warnings": warnings}
 
 
 @router.post("/questions/reset")
@@ -454,18 +399,18 @@ async def reset_questions_to_defaults(
 
 
 @router.get("/questions/preview")
-@router.post("/questions/preview")
 async def preview_conversation_flow(
     db: AsyncSession = Depends(get_db),
     user: AdminUser = Depends(require_scope("settings")),
 ):
     """Simulate the conversation flow through active questions for preview."""
-    from app.core.screening_flow import (
-        FLOW_STATE_VALUES,
-        build_greeting_intro,
-        is_skip_state,
+    from app.core.question_flow import (
+        first_active_question_state,
         normalize_questions,
+        ordered_active_questions,
+        should_skip_question,
     )
+    from app.core.screening_flow import build_greeting_intro
 
     questions = normalize_questions(
         await crud.get_setting_value(db, "screening_questions", [])
@@ -475,17 +420,11 @@ async def preview_conversation_flow(
     )
     business = (property_name or "").strip() or "Ready Rentals Online"
 
-    # Sample path: no pets, no eviction → 15 active of 17 flow states
     sample_data = {"has_pets": False, "has_eviction": False}
-
     intro = build_greeting_intro(business)
-
+    first_state = first_active_question_state(questions)
     first_q = next(
-        (
-            q
-            for q in questions
-            if q.get("state") == "Q1_FULL_NAME" and q.get("active", True)
-        ),
+        (q for q in questions if q.get("state") == first_state),
         questions[0] if questions else None,
     )
     flow = [
@@ -495,13 +434,11 @@ async def preview_conversation_flow(
         }
     ]
 
-    for q in sorted(
-        [q for q in questions if q.get("active", True)], key=lambda x: x.get("order", 0)
-    ):
+    for q in ordered_active_questions(questions, sample_data):
         state = q.get("state", "")
-        if state == "Q1_FULL_NAME":
+        if first_q and state == first_q.get("state"):
             continue
-        if is_skip_state(state, sample_data):
+        if should_skip_question(q, sample_data):
             flow.append(
                 {
                     "speaker": "AI",
@@ -518,35 +455,17 @@ async def preview_conversation_flow(
             "text": "Thank you so much for your time. We'll be in touch soon!",
         }
     )
-    active_count = sum(
-        1 for state in FLOW_STATE_VALUES if not is_skip_state(state, sample_data)
-    )
+    active_list = ordered_active_questions(questions, sample_data)
     return {
         "flow": flow,
-        "flow_state_count": len(FLOW_STATE_VALUES),
-        "active_question_count_sample": active_count,
+        "flow_state_count": len(questions),
+        "active_question_count_sample": len(active_list),
     }
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Screening FAQs Management
 # ──────────────────────────────────────────────────────────────────────────────
-
-
-@router.get("/faqs")
-async def get_faqs(
-    db: AsyncSession = Depends(get_db),
-    user: AdminUser = Depends(require_scope("settings")),
-):
-    """Get current screening FAQ configuration."""
-    from app.core.screening_flow import FAQ_TOPIC_VALUES, normalize_faqs
-
-    raw = await crud.get_setting_value(db, "screening_faqs", [])
-    faqs = normalize_faqs(raw)
-    return {
-        "faqs": faqs,
-        "faq_topic_count": len(FAQ_TOPIC_VALUES),
-    }
 
 
 @router.put("/faqs")
@@ -607,33 +526,67 @@ async def reset_faqs_to_defaults(
     return {"success": True, "faqs": DEFAULT_FAQS}
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Email Settings
-# ──────────────────────────────────────────────────────────────────────────────
-
-
-@router.get("/email")
-async def get_email_settings(
+@router.post("/faqs/test")
+async def test_faq_phrase(
+    payload: dict,
     db: AsyncSession = Depends(get_db),
     user: AdminUser = Depends(require_scope("settings")),
 ):
-    """Get current email configuration."""
-    keys = [
-        "landlord_email",
-        "email_from_name",
-        "email_from_address",
-        "email_subject_template",
-        "email_body_template",
-        "cc_emails",
-        "bcc_emails",
-        "email_notifications_enabled",
-        "email_qualified_only",
-        "email_include_transcript",
+    """Server-side FAQ match preview (same logic as live calls)."""
+    import re
+
+    from app.core.conversation import _select_faq_block
+    from app.core.screening_flow import normalize_faqs, validate_faqs_for_save
+
+    phrase = str(payload.get("phrase") or "").strip()
+    if not phrase:
+        raise HTTPException(status_code=400, detail="phrase is required")
+
+    raw_faqs = payload.get("faqs")
+    if raw_faqs is not None:
+        try:
+            faqs = validate_faqs_for_save(raw_faqs)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    else:
+        faqs = normalize_faqs(await crud.get_setting_value(db, "screening_faqs", []))
+
+    active = [
+        entry
+        for entry in normalize_faqs(faqs)
+        if entry.get("active", True) and entry.get("answer")
     ]
-    result = {}
-    for key in keys:
-        result[key] = await crud.get_setting_value(db, key, "")
-    return result
+
+    matched: list[dict] = []
+    for entry in active:
+        pattern = str(entry.get("pattern") or "").strip()
+        if not pattern:
+            continue
+        try:
+            if re.search(pattern, phrase, re.I):
+                matched.append(
+                    {
+                        "topic": entry.get("topic", ""),
+                        "title": entry.get("title", ""),
+                        "answer": str(entry.get("answer", "")).strip(),
+                    }
+                )
+        except re.error:
+            continue
+
+    block, is_full = _select_faq_block(active, phrase)
+    return {
+        "phrase": phrase,
+        "matched": matched,
+        "is_full_block": is_full,
+        "uses_question_heuristic": bool(not matched and is_full),
+        "prompt_block_preview": block[:500],
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Email Settings
+# ──────────────────────────────────────────────────────────────────────────────
 
 
 async def _persist_email_settings(
@@ -658,59 +611,73 @@ async def _persist_email_settings(
     return updates
 
 
-@router.put("/email")
-async def update_email_settings(
-    payload: EmailSettingsUpdate,
-    request: Request,
-    db: AsyncSession = Depends(get_db),
-    user: AdminUser = Depends(require_scope("settings", edit=True)),
-):
-    """Update email notification settings."""
-    updates = await _persist_email_settings(db, payload, user, request)
-    return {"success": True, "updated": list(updates.keys())}
-
-
 @router.post("/email/test")
 async def send_test_email(
     payload: dict,
     db: AsyncSession = Depends(get_db),
-    user: AdminUser = Depends(require_scope("settings")),
+    user: AdminUser = Depends(require_scope("settings", edit=True)),
 ):
-    """Send a test email using the SAVED sender identity (not just env)."""
+    """Send a test email using saved templates, sender identity, and sample data."""
     import resend
 
+    from app.services.email_service import (
+        _split_emails,
+        build_test_email_preview,
+    )
     from config import settings as app_settings
 
     if not app_settings.resend_api_key:
         raise HTTPException(status_code=400, detail="RESEND_API_KEY not configured")
 
-    # Use the same saved sender identity that real screening emails use, so the
-    # test actually verifies the admin's configured from-name/address.
-    saved_from_name = await crud.get_setting_value(db, "email_from_name", "")
-    saved_from_address = await crud.get_setting_value(db, "email_from_address", "")
-    saved_landlord = await crud.get_setting_value(db, "landlord_email", "")
+    email_keys = (
+        "landlord_email",
+        "email_from_name",
+        "email_from_address",
+        "email_subject_template",
+        "email_body_template",
+        "email_include_transcript",
+        "cc_emails",
+        "bcc_emails",
+        "timezone",
+    )
+    email_settings = {
+        key: await crud.get_setting_value(db, key, "") for key in email_keys
+    }
 
-    from_name = saved_from_name or app_settings.email_from_name
-    from_address = saved_from_address or app_settings.email_from
+    from_name = email_settings.get("email_from_name") or app_settings.email_from_name
+    from_address = email_settings.get("email_from_address") or app_settings.email_from
 
     test_recipient = (
-        payload.get("email") or saved_landlord or app_settings.default_landlord_email
+        payload.get("email")
+        or email_settings.get("landlord_email")
+        or app_settings.default_landlord_email
     )
     if not test_recipient:
         raise HTTPException(status_code=400, detail="No recipient email provided")
 
+    subject, html_body = build_test_email_preview(email_settings)
+
     try:
         resend.api_key = app_settings.resend_api_key
-        result = resend.Emails.send(
-            {
-                "from": f"{from_name} <{from_address}>",
-                "to": [test_recipient],
-                "subject": "Test Email - AI Tenant Screener",
-                "html": "<p>This is a test email from your AI Tenant Screening Platform. "
-                "If you received this, your email configuration is working correctly!</p>",
-            }
-        )
-        return {"sent": True, "email_id": result.get("id")}
+        send_payload: dict = {
+            "from": f"{from_name} <{from_address}>",
+            "to": [test_recipient],
+            "subject": f"[TEST] {subject}",
+            "html": (
+                "<p style=\"font-size:13px;color:#64748b;margin:0 0 12px;\">"
+                "This is a preview using your saved email templates and sample data."
+                "</p>"
+                + html_body
+            ),
+        }
+        cc = _split_emails(email_settings.get("cc_emails"))
+        bcc = _split_emails(email_settings.get("bcc_emails"))
+        if cc:
+            send_payload["cc"] = cc
+        if bcc:
+            send_payload["bcc"] = bcc
+        result = resend.Emails.send(send_payload)
+        return {"sent": True, "email_id": result.get("id"), "subject": subject}
     except Exception as e:
         logger.error("Test email failed: %s", e)
         raise HTTPException(
@@ -730,18 +697,43 @@ async def post_email_settings(
     return {"success": True, "updated": list(updates.keys())}
 
 
+EMAIL_RESET_DEFAULTS = {
+    "email_from_name": "AI Tenant Screener",
+    "email_from_address": "",
+    "email_subject_template": "New Screening Result: {name}",
+    "email_body_template": "",
+    "email_notifications_enabled": "true",
+    "email_qualified_only": "false",
+    "email_include_transcript": "false",
+    "cc_emails": "",
+    "bcc_emails": "",
+}
+
+
+@router.post("/email/reset")
+async def reset_email_settings_to_defaults(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    user: AdminUser = Depends(require_scope("settings", edit=True)),
+):
+    """Reset email templates and delivery options (keeps recipient address)."""
+    for key, value in EMAIL_RESET_DEFAULTS.items():
+        await crud.set_setting(db, key, str(value), updated_by=user.id)
+
+    await crud.create_audit_log(
+        db,
+        action="reset_email_settings",
+        admin_user_id=user.id,
+        entity_type="setting",
+        new_value={"keys": sorted(EMAIL_RESET_DEFAULTS.keys())},
+        ip_address=request.client.host if request.client else None,
+    )
+    return {"success": True, "reset": sorted(EMAIL_RESET_DEFAULTS.keys())}
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # General Settings
 # ──────────────────────────────────────────────────────────────────────────────
-
-
-@router.get("/general")
-async def get_general_settings(
-    db: AsyncSession = Depends(get_db),
-    user: AdminUser = Depends(require_scope("settings")),
-):
-    """Get all general settings."""
-    return await crud.get_all_settings(db)
 
 
 @router.put("/general")
@@ -754,25 +746,7 @@ async def update_general_settings(
     """Update general application settings (property, scoring, call config)."""
     updates = payload.model_dump(exclude_none=True)
 
-    weight_keys = [
-        "score_weight_income",
-        "score_weight_eviction",
-        "score_weight_completion",
-        "score_weight_move_date",
-        "score_weight_rental_history",
-        "score_weight_household_fit",
-    ]
-    if any(k in updates for k in weight_keys):
-        current = await crud.get_all_settings(db)
-        weights = {k: int(updates.get(k, current.get(k, 0) or 0)) for k in weight_keys}
-        total = sum(weights.values())
-        if total != 100:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Score weights must total 100 (currently {total}): {weights}",
-            )
-
-    # Validate qualification status cutoffs and income multiplier when present.
+    # Validate qualification status cutoffs when present.
     if (
         "qualified_score_threshold" in updates
         or "review_score_threshold" in updates
@@ -795,15 +769,56 @@ async def update_general_settings(
                     f"(got review={review}, qualified={qualified})"
                 ),
             )
-    if "income_multiplier" in updates and updates["income_multiplier"] is not None:
+
+    # Validate AI tuning knobs so a bad value can't break live calls.
+    if updates.get("llm_temperature") is not None:
         try:
-            mult = float(updates["income_multiplier"])
+            temp = float(updates["llm_temperature"])
         except (TypeError, ValueError):
-            mult = 0.0
-        if not (0 < mult <= 10):
+            temp = -1.0
+        if not (0.0 <= temp <= 1.0):
             raise HTTPException(
                 status_code=400,
-                detail="Income multiplier must be greater than 0 and at most 10.",
+                detail="AI reply creativity must be between 0.0 and 1.0.",
+            )
+    if updates.get("llm_max_tokens") is not None:
+        try:
+            max_tok = int(updates["llm_max_tokens"])
+        except (TypeError, ValueError):
+            max_tok = -1
+        if not (0 <= max_tok <= 2000):
+            raise HTTPException(
+                status_code=400,
+                detail="Max reply length must be between 0 and 2000 tokens (0 = default).",
+            )
+
+    # Retention windows must be non-negative day counts (0 = keep forever).
+    for ret_key in (
+        "retention_calls_days",
+        "retention_recording_days",
+        "retention_audit_days",
+        "retention_soft_deleted_days",
+    ):
+        if updates.get(ret_key) is not None:
+            try:
+                days = int(updates[ret_key])
+            except (TypeError, ValueError):
+                days = -1
+            if days < 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Retention windows must be 0 or more days (0 = keep forever).",
+                )
+
+    if updates.get("retention_stale_call_hours") is not None:
+        try:
+            hours = int(updates["retention_stale_call_hours"])
+        except (TypeError, ValueError):
+            hours = -1
+        if hours < 0:
+            raise HTTPException(
+                status_code=400,
+                detail="Stale-call window must be 0 or more hours (0 = disable).",
             )
 
     # Reject an unsafe CRM webhook URL at save time (not just when it fires) so
@@ -813,21 +828,30 @@ async def update_general_settings(
         from app.utils.security import UnsafeURLError, assert_safe_external_url
 
         try:
-            assert_safe_external_url(str(crm_url))
+            assert_safe_external_url(str(crm_url), require_https=True)
         except UnsafeURLError as e:
             raise HTTPException(
                 status_code=400, detail=f"Unsafe CRM webhook URL: {e}"
             ) from e
 
+    cache_failed = False
     for key, value in updates.items():
-        await crud.set_setting(db, key, str(value), updated_by=user.id)
+        _, cache_ok = await crud.set_setting(db, key, str(value), updated_by=user.id)
+        if not cache_ok:
+            cache_failed = True
+
+    # Keep the in-process display timezone (used by sync template/email helpers)
+    # in lock-step with the saved setting.
+    if "timezone" in updates and updates["timezone"]:
+        from app.utils.helpers import set_display_timezone
+
+        set_display_timezone(str(updates["timezone"]))
 
     registry_keys = {
         "auto_fallback_enabled",
         "llm_fallback_provider",
         "stt_fallback_provider",
         "tts_fallback_provider",
-        "ai_agent_name",
         "property_name",
         "silence_timeout_seconds",
         "max_call_duration_seconds",
@@ -839,15 +863,101 @@ async def update_general_settings(
         except Exception as e:
             logger.warning("Registry reload after general settings failed: %s", e)
 
+    from app.utils.security import redact_for_audit
+
     await crud.create_audit_log(
         db,
         action="updated_general_settings",
         admin_user_id=user.id,
         entity_type="setting",
-        new_value=updates,
+        new_value=redact_for_audit(updates),
         ip_address=request.client.host if request.client else None,
     )
-    return {"success": True, "updated": list(updates.keys())}
+    response: dict = {"success": True, "updated": list(updates.keys())}
+    if cache_failed:
+        response["warnings"] = [
+            "Settings saved, but the live settings cache could not be refreshed. "
+            "New calls may use stale values for up to 30 seconds. Check that Redis "
+            "is reachable with read-write credentials."
+        ]
+    return response
+
+
+GENERAL_RESET_KEYS = frozenset(
+    {
+        "property_name",
+        "timezone",
+        "greeting_message",
+        "closing_message",
+        "provider_failure_message",
+        "qualified_score_threshold",
+        "review_score_threshold",
+        "max_retries_per_question",
+        "silence_timeout_seconds",
+        "max_call_duration_seconds",
+        "call_recording_enabled",
+        "llm_temperature",
+        "llm_max_tokens",
+        "retention_enabled",
+        "retention_calls_days",
+        "retention_recording_days",
+        "retention_audit_days",
+        "retention_soft_deleted_days",
+        "retention_stale_call_hours",
+        "crm_webhook_url",
+        "crm_webhook_secret",
+    }
+)
+
+
+@router.post("/general/reset")
+async def reset_general_settings_to_defaults(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    user: AdminUser = Depends(require_scope("settings", edit=True)),
+):
+    """Reset general application settings to built-in defaults (not blacklist or providers)."""
+    from config import DEFAULT_SYSTEM_SETTINGS
+
+    defaults = {
+        item["key"]: item["value"]
+        for item in DEFAULT_SYSTEM_SETTINGS
+        if item["key"] in GENERAL_RESET_KEYS
+    }
+
+    cache_failed = False
+    for key, value in defaults.items():
+        _, cache_ok = await crud.set_setting(db, key, str(value), updated_by=user.id)
+        if not cache_ok:
+            cache_failed = True
+
+    tz = defaults.get("timezone")
+    if tz:
+        from app.utils.helpers import set_display_timezone
+
+        set_display_timezone(str(tz))
+
+    try:
+        await provider_registry.reload_from_db(db)
+    except Exception as e:
+        logger.warning("Registry reload after general reset failed: %s", e)
+
+    await crud.create_audit_log(
+        db,
+        action="reset_general_settings",
+        admin_user_id=user.id,
+        entity_type="setting",
+        new_value={"keys": sorted(defaults.keys())},
+        ip_address=request.client.host if request.client else None,
+    )
+
+    response: dict = {"success": True, "reset": sorted(defaults.keys())}
+    if cache_failed:
+        response["warnings"] = [
+            "Defaults restored, but the live settings cache could not be refreshed. "
+            "New calls may use stale values for up to 30 seconds."
+        ]
+    return response
 
 
 @router.post("/blacklist")
@@ -864,12 +974,7 @@ async def add_to_blacklist(
     if not phone:
         raise HTTPException(status_code=400, detail="Invalid phone number")
 
-    blacklist = await crud.get_setting_value(db, "blacklisted_numbers", [])
-    if phone not in blacklist:
-        blacklist.append(phone)
-        await crud.set_setting(
-            db, "blacklisted_numbers", json.dumps(blacklist), updated_by=user.id
-        )
+    blacklist = await crud.add_to_blacklist(db, phone, updated_by=user.id)
 
     await crud.create_audit_log(
         db,
@@ -890,12 +995,7 @@ async def remove_from_blacklist(
     user: AdminUser = Depends(require_scope("settings", edit=True)),
 ):
     """Remove a phone number from the blacklist."""
-    blacklist = await crud.get_setting_value(db, "blacklisted_numbers", [])
-    if phone_number in blacklist:
-        blacklist.remove(phone_number)
-        await crud.set_setting(
-            db, "blacklisted_numbers", json.dumps(blacklist), updated_by=user.id
-        )
+    blacklist = await crud.remove_from_blacklist(db, phone_number, updated_by=user.id)
 
     await crud.create_audit_log(
         db,

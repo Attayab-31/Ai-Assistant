@@ -8,15 +8,19 @@ exposes the DEFAULT_QUESTIONS for initial database seeding.
 
 import asyncio
 import logging
+import ssl
 from typing import Optional
 
 from dotenv import load_dotenv
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from app.core.screening_flow import DEFAULT_FAQ_ENTRIES, DEFAULT_SCREENING_QUESTIONS
+from app.core.seed_data import load_seed_faqs, load_seed_questions
 
 load_dotenv(override=False)
+
+DEFAULT_QUESTIONS = load_seed_questions()
+DEFAULT_FAQS = load_seed_faqs()
 logger = logging.getLogger(__name__)
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -42,6 +46,11 @@ class Settings(BaseSettings):
     environment: str = "development"
     debug: bool = False
     log_dir: str = "./logs"  # Directory for rotating log files (production)
+    # Dev: write logs/voice.trace.log and show [call_id|phase] on console.
+    log_voice_trace: bool = True
+    # Live call sessions are in-process; keep at 1 until Redis session store exists.
+    web_workers: int = 1
+    enable_test_console: bool = False
 
     @field_validator("debug", mode="before")
     @classmethod
@@ -142,7 +151,6 @@ class Settings(BaseSettings):
     # Defaults
     default_property_name: str = "Ready Rentals Online"
     default_landlord_email: str = ""
-    default_agent_name: str = "Ready Rentals assistant"
 
     # Active providers (used as env-backed defaults for DB runtime settings)
     active_llm_provider: str = "groq"
@@ -157,9 +165,24 @@ class Settings(BaseSettings):
     tts_voice_deepgram: str = "aura-2-thalia-en"
     tts_speed: float = 1.0
 
+    @field_validator("redis_url", "celery_broker_url", "celery_result_backend")
+    @classmethod
+    def warn_readonly_upstash_redis(cls, value: str) -> str:
+        """Upstash read-only TCP user breaks cache invalidation and Celery."""
+        if value and "default_ro" in value:
+            logger.warning(
+                "Redis URL uses Upstash read-only user 'default_ro' — "
+                "switch to 'default' with the Standard TCP password for writes"
+            )
+        return value
+
     @property
     def is_production(self) -> bool:
         return self.environment == "production"
+
+    @property
+    def allow_test_console(self) -> bool:
+        return (not self.is_production) or self.enable_test_console
 
     def validate_runtime_secrets(self) -> list[str]:
         """Return production misconfiguration errors (empty list when safe).
@@ -215,20 +238,48 @@ class Settings(BaseSettings):
                 "incoming Telnyx webhooks"
             )
 
+        if self.web_workers != 1:
+            errors.append(
+                "WEB_WORKERS must be 1 in production until shared session "
+                "store is implemented (live calls use in-process state)"
+            )
+
+        for name, url in (
+            ("REDIS_URL", self.redis_url),
+            ("CELERY_BROKER_URL", self.celery_broker_url),
+            ("CELERY_RESULT_BACKEND", self.celery_result_backend),
+        ):
+            if url and "default_ro" in url:
+                errors.append(
+                    f"{name} uses Upstash read-only credentials (default_ro); "
+                    "use the Standard TCP password with username default"
+                )
+
         return errors
 
 
 settings = Settings()
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Default Screening Questions
-# ──────────────────────────────────────────────────────────────────────────────
+def redis_url_connection_kwargs(url: str) -> dict:
+    """TLS kwargs for redis-py / Celery when connecting to Upstash (rediss://)."""
+    if (url or "").startswith("rediss://"):
+        return {"ssl_cert_reqs": ssl.CERT_REQUIRED}
+    return {}
 
-DEFAULT_QUESTIONS = list(DEFAULT_SCREENING_QUESTIONS)
-DEFAULT_FAQS = list(DEFAULT_FAQ_ENTRIES)
 
+def celery_redis_ssl_options() -> dict | None:
+    """Celery broker/backend SSL options for Upstash TLS URLs."""
+    url = settings.celery_broker_url or ""
+    if url.startswith("rediss://"):
+        return {"ssl_cert_reqs": ssl.CERT_REQUIRED}
+    return None
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Default system settings to seed database with
+# ──────────────────────────────────────────────────────────────────────────────
+
 DEFAULT_SYSTEM_SETTINGS = [
     {
         "key": "active_llm_provider",
@@ -294,24 +345,33 @@ DEFAULT_SYSTEM_SETTINGS = [
         "is_sensitive": False,
     },
     {
-        "key": "ai_agent_name",
-        "value": settings.default_agent_name,
+        "key": "greeting_message",
+        "value": "",
         "value_type": "string",
-        "description": "AI agent name",
+        "description": (
+            "Spoken opening before the first question. Blank uses the built-in "
+            "script. Use {property_name} as a placeholder for the business name."
+        ),
         "is_sensitive": False,
     },
     {
-        "key": "min_income_threshold",
-        "value": "0",
-        "value_type": "integer",
-        "description": "Optional absolute monthly income floor ($); 0 uses 3x rent policy",
+        "key": "closing_message",
+        "value": "",
+        "value_type": "string",
+        "description": (
+            "Spoken closing after screening completes. Blank uses the built-in "
+            "wrap-up. Use {property_name} as a placeholder for the business name."
+        ),
         "is_sensitive": False,
     },
     {
-        "key": "disqualify_on_eviction",
-        "value": "false",
-        "value_type": "boolean",
-        "description": "Auto-disqualify if eviction disclosed (normally false; reviewed individually)",
+        "key": "provider_failure_message",
+        "value": "",
+        "value_type": "string",
+        "description": (
+            "Spoken when LLM, TTS, or STT is unavailable and the call must end. "
+            "Blank uses the built-in script. Use {property_name} as a placeholder."
+        ),
         "is_sensitive": False,
     },
     {
@@ -402,62 +462,6 @@ DEFAULT_SYSTEM_SETTINGS = [
         "is_sensitive": False,
     },
     {
-        "key": "score_weight_income",
-        "value": "35",
-        "value_type": "integer",
-        "description": "Score weight: income context (0-100)",
-        "is_sensitive": False,
-    },
-    {
-        "key": "score_weight_eviction",
-        "value": "15",
-        "value_type": "integer",
-        "description": "Score weight: eviction context (0-100)",
-        "is_sensitive": False,
-    },
-    {
-        "key": "score_weight_completion",
-        "value": "25",
-        "value_type": "integer",
-        "description": "Score weight: screening completion (0-100)",
-        "is_sensitive": False,
-    },
-    {
-        "key": "score_weight_move_date",
-        "value": "10",
-        "value_type": "integer",
-        "description": "Score weight: move-in timing (0-100)",
-        "is_sensitive": False,
-    },
-    {
-        "key": "score_weight_rental_history",
-        "value": "10",
-        "value_type": "integer",
-        "description": "Score weight: rental history context (0-100)",
-        "is_sensitive": False,
-    },
-    {
-        "key": "score_weight_household_fit",
-        "value": "5",
-        "value_type": "integer",
-        "description": "Score weight: occupants and pet details (0-100)",
-        "is_sensitive": False,
-    },
-    {
-        "key": "monthly_rent_for_income_ratio",
-        "value": "0",
-        "value_type": "integer",
-        "description": "Optional monthly rent used for income scoring; 0 means review income context",
-        "is_sensitive": False,
-    },
-    {
-        "key": "income_multiplier",
-        "value": "3.0",
-        "value_type": "string",
-        "description": "Required income as a multiple of monthly rent (e.g. 3.0 = 3x rent)",
-        "is_sensitive": False,
-    },
-    {
         "key": "qualified_score_threshold",
         "value": "75",
         "value_type": "integer",
@@ -507,10 +511,75 @@ DEFAULT_SYSTEM_SETTINGS = [
         "is_sensitive": False,
     },
     {
-        "key": "hold_music_enabled",
-        "value": "false",
+        "key": "llm_temperature",
+        "value": "0.3",
+        "value_type": "string",
+        "description": "AI reply creativity (0.0 = focused/consistent, 1.0 = varied)",
+        "is_sensitive": False,
+    },
+    {
+        "key": "llm_max_tokens",
+        "value": "0",
+        "value_type": "integer",
+        "description": "Max length of an AI reply in tokens; 0 uses the tuned default",
+        "is_sensitive": False,
+    },
+    {
+        "key": "voice_latency_profile",
+        "value": "balanced",
+        "value_type": "string",
+        "description": "Voice latency preset: fast, balanced, or quality",
+        "is_sensitive": False,
+    },
+    {
+        "key": "llm_streaming_enabled",
+        "value": "true",
         "value_type": "boolean",
-        "description": "Play hold music on answer",
+        "description": "Stream LLM tokens to TTS during live calls for faster replies",
+        "is_sensitive": False,
+    },
+    # ── Data retention (automatic cleanup keeps the database from growing
+    # forever). A value of 0 disables that particular cleanup. ──
+    {
+        "key": "retention_enabled",
+        "value": "true",
+        "value_type": "boolean",
+        "description": "Master switch for the daily automatic data-cleanup job",
+        "is_sensitive": False,
+    },
+    {
+        "key": "retention_calls_days",
+        "value": "365",
+        "value_type": "integer",
+        "description": "Permanently delete calls + applicants older than this many days (0 = keep forever)",
+        "is_sensitive": False,
+    },
+    {
+        "key": "retention_audit_days",
+        "value": "365",
+        "value_type": "integer",
+        "description": "Delete activity-log entries older than this many days (0 = keep forever)",
+        "is_sensitive": False,
+    },
+    {
+        "key": "retention_recording_days",
+        "value": "90",
+        "value_type": "integer",
+        "description": "Delete call recordings older than this many days, keeping the call record (0 = keep forever)",
+        "is_sensitive": False,
+    },
+    {
+        "key": "retention_soft_deleted_days",
+        "value": "30",
+        "value_type": "integer",
+        "description": "Permanently remove already-deleted calls this many days after deletion (0 = keep forever)",
+        "is_sensitive": False,
+    },
+    {
+        "key": "retention_stale_call_hours",
+        "value": "24",
+        "value_type": "integer",
+        "description": "Mark calls stuck in initiated/in_progress as failed after this many hours (0 = disable)",
         "is_sensitive": False,
     },
 ]
@@ -525,7 +594,6 @@ ENV_BACKED_SYSTEM_SETTING_KEYS = {
     "active_gemini_model",
     "landlord_email",
     "property_name",
-    "ai_agent_name",
     "tts_voice_google",
     "tts_voice_deepgram",
     "tts_speed",

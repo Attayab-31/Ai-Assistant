@@ -8,7 +8,7 @@ Uses JWT tokens stored in httpOnly cookies. Rate-limited login endpoint
 import asyncio
 import logging
 import uuid
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, EmailStr
@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.ratelimit import (
     check_auth_rate_limit,
+    limiter,
     record_auth_failure,
     reset_auth_failures,
 )
@@ -25,6 +26,7 @@ from app.db.database import AsyncSessionLocal, get_db
 from app.utils.security import (
     MAX_BCRYPT_PASSWORD_BYTES,
     create_access_token,
+    decode_access_token,
     hash_password,
     mask_email,
     password_needs_rehash,
@@ -45,7 +47,6 @@ class LoginRequest(BaseModel):
 
 
 class LoginResponse(BaseModel):
-    access_token: str
     token_type: str = "bearer"
     user: dict
 
@@ -111,6 +112,7 @@ async def _post_login_tasks(
 
 
 @router.post("/login", response_model=LoginResponse)
+@limiter.limit("30/minute")
 async def login(
     request: Request,
     response: Response,
@@ -174,7 +176,6 @@ async def login(
     logger.info("Login successful: %s", mask_email(user.email))
 
     return LoginResponse(
-        access_token=token,
         user={
             "id": str(user.id),
             "email": user.email,
@@ -185,22 +186,23 @@ async def login(
 
 
 @router.post("/logout")
-async def logout(response: Response):
-    """Clear the auth cookie."""
-    response.delete_cookie(COOKIE_NAME)
+async def logout(request: Request, response: Response):
+    """Clear the auth cookie and revoke the current session token."""
+    from app.core.redis_client import revoke_token
+
+    token = request.cookies.get(COOKIE_NAME)
+    if token:
+        payload = decode_access_token(token)
+        if payload and payload.get("exp"):
+            remaining = int(payload["exp"]) - int(datetime.now(UTC).timestamp())
+            if remaining > 0:
+                await revoke_token(token, remaining)
+
+    response.delete_cookie(
+        key=COOKIE_NAME,
+        path="/",
+        httponly=True,
+        secure=_cookie_secure(request),
+        samesite="lax",
+    )
     return {"message": "Logged out successfully"}
-
-
-@router.get("/me")
-async def get_current_user_info(request: Request, db: AsyncSession = Depends(get_db)):
-    """Get current authenticated user info."""
-    from app.utils.dependencies import get_current_user
-
-    user = await get_current_user(request, db)
-    return {
-        "id": str(user.id),
-        "email": user.email,
-        "full_name": user.full_name,
-        "role": user.role,
-        "last_login": user.last_login.isoformat() if user.last_login else None,
-    }

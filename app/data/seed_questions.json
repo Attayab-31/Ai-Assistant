@@ -1,0 +1,526 @@
+[
+  {
+    "schema_version": 2,
+    "id": "Q1",
+    "state": "Q1_FULL_NAME",
+    "question": "Can I start with your full name?",
+    "answer_type": "text",
+    "extract_fields": [
+      "full_name"
+    ],
+    "field_labels": {
+      "full_name": "full legal name (first and last)"
+    },
+    "validation": "full name or preferred legal name",
+    "retry_prompt": "What is your full name?",
+    "retry_prompt_2": "Could you tell me your first and last name?",
+    "retry_prompt_3": "Just your first and last name is perfect.",
+    "active": true,
+    "order": 1,
+    "required": true,
+    "requires_confirmation": true,
+    "conditional": null,
+    "scoring": {
+      "enabled": false,
+      "max_points": 0,
+      "rule_type": "any_answer",
+      "pass_config": {}
+    },
+    "understanding_guide": "Listen for full legal name even if given casually. Spelled letters are corrections \u2014 assemble them."
+  },
+  {
+    "schema_version": 2,
+    "id": "Q2",
+    "state": "Q2_PHONE",
+    "question": "What is the best phone number for you?",
+    "answer_type": "phone",
+    "extract_fields": [
+      "contact_phone"
+    ],
+    "field_labels": {
+      "contact_phone": "phone number"
+    },
+    "validation": "phone number",
+    "retry_prompt": "What phone number should the leasing team use?",
+    "retry_prompt_2": "Could you say your number one digit at a time, including the area code?",
+    "retry_prompt_3": "No rush \u2014 just read the digits slowly and I'll take them down.",
+    "active": true,
+    "order": 2,
+    "required": true,
+    "requires_confirmation": true,
+    "conditional": null,
+    "scoring": {
+      "enabled": false,
+      "max_points": 0,
+      "rule_type": "any_answer",
+      "pass_config": {}
+    },
+    "understanding_guide": "Accept any phone format; normalize to digits."
+  },
+  {
+    "schema_version": 2,
+    "id": "Q3",
+    "state": "Q3_EMAIL",
+    "question": "What email address should we use?",
+    "answer_type": "email",
+    "extract_fields": [
+      "email"
+    ],
+    "field_labels": {
+      "email": "email address"
+    },
+    "validation": "email address",
+    "retry_prompt": "Could you spell or say your email address?",
+    "retry_prompt_2": "You can spell it out \u2014 for example, j-o-h-n, at, gmail, dot, com.",
+    "retry_prompt_3": "Just say the letters, and use 'at' for the @ sign and 'dot' for the period.",
+    "active": true,
+    "order": 3,
+    "required": true,
+    "requires_confirmation": true,
+    "conditional": null,
+    "scoring": {
+      "enabled": false,
+      "max_points": 0,
+      "rule_type": "any_answer",
+      "pass_config": {}
+    },
+    "understanding_guide": "Accept spoken email; assemble spelled local parts."
+  },
+  {
+    "schema_version": 2,
+    "id": "Q4",
+    "state": "Q4_MOVE_IN_DATE",
+    "question": "What move-in date are you hoping for?",
+    "answer_type": "date",
+    "extract_fields": [
+      "move_in_date",
+      "move_in_raw"
+    ],
+    "field_labels": {
+      "move_in_date": "move-in date (ISO if clear)",
+      "move_in_raw": "move-in timeframe wording"
+    },
+    "validation": "date or timeframe",
+    "retry_prompt": "What date or timeframe are you hoping to move in?",
+    "retry_prompt_2": "",
+    "retry_prompt_3": "",
+    "active": true,
+    "order": 4,
+    "required": true,
+    "requires_confirmation": false,
+    "conditional": null,
+    "scoring": {
+      "enabled": true,
+      "max_points": 15,
+      "rule_type": "date_within",
+      "pass_config": {
+        "max_days_ahead": 120
+      }
+    },
+    "understanding_guide": "Accept relative dates and vague windows."
+  },
+  {
+    "schema_version": 2,
+    "id": "Q5",
+    "state": "Q5_OCCUPANTS",
+    "question": "How many people would live in the home?",
+    "answer_type": "number",
+    "extract_fields": [
+      "occupants_count",
+      "adults_count",
+      "children_count"
+    ],
+    "field_labels": {
+      "occupants_count": "total occupants",
+      "adults_count": "adults",
+      "children_count": "children"
+    },
+    "validation": "number of occupants",
+    "retry_prompt": "How many total occupants would be living there?",
+    "retry_prompt_2": "",
+    "retry_prompt_3": "",
+    "active": true,
+    "order": 5,
+    "required": true,
+    "requires_confirmation": false,
+    "conditional": null,
+    "scoring": {
+      "enabled": true,
+      "max_points": 10,
+      "rule_type": "any_answer",
+      "pass_config": {}
+    },
+    "understanding_guide": "Count everyone living in the home."
+  },
+  {
+    "schema_version": 2,
+    "id": "Q6",
+    "state": "Q6_PETS",
+    "question": "Do you have any pets?",
+    "answer_type": "yes_no",
+    "extract_fields": [
+      "has_pets",
+      "pets_raw"
+    ],
+    "field_labels": {
+      "has_pets": "yes/no pets",
+      "pets_raw": "pet description"
+    },
+    "validation": "yes or no",
+    "retry_prompt": "Do you have any pets, yes or no?",
+    "retry_prompt_2": "",
+    "retry_prompt_3": "",
+    "active": true,
+    "order": 6,
+    "required": true,
+    "requires_confirmation": false,
+    "conditional": null,
+    "scoring": {
+      "enabled": true,
+      "max_points": 5,
+      "rule_type": "any_answer",
+      "pass_config": {}
+    },
+    "understanding_guide": "Boolean only for pets."
+  },
+  {
+    "schema_version": 2,
+    "id": "Q6A",
+    "state": "Q6A_PET_DETAILS",
+    "question": "What type, breed, and approximate weight are they?",
+    "answer_type": "text",
+    "extract_fields": [
+      "pet_type",
+      "pet_breed",
+      "pet_weight",
+      "pets_raw"
+    ],
+    "field_labels": {
+      "pet_type": "pet type",
+      "pet_breed": "breed",
+      "pet_weight": "approximate weight"
+    },
+    "validation": "pet type, breed, and weight",
+    "retry_prompt": "Could you give me the pet type, breed, and weight?",
+    "retry_prompt_2": "",
+    "retry_prompt_3": "",
+    "active": true,
+    "order": 7,
+    "required": true,
+    "requires_confirmation": false,
+    "conditional": {
+      "field": "has_pets",
+      "operator": "eq",
+      "value": true
+    },
+    "scoring": {
+      "enabled": false,
+      "max_points": 0,
+      "rule_type": "any_answer",
+      "pass_config": {}
+    },
+    "understanding_guide": "Extract type, breed, and weight."
+  },
+  {
+    "schema_version": 2,
+    "id": "Q7",
+    "state": "Q7_CURRENT_RESIDENCE",
+    "question": "Where are you currently living?",
+    "answer_type": "text",
+    "extract_fields": [
+      "current_residence"
+    ],
+    "field_labels": {
+      "current_residence": "current address or area"
+    },
+    "validation": "current city/address or housing situation",
+    "retry_prompt": "Where do you currently live?",
+    "retry_prompt_2": "",
+    "retry_prompt_3": "",
+    "active": true,
+    "order": 8,
+    "required": true,
+    "requires_confirmation": false,
+    "conditional": null,
+    "scoring": {
+      "enabled": true,
+      "max_points": 10,
+      "rule_type": "any_answer",
+      "pass_config": {}
+    },
+    "understanding_guide": ""
+  },
+  {
+    "schema_version": 2,
+    "id": "Q8",
+    "state": "Q8_RESIDENCE_DURATION",
+    "question": "How long have you lived there?",
+    "answer_type": "text",
+    "extract_fields": [
+      "residence_duration"
+    ],
+    "field_labels": {
+      "residence_duration": "how long at current home"
+    },
+    "validation": "length of residence",
+    "retry_prompt": "About how long have you lived at your current place?",
+    "retry_prompt_2": "",
+    "retry_prompt_3": "",
+    "active": true,
+    "order": 9,
+    "required": true,
+    "requires_confirmation": false,
+    "conditional": null,
+    "scoring": {
+      "enabled": true,
+      "max_points": 5,
+      "rule_type": "any_answer",
+      "pass_config": {}
+    },
+    "understanding_guide": ""
+  },
+  {
+    "schema_version": 2,
+    "id": "Q9",
+    "state": "Q9_MOVE_REASON",
+    "question": "Why are you moving?",
+    "answer_type": "long_text",
+    "extract_fields": [
+      "move_reason"
+    ],
+    "field_labels": {
+      "move_reason": "reason for moving"
+    },
+    "validation": "reason for moving",
+    "retry_prompt": "Could you briefly share why you are moving?",
+    "retry_prompt_2": "",
+    "retry_prompt_3": "",
+    "active": true,
+    "order": 10,
+    "required": true,
+    "requires_confirmation": false,
+    "conditional": null,
+    "scoring": {
+      "enabled": true,
+      "max_points": 5,
+      "rule_type": "any_answer",
+      "pass_config": {}
+    },
+    "understanding_guide": ""
+  },
+  {
+    "schema_version": 2,
+    "id": "Q10",
+    "state": "Q10_MOVE_TIMING",
+    "question": "When are you looking to move?",
+    "answer_type": "date",
+    "extract_fields": [
+      "move_timing"
+    ],
+    "field_labels": {
+      "move_timing": "when they plan to leave current place"
+    },
+    "validation": "move timeframe",
+    "retry_prompt": "When are you looking to move?",
+    "retry_prompt_2": "",
+    "retry_prompt_3": "",
+    "active": true,
+    "order": 11,
+    "required": true,
+    "requires_confirmation": false,
+    "conditional": null,
+    "scoring": {
+      "enabled": false,
+      "max_points": 0,
+      "rule_type": "any_answer",
+      "pass_config": {}
+    },
+    "understanding_guide": ""
+  },
+  {
+    "schema_version": 2,
+    "id": "Q11",
+    "state": "Q11_EVICTION",
+    "question": "Have you ever experienced an eviction or landlord-tenant court filing?",
+    "answer_type": "yes_no",
+    "extract_fields": [
+      "has_eviction",
+      "eviction_raw"
+    ],
+    "field_labels": {
+      "has_eviction": "yes/no eviction history",
+      "eviction_raw": "brief eviction mention"
+    },
+    "validation": "yes or no, reviewed individually",
+    "retry_prompt": "Just to confirm, have you ever had an eviction or landlord-tenant court filing?",
+    "retry_prompt_2": "",
+    "retry_prompt_3": "",
+    "active": true,
+    "order": 12,
+    "required": true,
+    "requires_confirmation": false,
+    "conditional": null,
+    "scoring": {
+      "enabled": true,
+      "max_points": 15,
+      "rule_type": "yes_no",
+      "pass_config": {
+        "yes": 0,
+        "no": 15
+      }
+    },
+    "understanding_guide": ""
+  },
+  {
+    "schema_version": 2,
+    "id": "Q11A",
+    "state": "Q11A_EVICTION_DETAILS",
+    "question": "Thanks for sharing that. Could you briefly explain the circumstances?",
+    "answer_type": "long_text",
+    "extract_fields": [
+      "eviction_circumstances",
+      "eviction_raw"
+    ],
+    "field_labels": {
+      "eviction_circumstances": "eviction circumstances"
+    },
+    "validation": "short explanation",
+    "retry_prompt": "Could you briefly explain what happened with that filing?",
+    "retry_prompt_2": "",
+    "retry_prompt_3": "",
+    "active": true,
+    "order": 13,
+    "required": true,
+    "requires_confirmation": false,
+    "conditional": {
+      "field": "has_eviction",
+      "operator": "eq",
+      "value": true
+    },
+    "scoring": {
+      "enabled": false,
+      "max_points": 0,
+      "rule_type": "any_answer",
+      "pass_config": {}
+    },
+    "understanding_guide": ""
+  },
+  {
+    "schema_version": 2,
+    "id": "Q12",
+    "state": "Q12_INCOME",
+    "question": "What is your monthly household income before taxes?",
+    "answer_type": "currency",
+    "extract_fields": [
+      "monthly_income",
+      "income_raw"
+    ],
+    "field_labels": {
+      "monthly_income": "monthly household income before taxes",
+      "income_raw": "income wording"
+    },
+    "validation": "monthly household income before taxes",
+    "retry_prompt": "About how much is your household income each month before taxes?",
+    "retry_prompt_2": "",
+    "retry_prompt_3": "",
+    "active": true,
+    "order": 14,
+    "required": true,
+    "requires_confirmation": false,
+    "conditional": null,
+    "scoring": {
+      "enabled": true,
+      "max_points": 35,
+      "rule_type": "any_answer",
+      "pass_config": {}
+    },
+    "understanding_guide": ""
+  },
+  {
+    "schema_version": 2,
+    "id": "Q13",
+    "state": "Q13_EMPLOYER",
+    "question": "Where do you work?",
+    "answer_type": "text",
+    "extract_fields": [
+      "employer"
+    ],
+    "field_labels": {
+      "employer": "employer or income source"
+    },
+    "validation": "employer or income source",
+    "retry_prompt": "Where are you currently employed, or what is your income source?",
+    "retry_prompt_2": "",
+    "retry_prompt_3": "",
+    "active": true,
+    "order": 15,
+    "required": true,
+    "requires_confirmation": false,
+    "conditional": null,
+    "scoring": {
+      "enabled": false,
+      "max_points": 0,
+      "rule_type": "any_answer",
+      "pass_config": {}
+    },
+    "understanding_guide": ""
+  },
+  {
+    "schema_version": 2,
+    "id": "Q14",
+    "state": "Q14_EMPLOYMENT_DURATION",
+    "question": "How long have you been employed there?",
+    "answer_type": "text",
+    "extract_fields": [
+      "employment_duration"
+    ],
+    "field_labels": {
+      "employment_duration": "time at current job"
+    },
+    "validation": "employment duration",
+    "retry_prompt": "How long have you been with that employer or income source?",
+    "retry_prompt_2": "",
+    "retry_prompt_3": "",
+    "active": true,
+    "order": 16,
+    "required": true,
+    "requires_confirmation": false,
+    "conditional": null,
+    "scoring": {
+      "enabled": false,
+      "max_points": 0,
+      "rule_type": "any_answer",
+      "pass_config": {}
+    },
+    "understanding_guide": ""
+  },
+  {
+    "schema_version": 2,
+    "id": "Q15",
+    "state": "Q15_GENERAL_NOTES",
+    "question": "Is there anything in your rental, credit, or background history you want the team to know before proceeding?",
+    "answer_type": "long_text",
+    "extract_fields": [
+      "general_notes"
+    ],
+    "field_labels": {
+      "general_notes": "final notes or 'None disclosed'"
+    },
+    "validation": "any final note, or no",
+    "retry_prompt": "Anything about your rental, credit, or background history you want the team to know?",
+    "retry_prompt_2": "",
+    "retry_prompt_3": "",
+    "active": true,
+    "order": 17,
+    "required": false,
+    "requires_confirmation": false,
+    "conditional": null,
+    "scoring": {
+      "enabled": false,
+      "max_points": 0,
+      "rule_type": "any_answer",
+      "pass_config": {}
+    },
+    "understanding_guide": ""
+  }
+]

@@ -1,0 +1,39 @@
+{# Shared admin UI macros #}
+{% macro stat_tile(label, value) %}
+<div class="card stat-tile">
+  <div class="label">{{ label }}</div>
+  <div class="metric">{{ value }}</div>
+</div>
+{% endmacro %}
+
+{# Plain-language term with optional tooltip (Phase 6 glossary) #}
+{% macro glossary(key, text=none) %}
+{% set label = text if text is not none else (key|glossary_label) %}
+{% set tip = key|glossary_tip %}
+{% if tip %}
+<abbr class="glossary-tip" title="{{ tip }}">{{ label }}</abbr>
+{% else %}
+{{ label }}
+{% endif %}
+{% endmacro %}
+
+{# Previous / next controls for filtered list pages #}
+{% macro list_pagination(path, page, total_pages, filters={}, total=0, noun='items') %}
+{% if total_pages > 1 %}
+<nav class="pagination" aria-label="Page navigation">
+  {% if page > 1 %}
+  <a class="btn btn-secondary btn-sm" href="{{ path|pagination_url(page - 1, filters) }}">Previous</a>
+  {% else %}
+  <span class="btn btn-secondary btn-sm" aria-disabled="true" style="opacity:.45;pointer-events:none;">Previous</span>
+  {% endif %}
+  <span class="pagination-meta muted">Page {{ page }} of {{ total_pages }} · {{ total }} {{ noun }}</span>
+  {% if page < total_pages %}
+  <a class="btn btn-secondary btn-sm" href="{{ path|pagination_url(page + 1, filters) }}">Next</a>
+  {% else %}
+  <span class="btn btn-secondary btn-sm" aria-disabled="true" style="opacity:.45;pointer-events:none;">Next</span>
+  {% endif %}
+</nav>
+{% else %}
+<p class="muted pagination-meta">Page {{ page }} of {{ total_pages }} · {{ total }} {{ noun }}</p>
+{% endif %}
+{% endmacro %}

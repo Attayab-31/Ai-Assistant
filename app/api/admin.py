@@ -27,17 +27,27 @@ from app.db import crud
 from app.db.database import get_db
 from app.models.user import AdminUser
 from app.utils.dependencies import (
-    get_current_user,
     get_current_user_optional,
     invalidate_user_cache,
     require_role,
     require_scope,
 )
 from app.utils.helpers import (
+    audit_action_choices,
     format_currency,
     format_duration,
     format_phone_display,
+    friendly_audit_action,
+    friendly_audit_entity,
+    friendly_call_status,
+    friendly_chart_label,
+    friendly_provider_name,
+    friendly_qualification,
     friendly_state,
+    glossary_label,
+    glossary_tip,
+    localtime,
+    pagination_url,
     score_color,
     status_badge_color,
     time_ago,
@@ -54,9 +64,19 @@ templates.env.filters["duration"] = format_duration
 templates.env.filters["currency"] = format_currency
 templates.env.filters["phone_display"] = format_phone_display
 templates.env.filters["time_ago"] = time_ago
+templates.env.filters["localtime"] = localtime
 templates.env.filters["status_color"] = status_badge_color
 templates.env.filters["score_color"] = score_color
 templates.env.filters["friendly_state"] = friendly_state
+templates.env.filters["friendly_call_status"] = friendly_call_status
+templates.env.filters["friendly_qualification"] = friendly_qualification
+templates.env.filters["friendly_chart_label"] = friendly_chart_label
+templates.env.filters["glossary_label"] = glossary_label
+templates.env.filters["glossary_tip"] = glossary_tip
+templates.env.filters["friendly_provider"] = friendly_provider_name
+templates.env.filters["friendly_audit_action"] = friendly_audit_action
+templates.env.filters["friendly_audit_entity"] = friendly_audit_entity
+templates.env.filters["pagination_url"] = pagination_url
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -94,19 +114,63 @@ async def dashboard_page(
     if not user:
         return RedirectResponse(url="/admin/login")
 
-    stats = await crud.get_call_stats(db)
-    recent_calls, _ = await crud.list_calls(db, page=1, per_page=10)
-    active_sessions = []
-    try:
-        from app.core.call_handler import get_active_sessions
+    can_calls = user.can("calls")
+    can_monitor = user.can("monitor")
+    can_tenants = user.can("tenants")
+    can_analytics = user.can("analytics")
+    can_settings = user.can("settings")
 
-        active_sessions = get_active_sessions()
-    except (ImportError, AttributeError) as e:
-        logger.debug("Could not fetch active sessions: %s", e)
+    stats = await crud.get_call_stats(db) if can_calls else {}
+    recent_calls: list = []
+    if can_calls:
+        recent_calls, _ = await crud.list_calls(db, page=1, per_page=10)
 
-    from config import provider_registry
+    active_count = 0
+    if can_monitor:
+        try:
+            from app.core.call_handler import get_active_sessions
 
-    provider_status = provider_registry.get_status()
+            active_count = len(get_active_sessions())
+        except (ImportError, AttributeError) as e:
+            logger.debug("Could not fetch active sessions: %s", e)
+
+    analytics_preview = None
+    if can_analytics:
+        analytics_preview = await crud.get_analytics_data(db, days=7)
+
+    needs_review_count = 0
+    reviewed_applicants = 0
+    if can_tenants:
+        needs_review_count = await crud.count_tenants_needing_review(db)
+        reviewed_applicants = await crud.count_reviewed_tenants(db)
+
+    onboarding = {"show": False, "steps": [], "complete": True, "done_count": 0, "total_count": 0}
+    if can_settings or can_tenants:
+        from config import settings as env_settings
+
+        from app.utils.helpers import build_onboarding_checklist
+
+        property_name = await crud.get_setting_value(
+            db, "property_name", env_settings.default_property_name
+        )
+        greeting_message = await crud.get_setting_value(db, "greeting_message", "")
+        closing_message = await crud.get_setting_value(db, "closing_message", "")
+        landlord_email = await crud.get_setting_value(db, "landlord_email", "")
+        property_settings_saved = await crud.settings_touched_by_admin(db)
+        onboarding = build_onboarding_checklist(
+            property_name=str(property_name or ""),
+            greeting_message=str(greeting_message or ""),
+            closing_message=str(closing_message or ""),
+            landlord_email=str(landlord_email or ""),
+            default_property_name=env_settings.default_property_name,
+            property_settings_saved=property_settings_saved,
+            total_calls=int(stats.get("total_calls") or 0) if can_calls else 0,
+            reviewed_applicants=reviewed_applicants,
+            needs_review_count=needs_review_count,
+            can_settings=can_settings,
+            can_edit=bool(user.can_edit),
+            can_tenants=can_tenants,
+        )
 
     return templates.TemplateResponse(
         "dashboard.html",
@@ -115,8 +179,15 @@ async def dashboard_page(
             "user": user,
             "stats": stats,
             "recent_calls": recent_calls,
-            "active_sessions": active_sessions,
-            "provider_status": provider_status,
+            "active_count": active_count,
+            "needs_review_count": needs_review_count,
+            "analytics_preview": analytics_preview,
+            "onboarding": onboarding,
+            "can_calls": can_calls,
+            "can_monitor": can_monitor,
+            "can_tenants": can_tenants,
+            "can_analytics": can_analytics,
+            "can_settings": can_settings,
             "active_page": "dashboard",
         },
     )
@@ -153,7 +224,6 @@ async def calls_list_page(
             "calls": calls,
             "total": total,
             "page": page,
-            "per_page": 20,
             "total_pages": max(1, (total + 19) // 20),
             "active_page": "calls",
             "filters": {
@@ -182,28 +252,74 @@ async def call_detail_page(
 
     tenant = await crud.get_tenant_by_call(db, call_id)
 
-    active_question_count = None
-    if tenant:
-        from app.core.screening_flow import count_active_questions
+    from app.core.question_flow import (
+        field_labels_from_questions,
+        normalize_questions,
+        questions_snapshot_from_tenant,
+        build_applicant_summary_rows,
+    )
 
-        tenant_data = {
-            "has_pets": tenant.has_pets,
-            "has_eviction": tenant.has_eviction,
-        }
-        active_question_count = count_active_questions(tenant_data)
+    questions_config = await crud.get_setting_value(db, "screening_questions", [])
+    normalized = normalize_questions(questions_config)
+    snapshot = questions_snapshot_from_tenant(tenant) or normalized
+    field_labels = field_labels_from_questions(snapshot)
 
+    active_question_count = sum(1 for q in snapshot if q.get("active", True))
+    flow_rows: list[dict] = []
     score_breakdown = None
+    custom_fields: dict = {}
     if tenant:
-        from app.core.qualifier import get_score_breakdown
+        from app.core.qualifier import build_tenant_scoring_data, get_score_breakdown
+        from app.core.question_flow import build_flow_rows, count_active_questions
+
+        # One authoritative reconstruction of the data this tenant was scored on.
+        scoring_data = build_tenant_scoring_data(
+            tenant, questions_answered=call.questions_answered or 0
+        )
+        skip = set(tenant.refused_states or [])
+        active_question_count = count_active_questions(
+            scoring_data, skip, questions=snapshot
+        )
+
+        flow_rows = build_flow_rows(
+            snapshot,
+            tenant.answered_states,
+            tenant.refused_states,
+            scoring_data=scoring_data,
+        )
 
         all_settings = await crud.get_all_settings(db)
-        tenant_dict = {
-            "monthly_income": tenant.monthly_income,
-            "has_eviction": tenant.has_eviction,
-            "move_in_date": tenant.move_in_date,
-            "questions_answered": call.questions_answered,
-        }
-        score_breakdown = get_score_breakdown(tenant_dict, all_settings)
+        score_breakdown = get_score_breakdown(
+            scoring_data, all_settings, questions=snapshot
+        )
+        # The page headline shows the score STORED at finalize. Keep the
+        # breakdown panel in agreement with it (settings may have changed since
+        # the call), so the two can never contradict each other again.
+        if tenant.qualification_score is not None:
+            score_breakdown["score"] = tenant.qualification_score
+        if tenant.qualification_status:
+            score_breakdown["status"] = tenant.qualification_status
+        # Attach the human-readable question text to each scored row so the
+        # template can render a readable table instead of a raw dict dump.
+        if score_breakdown.get("questions"):
+            label_by_state = {
+                str(q.get("state")): q.get("question") for q in snapshot
+            }
+            for row in score_breakdown["questions"]:
+                row["question"] = label_by_state.get(
+                    str(row.get("state")), row.get("state")
+                )
+
+        if isinstance(tenant.normalized_data, dict):
+            cf = tenant.normalized_data.get("custom_fields")
+            if isinstance(cf, dict):
+                custom_fields = cf
+
+    from app.utils.helpers import parse_transcript_lines
+
+    error_log = call.error_log if isinstance(call.error_log, dict) else {}
+    turn_traces = error_log.get("turn_traces") or []
+    trace_errors = error_log.get("errors") or []
 
     return templates.TemplateResponse(
         "calls/detail.html",
@@ -214,6 +330,18 @@ async def call_detail_page(
             "tenant": tenant,
             "score_breakdown": score_breakdown,
             "active_question_count": active_question_count,
+            "custom_fields": custom_fields,
+            "field_labels": field_labels,
+            "flow_rows": flow_rows,
+            "flow_from_snapshot": questions_snapshot_from_tenant(tenant) is not None,
+            "using_legacy_question_config": tenant is not None
+            and questions_snapshot_from_tenant(tenant) is None,
+            "transcript_lines": parse_transcript_lines(call.full_transcript),
+            "turn_traces": turn_traces,
+            "trace_errors": trace_errors,
+            "summary_rows": build_applicant_summary_rows(tenant, snapshot)
+            if tenant
+            else [],
             "active_page": "calls",
         },
     )
@@ -226,11 +354,14 @@ async def tenants_list_page(
     page: int = 1,
     qualification: str | None = None,
     phone: str | None = None,
+    review: str | None = None,
 ):
     """Render the all tenants list page."""
     user = await get_current_user_optional(request, db)
     if guard := _guard_page(user, "tenants"):
         return guard
+
+    review_filter = review if review in ("unreviewed", "reviewed") else None
 
     tenants, total = await crud.list_tenants(
         db,
@@ -238,7 +369,9 @@ async def tenants_list_page(
         per_page=20,
         qualification_status=qualification,
         phone_search=phone,
+        review_filter=review_filter,
     )
+    needs_review_count = await crud.count_tenants_needing_review(db)
 
     return templates.TemplateResponse(
         "tenants/list.html",
@@ -250,7 +383,8 @@ async def tenants_list_page(
             "page": page,
             "total_pages": max(1, (total + 19) // 20),
             "active_page": "tenants",
-            "filters": {"qualification": qualification, "phone": phone},
+            "needs_review_count": needs_review_count,
+            "filters": {"qualification": qualification, "phone": phone, "review": review_filter},
         },
     )
 
@@ -268,12 +402,7 @@ async def tenant_detail_page(
     if guard := _guard_page(user, "tenants"):
         return guard
 
-    from sqlalchemy import select
-
-    from app.models.tenant import Tenant
-
-    result = await db.execute(select(Tenant).where(Tenant.id == tenant_id))
-    tenant = result.scalar_one_or_none()
+    tenant = await crud.get_tenant_by_id(db, tenant_id)
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
 
@@ -282,13 +411,52 @@ async def tenant_detail_page(
         db, page=1, per_page=50, phone_search=tenant.phone_number
     )
 
+    custom_fields: dict = {}
+    field_labels: dict = {}
+    flow_rows: list[dict] = []
+    snapshot = None
+    if isinstance(tenant.normalized_data, dict):
+        cf = tenant.normalized_data.get("custom_fields")
+        if isinstance(cf, dict):
+            custom_fields = cf
+        from app.core.question_flow import (
+            build_applicant_summary_rows,
+            build_flow_rows,
+            field_labels_from_questions,
+            questions_snapshot_from_tenant,
+        )
+
+        snapshot = questions_snapshot_from_tenant(tenant)
+        if snapshot:
+            field_labels = field_labels_from_questions(snapshot)
+            flow_rows = build_flow_rows(
+                snapshot, tenant.answered_states, tenant.refused_states
+            )
+
+    has_snapshot = snapshot is not None
+    active_question_count = sum(1 for q in snapshot if q.get("active", True)) if snapshot else 0
+
+    linked_call = None
+    if tenant.call_id:
+        linked_call = await crud.get_call_by_uuid(db, tenant.call_id)
+
     return templates.TemplateResponse(
         "tenants/detail.html",
         {
             "request": request,
             "user": user,
             "tenant": tenant,
+            "linked_call": linked_call,
+            "active_question_count": active_question_count,
             "history_calls": history_calls,
+            "custom_fields": custom_fields,
+            "field_labels": field_labels,
+            "flow_rows": flow_rows,
+            "flow_from_snapshot": has_snapshot,
+            "using_legacy_question_config": not has_snapshot,
+            "summary_rows": build_applicant_summary_rows(tenant, snapshot)
+            if snapshot
+            else [],
             "active_page": "tenants",
         },
     )
@@ -306,7 +474,16 @@ async def analytics_page(
         return guard
 
     analytics = await crud.get_analytics_data(db, days=days)
-    stats = await crud.get_call_stats(db)
+    qual = analytics.get("qualification_breakdown") or {}
+    range_stats = {
+        "total_calls": sum(
+            row.get("count", 0) for row in analytics.get("calls_by_day", [])
+        ),
+        "qualified": qual.get("qualified", 0),
+        "unqualified": qual.get("unqualified", 0),
+        "review": qual.get("review", 0),
+        "avg_qualified_score": analytics.get("avg_qualified_score", 0),
+    }
 
     return templates.TemplateResponse(
         "analytics.html",
@@ -314,7 +491,7 @@ async def analytics_page(
             "request": request,
             "user": user,
             "analytics": analytics,
-            "stats": stats,
+            "range_stats": range_stats,
             "days": days,
             "active_page": "analytics",
         },
@@ -367,6 +544,8 @@ async def audit_log_page(
             "total": total,
             "page": page,
             "total_pages": max(1, (total + 49) // 50),
+            "action_filter": action,
+            "action_choices": audit_action_choices(),
             "active_page": "audit_log",
         },
     )
@@ -423,7 +602,14 @@ async def settings_questions_page(request: Request, db: AsyncSession = Depends(g
         return guard
 
     questions = await crud.get_setting_value(db, "screening_questions", [])
-    from app.core.screening_flow import FLOW_STATE_VALUES, normalize_questions
+    from app.core.question_flow import (
+        ANSWER_TYPES,
+        CONDITIONAL_OPERATORS,
+        SCORING_RULE_TYPES,
+        normalize_questions,
+        question_save_warnings,
+        total_enabled_scoring_points,
+    )
 
     normalized = normalize_questions(questions)
     return templates.TemplateResponse(
@@ -432,7 +618,97 @@ async def settings_questions_page(request: Request, db: AsyncSession = Depends(g
             "request": request,
             "user": user,
             "questions": normalized,
-            "flow_state_count": len(FLOW_STATE_VALUES),
+            "flow_state_count": len(normalized),
+            "active_flow_count": sum(1 for q in normalized if q.get("active", True)),
+            "scoring_points_total": total_enabled_scoring_points(normalized),
+            "save_warnings": question_save_warnings(normalized),
+            "answer_types": sorted(ANSWER_TYPES),
+            "conditional_operators": sorted(CONDITIONAL_OPERATORS),
+            "scoring_rule_types": sorted(SCORING_RULE_TYPES),
+            "active_page": "settings",
+            "section": "questions",
+        },
+    )
+
+
+def _markdown_to_html(text: str) -> str:
+    """Minimal markdown → HTML for the questions admin guide."""
+    import html as html_mod
+    import re
+
+    lines = text.splitlines()
+    parts: list[str] = []
+    in_code = False
+    in_list = False
+
+    def close_list():
+        nonlocal in_list
+        if in_list:
+            parts.append("</ul>")
+            in_list = False
+
+    for line in lines:
+        if line.startswith("```"):
+            close_list()
+            if not in_code:
+                parts.append("<pre><code>")
+                in_code = True
+            else:
+                parts.append("</code></pre>")
+                in_code = False
+            continue
+        if in_code:
+            parts.append(html_mod.escape(line))
+            continue
+        if line.startswith("### "):
+            close_list()
+            parts.append(f"<h3>{html_mod.escape(line[4:])}</h3>")
+        elif line.startswith("## "):
+            close_list()
+            parts.append(f"<h2>{html_mod.escape(line[3:])}</h2>")
+        elif line.startswith("# "):
+            close_list()
+            parts.append(f"<h1>{html_mod.escape(line[2:])}</h1>")
+        elif line.strip() == "":
+            close_list()
+        elif line.startswith("- "):
+            if not in_list:
+                parts.append("<ul>")
+                in_list = True
+            body = html_mod.escape(line[2:])
+            body = re.sub(r"`([^`]+)`", r"<code>\1</code>", body)
+            parts.append(f"<li>{body}</li>")
+        else:
+            close_list()
+            body = html_mod.escape(line)
+            body = re.sub(r"`([^`]+)`", r"<code>\1</code>", body)
+            parts.append(f"<p>{body}</p>")
+    close_list()
+    if in_code:
+        parts.append("</code></pre>")
+    return "\n".join(parts)
+
+
+@router.get("/settings/questions/guide", response_class=HTMLResponse, include_in_schema=False)
+async def settings_questions_guide_page(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Render the screening questions admin guide."""
+    user = await get_current_user_optional(request, db)
+    if guard := _guard_page(user, "settings"):
+        return guard
+
+    guide_path = Path(__file__).resolve().parents[2] / "docs" / "admin_questions_guide.md"
+    raw = guide_path.read_text(encoding="utf-8") if guide_path.exists() else ""
+    content_html = _markdown_to_html(raw) if raw else "<p class=\"muted\">Guide file not found.</p>"
+
+    return templates.TemplateResponse(
+        "settings/questions_guide.html",
+        {
+            "request": request,
+            "user": user,
+            "content_html": content_html,
             "active_page": "settings",
             "section": "questions",
         },
@@ -447,7 +723,7 @@ async def settings_faqs_page(request: Request, db: AsyncSession = Depends(get_db
         return guard
 
     faqs = await crud.get_setting_value(db, "screening_faqs", [])
-    from app.core.screening_flow import FAQ_TOPIC_VALUES, normalize_faqs
+    from app.core.screening_flow import normalize_faqs
 
     normalized = normalize_faqs(faqs)
     return templates.TemplateResponse(
@@ -456,7 +732,7 @@ async def settings_faqs_page(request: Request, db: AsyncSession = Depends(get_db
             "request": request,
             "user": user,
             "faqs": normalized,
-            "faq_topic_count": len(FAQ_TOPIC_VALUES),
+            "faq_topic_count": len(normalized),
             "active_page": "settings",
             "section": "faqs",
         },
@@ -532,15 +808,6 @@ async def account_page(request: Request, db: AsyncSession = Depends(get_db)):
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-@router.get("/api/stats")
-async def api_get_stats(
-    db: AsyncSession = Depends(get_db),
-    user: AdminUser = Depends(get_current_user),
-):
-    """Get dashboard stats as JSON (for AJAX refresh)."""
-    return await crud.get_call_stats(db)
-
-
 # Approx number of core questions, used only for the live progress bar.
 _PROGRESS_DENOMINATOR = 15
 
@@ -576,6 +843,10 @@ async def api_monitor(
                         100, round(answered / _PROGRESS_DENOMINATOR * 100)
                     ),
                     "started_at": s.get("started_at"),
+                    "avg_turn_latency_ms": s.get("avg_turn_latency_ms") or 0,
+                    "last_turn_latency_ms": s.get("last_turn_latency_ms") or 0,
+                    "avg_llm_latency_ms": s.get("avg_llm_latency_ms") or 0,
+                    "avg_tts_latency_ms": s.get("avg_tts_latency_ms") or 0,
                 }
             )
     except Exception as e:
@@ -609,7 +880,7 @@ async def api_monitor(
     try:
         from app.services.provider_usage import get_provider_overview
 
-        usage = await get_provider_overview(db, days=30)
+        usage = await get_provider_overview(db, days=30, status=provider_status)
     except Exception as e:
         logger.debug("Provider usage lookup failed: %s", e)
 
@@ -624,51 +895,6 @@ async def api_monitor(
         },
         "stats": stats,
         "usage": usage,
-    }
-
-
-@router.get("/api/calls")
-async def api_list_calls(
-    db: AsyncSession = Depends(get_db),
-    user: AdminUser = Depends(require_scope("calls")),
-    page: int = 1,
-    per_page: int = 20,
-    status: str | None = None,
-    qualification: str | None = None,
-    phone: str | None = None,
-):
-    """List calls as JSON."""
-    calls, total = await crud.list_calls(
-        db,
-        page=page,
-        per_page=per_page,
-        status=status,
-        qualification_status=qualification,
-        phone_search=phone,
-    )
-    return {
-        "calls": [
-            {
-                "id": str(c.id),
-                "call_id": c.call_id,
-                "phone_number": c.phone_number,
-                "status": c.status,
-                "duration_seconds": c.duration_seconds,
-                "questions_answered": c.questions_answered,
-                "qualification_status": c.tenant.qualification_status
-                if c.tenant
-                else None,
-                "qualification_score": c.tenant.qualification_score
-                if c.tenant
-                else None,
-                "llm_provider": c.llm_provider,
-                "created_at": c.created_at.isoformat(),
-            }
-            for c in calls
-        ],
-        "total": total,
-        "page": page,
-        "per_page": per_page,
     }
 
 
@@ -707,19 +933,28 @@ async def api_delete_call(
     db: AsyncSession = Depends(get_db),
     user: AdminUser = Depends(require_scope("calls", edit=True)),
 ):
-    """Soft delete a call record."""
+    """Permanently delete a call, its applicant (CASCADE), and its recording."""
     call = await crud.get_call_by_uuid(db, call_id)
     if not call:
         raise HTTPException(status_code=404, detail="Call not found")
 
-    await crud.soft_delete_call(db, call_id)
+    audit_value = {"call_id": call.call_id, "phone": call.phone_number}
+    recording_url = call.recording_url
+
+    # Remove the stored recording first (best-effort), then the DB rows.
+    if recording_url:
+        from app.services.storage_service import storage_service
+
+        await storage_service.delete_recording(recording_url)
+
+    await crud.hard_delete_call(db, call_id)
     await crud.create_audit_log(
         db,
         action="deleted_call",
         admin_user_id=user.id,
         entity_type="call",
         entity_id=call_id,
-        old_value={"call_id": call.call_id, "phone": call.phone_number},
+        old_value=audit_value,
         ip_address=request.client.host if request.client else None,
     )
     return {"deleted": True}
@@ -745,38 +980,44 @@ async def api_resend_email(
 
     from app.services.email_service import send_screening_email_task
 
+    tenant_payload = {
+        "full_name": tenant.full_name,
+        "contact_phone": tenant.contact_phone,
+        "email": tenant.email,
+        "adults_count": tenant.adults_count,
+        "children_count": tenant.children_count,
+        "occupants_count": tenant.occupants_count,
+        "monthly_income": float(tenant.monthly_income)
+        if tenant.monthly_income
+        else None,
+        "income_raw": tenant.income_raw,
+        "has_pets": tenant.has_pets,
+        "pets_raw": tenant.pets_raw,
+        "pet_type": tenant.pet_type,
+        "pet_breed": tenant.pet_breed,
+        "pet_weight": tenant.pet_weight,
+        "has_eviction": tenant.has_eviction,
+        "eviction_circumstances": tenant.eviction_circumstances,
+        "eviction_raw": tenant.eviction_raw,
+        "move_in_date": str(tenant.move_in_date) if tenant.move_in_date else None,
+        "move_in_raw": tenant.move_in_raw,
+        "move_timing": tenant.move_timing,
+        "current_residence": tenant.current_residence,
+        "residence_duration": tenant.residence_duration,
+        "move_reason": tenant.move_reason,
+        "employer": tenant.employer,
+        "employment_duration": tenant.employment_duration,
+        "general_notes": tenant.general_notes,
+    }
+    if isinstance(tenant.normalized_data, dict):
+        custom = tenant.normalized_data.get("custom_fields")
+        if isinstance(custom, dict):
+            tenant_payload["custom_fields"] = custom
+
     send_screening_email_task.delay(
         call_id=str(call.id),
         phone_number=call.phone_number,
-        tenant_data={
-            "full_name": tenant.full_name,
-            "contact_phone": tenant.contact_phone,
-            "email": tenant.email,
-            "adults_count": tenant.adults_count,
-            "children_count": tenant.children_count,
-            "occupants_count": tenant.occupants_count,
-            "monthly_income": float(tenant.monthly_income)
-            if tenant.monthly_income
-            else None,
-            "income_raw": tenant.income_raw,
-            "has_pets": tenant.has_pets,
-            "pets_raw": tenant.pets_raw,
-            "pet_type": tenant.pet_type,
-            "pet_breed": tenant.pet_breed,
-            "pet_weight": tenant.pet_weight,
-            "has_eviction": tenant.has_eviction,
-            "eviction_circumstances": tenant.eviction_circumstances,
-            "eviction_raw": tenant.eviction_raw,
-            "move_in_date": str(tenant.move_in_date) if tenant.move_in_date else None,
-            "move_in_raw": tenant.move_in_raw,
-            "move_timing": tenant.move_timing,
-            "current_residence": tenant.current_residence,
-            "residence_duration": tenant.residence_duration,
-            "move_reason": tenant.move_reason,
-            "employer": tenant.employer,
-            "employment_duration": tenant.employment_duration,
-            "general_notes": tenant.general_notes,
-        },
+        tenant_data=tenant_payload,
         score=tenant.qualification_score or 0,
         status=tenant.qualification_status or "review",
         reasons=tenant.disqualify_reasons or [],
@@ -856,7 +1097,14 @@ async def api_override_qualification(
         raise HTTPException(status_code=404, detail="No tenant record for this call")
 
     old_status = tenant.qualification_status
-    await crud.update_tenant(db, tenant.id, qualification_status=new_status)
+    flags = dict(tenant.control_flags or {})
+    flags["qualification_status_overridden"] = True
+    await crud.update_tenant(
+        db,
+        tenant.id,
+        qualification_status=new_status,
+        control_flags=flags,
+    )
 
     await crud.create_audit_log(
         db,
@@ -877,10 +1125,16 @@ async def api_export_calls_csv(
     user: AdminUser = Depends(require_scope("calls")),
     status: str | None = None,
     qualification: str | None = None,
+    phone: str | None = None,
 ):
     """Export filtered calls as CSV."""
     calls, _ = await crud.list_calls(
-        db, page=1, per_page=10000, status=status, qualification_status=qualification
+        db,
+        page=1,
+        per_page=10000,
+        status=status,
+        qualification_status=qualification,
+        phone_search=phone,
     )
 
     output = io.StringIO()
@@ -931,24 +1185,11 @@ async def api_blacklist_tenant(
     user: AdminUser = Depends(require_scope("tenants", edit=True)),
 ):
     """Blacklist a tenant's phone number."""
-    from sqlalchemy import select
-
-    from app.models.tenant import Tenant
-
-    result = await db.execute(select(Tenant).where(Tenant.id == tenant_id))
-    tenant = result.scalar_one_or_none()
+    tenant = await crud.get_tenant_by_id(db, tenant_id)
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
 
-    blacklist = await crud.get_setting_value(db, "blacklisted_numbers", [])
-    if tenant.phone_number not in blacklist:
-        blacklist.append(tenant.phone_number)
-        import json
-
-        await crud.set_setting(
-            db, "blacklisted_numbers", json.dumps(blacklist), updated_by=user.id
-        )
-
+    await crud.add_to_blacklist(db, tenant.phone_number, updated_by=user.id)
     await crud.update_tenant(db, tenant_id, is_blacklisted=True)
     await crud.create_audit_log(
         db,
@@ -999,16 +1240,6 @@ async def api_export_analytics_csv(
     )
 
 
-@router.get("/api/analytics/data")
-async def api_get_analytics(
-    db: AsyncSession = Depends(get_db),
-    user: AdminUser = Depends(require_scope("analytics")),
-    days: int = 30,
-):
-    """Get analytics data as JSON for Chart.js rendering."""
-    return await crud.get_analytics_data(db, days=days)
-
-
 # ──────────────────────────────────────────────────────────────────────────────
 # Update Endpoints (Admin Editing)
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1044,12 +1275,7 @@ async def api_update_tenant(
     user: AdminUser = Depends(require_scope("tenants", edit=True)),
 ):
     """Update tenant information."""
-    from sqlalchemy import select
-
-    from app.models.tenant import Tenant
-
-    result = await db.execute(select(Tenant).where(Tenant.id == tenant_id))
-    tenant = result.scalar_one_or_none()
+    tenant = await crud.get_tenant_by_id(db, tenant_id)
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
 
@@ -1085,13 +1311,17 @@ async def api_update_tenant(
 
 async def _rescore_tenant(db: AsyncSession, tenant_id: uuid.UUID) -> dict:
     """Recalculate and persist a tenant's qualification score after an edit."""
-    from sqlalchemy import select
+    from app.core.qualifier import (
+        build_tenant_scoring_data,
+        calculate_qualification_score,
+    )
+    from app.core.question_flow import (
+        normalize_questions,
+        questions_snapshot_from_tenant,
+        scoring_thresholds_from_tenant,
+    )
 
-    from app.core.qualifier import calculate_qualification_score
-    from app.models.tenant import Tenant
-
-    result = await db.execute(select(Tenant).where(Tenant.id == tenant_id))
-    tenant = result.scalar_one_or_none()
+    tenant = await crud.get_tenant_by_id(db, tenant_id)
     if not tenant:
         return {}
 
@@ -1101,40 +1331,33 @@ async def _rescore_tenant(db: AsyncSession, tenant_id: uuid.UUID) -> dict:
         if call:
             questions_answered = call.questions_answered or 0
 
-    tenant_data = {
-        "monthly_income": float(tenant.monthly_income)
-        if tenant.monthly_income is not None
-        else None,
-        "income_raw": tenant.income_raw,
-        "has_eviction": tenant.has_eviction,
-        "eviction_circumstances": tenant.eviction_circumstances,
-        "eviction_raw": tenant.eviction_raw,
-        "current_residence": tenant.current_residence,
-        "residence_duration": tenant.residence_duration,
-        "move_reason": tenant.move_reason,
-        "move_in_date": tenant.move_in_date,
-        "move_in_raw": tenant.move_in_raw,
-        "move_timing": tenant.move_timing,
-        "occupants_count": tenant.occupants_count,
-        "adults_count": tenant.adults_count,
-        "children_count": tenant.children_count,
-        "has_pets": tenant.has_pets,
-        "pet_type": tenant.pet_type,
-        "pets_raw": tenant.pets_raw,
-        "pet_weight": tenant.pet_weight,
-        "general_notes": tenant.general_notes,
-        "questions_answered": questions_answered,
-    }
+    tenant_data = build_tenant_scoring_data(
+        tenant, questions_answered=questions_answered
+    )
 
     settings_map = await crud.get_all_settings(db)
-    score, status, reasons = calculate_qualification_score(tenant_data, settings_map)
-    await crud.update_tenant(
-        db,
-        tenant_id,
-        qualification_score=score,
-        qualification_status=status,
-        disqualify_reasons=reasons if reasons else None,
+    # Re-score against the questions ACTUALLY ASKED on this call (the per-call
+    # snapshot), not the current config — otherwise editing a tenant after an
+    # admin changed the question set would silently rescore against a different
+    # flow. Fall back to current config only for legacy rows without a snapshot.
+    questions_cfg = questions_snapshot_from_tenant(tenant) or normalize_questions(
+        await crud.get_setting_value(db, "screening_questions", [])
     )
+    scoring_settings = scoring_thresholds_from_tenant(tenant, fallback_settings=settings_map)
+    score, status, reasons = calculate_qualification_score(
+        tenant_data, scoring_settings, questions=questions_cfg
+    )
+    flags = tenant.control_flags or {}
+    status_overridden = bool(flags.get("qualification_status_overridden"))
+    update_kwargs: dict = {
+        "qualification_score": score,
+        "disqualify_reasons": reasons if reasons else None,
+    }
+    if not status_overridden:
+        update_kwargs["qualification_status"] = status
+    else:
+        status = tenant.qualification_status or status
+    await crud.update_tenant(db, tenant_id, **update_kwargs)
     return {"qualification_score": score, "qualification_status": status}
 
 
@@ -1145,23 +1368,12 @@ async def _rescore_tenant(db: AsyncSession, tenant_id: uuid.UUID) -> dict:
 
 def _validate_scopes(role: str, scopes: list[str]) -> list[str]:
     """Validate and normalize scope list for staff/viewer roles."""
-    from app.models.user import ALL_SCOPES, ASSIGNABLE_ROLES
+    from app.models.user import validate_assignable_scopes
 
-    if role not in ASSIGNABLE_ROLES:
-        raise HTTPException(status_code=400, detail=f"Invalid role: {role}")
-    cleaned = sorted({s.strip() for s in scopes if s.strip()})
-    invalid = set(cleaned) - ALL_SCOPES
-    if invalid:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unknown access areas: {', '.join(sorted(invalid))}",
-        )
-    if role in ("staff", "viewer") and not cleaned:
-        raise HTTPException(
-            status_code=400,
-            detail="Pick at least one access area for staff and viewer accounts.",
-        )
-    return cleaned
+    try:
+        return validate_assignable_scopes(role, scopes)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 class AdminUserCreateRequest(BaseModel):
@@ -1177,6 +1389,7 @@ class AdminUserUpdateRequest(BaseModel):
     role: str | None = None
     scopes: list[str] | None = None
     is_active: bool | None = None
+    password: str | None = None
 
 
 @router.post("/api/users")
@@ -1294,6 +1507,19 @@ async def api_update_user(
             perm_update = []  # admin — implicit full access, clear stored scopes
     elif payload.scopes is not None:
         perm_update = _validate_scopes(new_role, payload.scopes)
+
+    if payload.password is not None:
+        from app.utils.security import hash_password
+
+        new_password = payload.password.strip()
+        if len(new_password) < 8:
+            raise HTTPException(
+                status_code=400,
+                detail="Password must be at least 8 characters.",
+            )
+        await crud.update_user_password(
+            db, user_id, hash_password(new_password)
+        )
 
     updated = await crud.update_user(
         db,

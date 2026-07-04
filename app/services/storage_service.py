@@ -112,4 +112,27 @@ class StorageService:
             return None
 
 
+    async def delete_recording(self, object_path: str) -> bool:
+        """Delete a stored recording object by its ``{bucket}/{name}`` path.
+
+        Used when a call is hard-deleted so recordings don't linger in storage.
+        Returns True on success (or if storage isn't configured / already gone).
+        """
+        if not self.base_url or not self.secret_key or not object_path:
+            return False
+        if object_path.startswith(("http://", "https://")):
+            # Legacy public URLs aren't deletable by path; skip silently.
+            return False
+        url = f"{self.base_url}/storage/v1/object/{object_path}"
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.delete(url, headers=self._auth_headers())
+                response.raise_for_status()
+                logger.info(f"Recording deleted: {object_path}")
+                return True
+        except Exception as e:
+            logger.error(f"Failed to delete recording {object_path}: {e}")
+            return False
+
+
 storage_service = StorageService()

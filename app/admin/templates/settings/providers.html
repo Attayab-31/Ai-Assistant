@@ -1,6 +1,7 @@
 {% extends "settings/base.html" %}
 {% block title %}AI & Voice{% endblock %}
 {% block page_title %}AI &amp; Voice{% endblock %}
+{% block settings_page_sub %}<div class="sub">Check that your phone engines are working. Switch to Advanced only if support asked you to change providers or keys.</div>{% endblock %}
 {% block settings_content %}
 
 {% set llm_names = {"groq": "Groq", "openai": "OpenAI", "openrouter": "OpenRouter", "gemini": "Google Gemini"} %}
@@ -9,31 +10,82 @@
 {% set cur_llm = provider_status.llm or settings.get('active_llm_provider') %}
 {% set cur_stt = provider_status.stt or settings.get('active_stt_provider') %}
 {% set cur_tts = provider_status.tts or settings.get('active_tts_provider') %}
+{% set llm_models = {
+  'groq': settings.get('active_groq_model', ''),
+  'openai': settings.get('active_openai_model', ''),
+  'openrouter': settings.get('active_openrouter_model', ''),
+  'gemini': settings.get('active_gemini_model', ''),
+} %}
+{% set cur_llm_model = llm_models.get(cur_llm, '') %}
+{% set cur_stt_model = settings.get('deepgram_model', '') if cur_stt == 'deepgram' else settings.get('groq_stt_model', 'whisper-large-v3-turbo') %}
+{% set cur_tts_voice = settings.get('tts_voice_deepgram', '') if cur_tts == 'deepgram' else settings.get('tts_voice_google', '') %}
+{% set cur_latency = settings.get('voice_latency_profile', 'balanced')|string|lower %}
+{% set stream_on = settings.get('llm_streaming_enabled', 'true')|string|lower == 'true' %}
 
-<div class="stack">
+<div class="settings-mode-bar">
+  <p class="text-muted" style="margin: 0;">Most accounts never need to change these — use Simple view to confirm everything is connected.</p>
+  <div class="settings-mode-toggle" role="group" aria-label="View mode">
+    <button type="button" class="active" data-providers-mode="simple">Simple</button>
+    <button type="button" data-providers-mode="advanced">Advanced</button>
+  </div>
+</div>
+
+<div id="providersSimple">
+  <div class="form-section">
+    <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;">
+      <h3 style="margin: 0;">Is everything working?</h3>
+      <button type="button" class="btn btn-primary" onclick="withBtnLoading(this, checkHealth, 'Checking\u2026')">Run health check</button>
+    </div>
+    <div id="healthOutputSimple" style="margin-top: 14px; display: none;"></div>
+  </div>
+
+  <div class="provider-simple-grid" style="margin-top: 16px;">
+    <div class="provider-simple-card">
+      <div class="role">AI assistant</div>
+      <div class="name">{{ llm_names.get(cur_llm, cur_llm) or 'Not set' }}</div>
+      <div class="detail">{% if cur_llm_model %}Model: {{ cur_llm_model }}{% else %}Default model{% endif %}</div>
+    </div>
+    <div class="provider-simple-card">
+      <div class="role">Speech recognition</div>
+      <div class="name">{{ stt_names.get(cur_stt, cur_stt) or 'Not set' }}</div>
+      <div class="detail">Listens to what callers say</div>
+    </div>
+    <div class="provider-simple-card">
+      <div class="role">Spoken replies</div>
+      <div class="name">{{ tts_names.get(cur_tts, cur_tts) or 'Not set' }}</div>
+      <div class="detail">{% if cur_tts == 'google' %}Speed: {{ settings.get('tts_speed', '1.0') }}{% else %}Natural voice pace{% endif %}</div>
+    </div>
+  </div>
+
+  <p class="text-muted" style="margin-top: 16px;">
+    Need to switch engines or rotate provider keys?
+    <button type="button" class="btn-ghost btn-sm" data-providers-mode="advanced" onclick="document.querySelector('[data-providers-mode=advanced]').click()">Open advanced settings</button>
+  </p>
+</div>
+
+<div id="providersAdvanced" hidden>
+<div class="stack settings-form">
   <div class="callout">
-    <span>🤖</span>
-    <span>
-      These are the three engines that power your phone calls. The current setup is
-      already working — <strong>you usually don't need to change anything here</strong>.
-      Only switch an engine if support asked you to, or if one stops working.
-    </span>
+    These are the three engines that power your phone calls. The current setup is
+    already working — <strong>you usually don't need to change anything here</strong>.
+    Only switch an engine if support asked you to, or if one stops working.
   </div>
 
   <!-- Check everything works -->
   <div class="form-section">
     <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;">
       <h3 style="margin: 0;">Is everything working?</h3>
-      <button type="button" class="btn btn-primary" onclick="withBtnLoading(this, checkHealth, 'Checking\u2026')">✅ Check now</button>
+      <button type="button" class="btn btn-primary" onclick="withBtnLoading(this, checkHealth, 'Checking\u2026')">Run health check</button>
     </div>
     <div id="healthOutput" style="margin-top: 14px; display: none;"></div>
   </div>
 
   <!-- AI Brain (LLM) -->
   <div class="form-section">
-    <div class="engine-name">🧠 AI Brain <span class="dot ok" title="active"></span></div>
-    <p class="engine-desc">Understands what the caller says and decides how to reply. Currently using <strong>{{ llm_names.get(cur_llm, cur_llm) or '—' }}</strong>.</p>
-    <label>Change the AI brain</label>
+    <div class="engine-name">AI assistant <span class="dot ok" title="active"></span></div>
+    <p class="engine-desc">Understands what the caller says and decides how to reply. Currently using <strong>{{ llm_names.get(cur_llm, cur_llm) or '—' }}</strong>{% if cur_llm_model %} · model <code>{{ cur_llm_model }}</code>{% endif %}.</p>
+    <p class="text-muted" style="margin-top: 0;">Any provider below can be primary. Groq, OpenAI, Gemini, and OpenRouter support <strong>streaming</strong> for faster speech on live calls.</p>
+    <label for="llm_provider">Change AI assistant</label>
     <select id="llm_provider">
       {% for p in ["groq", "openai", "openrouter", "gemini"] %}
       <option value="{{ p }}" {% if cur_llm == p %}selected{% endif %}>{{ llm_names[p] }}{% if cur_llm == p %} (current){% endif %}</option>
@@ -43,21 +95,22 @@
       <summary>Advanced options</summary>
       <div class="form-group" style="margin-bottom: 10px;">
         <label>Specific model name (optional)</label>
-        <input type="text" id="llm_model" placeholder="Leave blank for the recommended default" />
+        <input type="text" id="llm_model" value="{{ cur_llm_model }}" placeholder="e.g. llama-3.3-70b-versatile" />
+        <p class="text-muted" style="margin: 4px 0 0;">Saved per provider. Switch provider above, then set the model you want for that engine.</p>
       </div>
       <div class="form-group" style="margin-bottom: 0;">
-        <label>Replace API key (optional)</label>
+        <label>Replace provider key (optional)</label>
         <input type="password" id="llm_api_key" placeholder="Only if you're rotating the key" autocomplete="new-password" />
       </div>
     </details>
-    <div style="margin-top: 12px;"><button type="button" class="btn btn-primary" onclick="withBtnLoading(this, () => switchProvider('llm'), 'Saving\u2026')">Save AI brain</button></div>
+    <div style="margin-top: 12px;"><button type="button" class="btn btn-primary settings-save" onclick="withBtnLoading(this, () => switchProvider('llm'), 'Saving\u2026')">Save AI assistant</button></div>
   </div>
 
   <!-- Ears (STT) -->
   <div class="form-section">
-    <div class="engine-name">🎧 Ears (Speech-to-Text) <span class="dot ok" title="active"></span></div>
+    <div class="engine-name">Listening (speech-to-text) <span class="dot ok" title="active"></span></div>
     <p class="engine-desc">Turns what the caller says into text the assistant can read. Currently using <strong>{{ stt_names.get(cur_stt, cur_stt) or '—' }}</strong>.</p>
-    <label>Change the ears</label>
+    <label for="stt_provider">Change listening engine</label>
     <select id="stt_provider">
       {% for p in ["deepgram", "groq"] %}
       <option value="{{ p }}" {% if cur_stt == p %}selected{% endif %}>{{ stt_names[p] }}{% if cur_stt == p %} (current){% endif %}</option>
@@ -67,21 +120,21 @@
       <summary>Advanced options</summary>
       <div class="form-group" style="margin-bottom: 10px;">
         <label>Specific model name (optional)</label>
-        <input type="text" id="stt_model" placeholder="Leave blank for the recommended default" />
+        <input type="text" id="stt_model" value="{{ cur_stt_model }}" placeholder="Leave blank for the recommended default" />
       </div>
       <div class="form-group" style="margin-bottom: 0;">
-        <label>Replace API key (optional)</label>
+        <label>Replace provider key (optional)</label>
         <input type="password" id="stt_api_key" placeholder="Only if you're rotating the key" autocomplete="new-password" />
       </div>
     </details>
-    <div style="margin-top: 12px;"><button type="button" class="btn btn-primary" onclick="withBtnLoading(this, () => switchProvider('stt'), 'Saving\u2026')">Save ears</button></div>
+    <div style="margin-top: 12px;"><button type="button" class="btn btn-primary settings-save" onclick="withBtnLoading(this, () => switchProvider('stt'), 'Saving\u2026')">Save listening engine</button></div>
   </div>
 
   <!-- Voice (TTS) -->
   <div class="form-section">
-    <div class="engine-name">🔊 Voice (Text-to-Speech) <span class="dot ok" title="active"></span></div>
+    <div class="engine-name">Speaking voice (text-to-speech) <span class="dot ok" title="active"></span></div>
     <p class="engine-desc">Gives the assistant its spoken voice on the call. Currently using <strong>{{ tts_names.get(cur_tts, cur_tts) or '—' }}</strong>.</p>
-    <label>Change the voice</label>
+    <label for="tts_provider">Change the voice</label>
     <select id="tts_provider" onchange="updateSpeedState()">
       {% for p in ["google", "deepgram"] %}
       <option value="{{ p }}" {% if cur_tts == p %}selected{% endif %}>{{ tts_names[p] }}{% if cur_tts == p %} (current){% endif %}</option>
@@ -91,21 +144,21 @@
       <label>Speaking speed</label>
       <input type="number" id="tts_speed" min="0.75" max="1.25" step="0.05" value="{{ settings.get('tts_speed', '1.0') }}" />
       <p class="text-muted" id="speedHelp" style="margin: 4px 0 0;">1.0 is normal. Lower is slower, higher is faster (between 0.75 and 1.25).</p>
-      <div id="speedDisabledNote" class="warn-note" style="display:none; margin-top:6px;">⚠️ The Deepgram voice plays at a fixed natural pace and ignores speed. Switch the voice to <strong>Google</strong> to control speaking speed.</div>
+      <div id="speedDisabledNote" class="warn-note" style="display:none; margin-top:6px;"><strong>Note:</strong> The Deepgram voice plays at a fixed natural pace and ignores speed. Switch the voice to <strong>Google</strong> to control speaking speed.</div>
     </div>
     <details class="adv">
       <summary>Advanced options</summary>
       <div class="form-group" style="margin-bottom: 0;">
         <label>Specific voice name (optional)</label>
-        <input type="text" id="tts_voice" placeholder="Leave blank for the recommended default" />
+        <input type="text" id="tts_voice" value="{{ cur_tts_voice }}" placeholder="Leave blank for the recommended default" />
       </div>
     </details>
-    <div style="margin-top: 12px;"><button type="button" class="btn btn-primary" onclick="withBtnLoading(this, () => switchProvider('tts'), 'Saving\u2026')">Save voice</button></div>
+    <div style="margin-top: 12px;"><button type="button" class="btn btn-primary settings-save" onclick="withBtnLoading(this, () => switchProvider('tts'), 'Saving\u2026')">Save voice</button></div>
   </div>
 
   <!-- API Keys (all providers) -->
   <div class="form-section">
-    <div class="engine-name">🔑 API keys</div>
+    <div class="engine-name">Provider keys</div>
     <p class="engine-desc">
       Set or update the key for <strong>any</strong> provider here — including ones you only use as a
       backup. You don't have to make a provider active to give it a key. Leave a box blank to keep the
@@ -113,11 +166,11 @@
     </p>
 
     {% set key_rows = [
-      ("groq", "Groq", "AI brain"),
-      ("openai", "OpenAI", "AI brain"),
-      ("openrouter", "OpenRouter", "AI brain"),
-      ("gemini", "Google Gemini", "AI brain"),
-      ("deepgram", "Deepgram", "Ears + Voice")
+      ("groq", "Groq", "AI assistant"),
+      ("openai", "OpenAI", "AI assistant"),
+      ("openrouter", "OpenRouter", "AI assistant"),
+      ("gemini", "Google Gemini", "AI assistant"),
+      ("deepgram", "Deepgram", "Speech + voice")
     ] %}
 
     {% for pid, pname, prole in key_rows %}
@@ -125,28 +178,51 @@
       <label style="display:flex; align-items:center; gap:8px; justify-content:space-between; flex-wrap:wrap;">
         <span>{{ pname }} <span class="text-muted">· {{ prole }}</span></span>
         {% if provider_keys.get(pid) %}
-        <span style="color: var(--ok); font-weight:600; font-size: 0.85em;">✓ Key set</span>
+        <span style="color: var(--ok); font-weight:600; font-size: 0.85em;">Key set</span>
         {% else %}
-        <span style="color: var(--bad); font-weight:600; font-size: 0.85em;">✗ No key</span>
+        <span style="color: var(--bad); font-weight:600; font-size: 0.85em;">No key</span>
         {% endif %}
       </label>
       <div style="display:flex; gap:8px; flex-wrap:wrap;">
         <input type="password" id="apikey_{{ pid }}" autocomplete="new-password" style="flex:1; min-width:200px;"
-               placeholder="{% if provider_keys.get(pid) %}Enter a new key to rotate (or leave blank){% else %}Paste the API key{% endif %}" />
-        <button type="button" class="btn btn-primary" onclick="withBtnLoading(this, () => saveApiKey('{{ pid }}', '{{ pname }}'), 'Saving\u2026')">Save key</button>
+               placeholder="{% if provider_keys.get(pid) %}Enter a new key to rotate (or leave blank){% else %}Paste the provider key{% endif %}" />
+        <button type="button" class="btn btn-primary settings-save" onclick="withBtnLoading(this, () => saveApiKey('{{ pid }}', '{{ pname }}'), 'Saving\u2026')">Save key</button>
       </div>
     </div>
     {% endfor %}
 
     <p class="text-muted" style="margin: 4px 0 0;">
-      Google TTS uses a service-account credentials file (set <code>GOOGLE_APPLICATION_CREDENTIALS</code>
-      on the server), so it isn't a simple key here.
+      Google spoken replies use a service-account credentials file on the server
+      (<code>GOOGLE_APPLICATION_CREDENTIALS</code>) — not a simple key here.
     </p>
+  </div>
+
+  <!-- Voice latency -->
+  <div class="form-section">
+    <div class="engine-name">Voice latency</div>
+    <p class="engine-desc">How quickly the assistant responds on phone calls. Applies to <strong>new calls only</strong> after you save.</p>
+    <div class="form-group">
+      <label>Latency profile</label>
+      <select id="voice_latency_profile">
+        <option value="fast" {% if cur_latency == 'fast' %}selected{% endif %}>Fast — shorter waits, tighter timeouts (best for snappy screening)</option>
+        <option value="balanced" {% if cur_latency == 'balanced' %}selected{% endif %}>Balanced — recommended default</option>
+        <option value="quality" {% if cur_latency == 'quality' %}selected{% endif %}>Quality — more patience for slow models or noisy lines</option>
+      </select>
+    </div>
+    <div class="form-group" style="margin-top: 12px;">
+      <label>Stream AI replies to voice while thinking?</label>
+      <select id="llm_streaming_enabled">
+        <option value="true" {% if stream_on %}selected{% endif %}>Yes — start speaking sooner (recommended)</option>
+        <option value="false" {% if not stream_on %}selected{% endif %}>No — wait for the full AI reply before speaking</option>
+      </select>
+      <p class="text-muted" style="margin: 4px 0 0;">Works with Groq, OpenAI, Gemini, and OpenRouter when they are the active AI assistant.</p>
+    </div>
+    <div style="margin-top: 12px;"><button type="button" class="btn btn-primary settings-save" onclick="withBtnLoading(this, saveLatency, 'Saving\u2026')">Save latency</button></div>
   </div>
 
   <!-- Reliability -->
   <div class="form-section">
-    <div class="engine-name">🛟 Automatic backup</div>
+    <div class="engine-name">Automatic backup</div>
     <p class="engine-desc">If the main engine has a hiccup during a call, the assistant can instantly switch to a backup so the call keeps going.</p>
     <label>Use a backup engine if the main one fails?</label>
     <select id="auto_fallback_enabled">
@@ -159,7 +235,7 @@
     {% set cur_tts_fb = settings.get('tts_fallback_provider', 'auto')|string|lower %}
 
     <div class="form-group" style="margin-top: 14px;">
-      <label>🧠 Backup AI brain</label>
+      <label>Backup AI assistant</label>
       <select id="llm_fallback_provider">
         <option value="auto" {% if cur_llm_fb == 'auto' %}selected{% endif %}>Automatic — try any available (recommended)</option>
         <option value="groq" {% if cur_llm_fb == 'groq' %}selected{% endif %}>Groq</option>
@@ -168,11 +244,11 @@
         <option value="gemini" {% if cur_llm_fb == 'gemini' %}selected{% endif %}>Google Gemini</option>
         <option value="none" {% if cur_llm_fb == 'none' %}selected{% endif %}>No backup</option>
       </select>
-      <p class="text-muted" style="margin: 4px 0 0;">Used only if the main AI brain fails. Needs that provider's API key to be set.</p>
+      <p class="text-muted" style="margin: 4px 0 0;">Used only if the main AI assistant fails. Needs that provider's key to be set.</p>
     </div>
 
     <div class="form-group" style="margin-top: 12px;">
-      <label>🎧 Backup ears (Speech-to-Text)</label>
+      <label>Backup listening (speech-to-text)</label>
       <select id="stt_fallback_provider">
         <option value="auto" {% if cur_stt_fb == 'auto' %}selected{% endif %}>Automatic — try any available (recommended)</option>
         <option value="deepgram" {% if cur_stt_fb == 'deepgram' %}selected{% endif %}>Deepgram</option>
@@ -182,7 +258,7 @@
     </div>
 
     <div class="form-group" style="margin-top: 12px;">
-      <label>🔊 Backup voice (Text-to-Speech)</label>
+      <label>Backup speaking voice (text-to-speech)</label>
       <select id="tts_fallback_provider">
         <option value="auto" {% if cur_tts_fb == 'auto' %}selected{% endif %}>Automatic — try any available (recommended)</option>
         <option value="deepgram" {% if cur_tts_fb == 'deepgram' %}selected{% endif %}>Deepgram</option>
@@ -191,12 +267,13 @@
       </select>
     </div>
 
-    <div style="margin-top: 12px;"><button type="button" class="btn btn-primary" onclick="withBtnLoading(this, saveReliability, 'Saving\u2026')">Save</button></div>
+    <div style="margin-top: 12px;"><button type="button" class="btn btn-primary settings-save" onclick="withBtnLoading(this, saveReliability, 'Saving\u2026')">Save</button></div>
   </div>
+</div>
 </div>
 
 <script>
-  const ENGINE_LABELS = { llm: '🧠 AI Brain', stt: '🎧 Ears', tts: '🔊 Voice' };
+  const ENGINE_LABELS = { llm: 'AI assistant', stt: 'Speech recognition', tts: 'Spoken replies' };
 
   // Speaking speed only applies to Google TTS. Deepgram ignores it, so grey the
   // field out and explain why when Deepgram is the selected voice.
@@ -237,10 +314,10 @@
         const err = await r.json().catch(() => ({}));
         throw new Error(err.detail || r.statusText);
       }
-      showMessage('✓ Saved — new calls will use this right away.');
+      showMessage('Saved — new calls will use this right away.');
       setTimeout(() => location.reload(), 1200);
     } catch (e) {
-      showMessage('✗ Could not switch: ' + e.message, true);
+      showMessage('Could not switch: ' + e.message, true);
     }
   }
 
@@ -262,10 +339,78 @@
         throw new Error(err.detail || r.statusText);
       }
       input.value = '';
-      showMessage('✓ ' + label + ' key saved — new calls will use it right away.');
+      showMessage(label + ' key saved — new calls will use it right away.');
       setTimeout(() => location.reload(), 1200);
     } catch (e) {
-      showMessage('✗ Could not save key: ' + e.message, true);
+      showMessage('Could not save key: ' + e.message, true);
+    }
+  }
+
+  const LLM_MODELS = {{ llm_models | tojson }};
+  const STT_MODELS = {
+    deepgram: {{ settings.get('deepgram_model', '') | tojson }},
+    groq: {{ settings.get('groq_stt_model', 'whisper-large-v3-turbo') | tojson }},
+  };
+  const TTS_VOICES = {
+    deepgram: {{ settings.get('tts_voice_deepgram', '') | tojson }},
+    google: {{ settings.get('tts_voice_google', '') | tojson }},
+  };
+
+  function syncLlmModelField() {
+    const provider = document.getElementById('llm_provider').value;
+    const input = document.getElementById('llm_model');
+    if (input && LLM_MODELS[provider]) {
+      input.value = LLM_MODELS[provider] || '';
+    }
+  }
+
+  function syncSttModelField() {
+    const provider = document.getElementById('stt_provider').value;
+    const input = document.getElementById('stt_model');
+    if (input && STT_MODELS[provider] !== undefined) {
+      input.value = STT_MODELS[provider] || '';
+    }
+  }
+
+  function syncTtsVoiceField() {
+    const provider = document.getElementById('tts_provider').value;
+    const input = document.getElementById('tts_voice');
+    if (input && TTS_VOICES[provider] !== undefined) {
+      input.value = TTS_VOICES[provider] || '';
+    }
+  }
+
+  document.getElementById('llm_provider').addEventListener('change', syncLlmModelField);
+  document.getElementById('stt_provider').addEventListener('change', syncSttModelField);
+  document.getElementById('tts_provider').addEventListener('change', () => {
+    syncTtsVoiceField();
+    updateSpeedState();
+  });
+
+  async function saveLatency() {
+    const data = {
+      voice_latency_profile: document.getElementById('voice_latency_profile').value,
+      llm_streaming_enabled: document.getElementById('llm_streaming_enabled').value === 'true',
+    };
+    try {
+      const r = await fetch('/api/settings/general', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        throw new Error(err.detail || r.statusText);
+      }
+      const result = await r.json();
+      let msg = 'Latency settings saved — new calls will use this.';
+      if (result.warnings && result.warnings.length) {
+        msg += ' ' + result.warnings.join(' ');
+      }
+      showMessage(msg, !!(result.warnings && result.warnings.length));
+      setTimeout(() => location.reload(), 1200);
+    } catch (e) {
+      showMessage('Could not save: ' + e.message, true);
     }
   }
 
@@ -286,33 +431,41 @@
         const err = await r.json().catch(() => ({}));
         throw new Error(err.detail || r.statusText);
       }
-      showMessage('✓ Saved — new calls will use this right away.');
+      showMessage('Saved — new calls will use this right away.');
       setTimeout(() => location.reload(), 1200);
     } catch (e) {
-      showMessage('✗ Could not save: ' + e.message, true);
+      showMessage('Could not save: ' + e.message, true);
     }
   }
 
   async function checkHealth() {
     const out = document.getElementById('healthOutput');
-    out.style.display = 'block';
-    out.innerHTML = '<span class="text-muted">⏳ Checking…</span>';
+    const outSimple = document.getElementById('healthOutputSimple');
+    const targets = [out, outSimple].filter(Boolean);
+    targets.forEach((el) => { el.style.display = 'block'; el.innerHTML = '<span class="text-muted">Checking…</span>'; });
     try {
       const r = await fetch('/api/settings/health');
       if (!r.ok) throw new Error(r.statusText);
       const data = await r.json();
-      const rows = ['llm', 'stt', 'tts'].map((k) => {
-        const info = data[k] || {};
+      const renderRow = (info, label) => {
         const ok = !!info.healthy;
         const latency = info.latency_ms != null ? ` · ${info.latency_ms} ms` : '';
+        const role = info.role === 'backup' ? 'backup' : 'primary';
         return `<div class="status-row">
-          <span style="display:flex; align-items:center; gap:8px;"><span class="dot ${ok ? 'ok' : 'bad'}"></span> ${ENGINE_LABELS[k]} <span class="text-muted">(${info.provider || '—'})</span></span>
-          <span style="color:${ok ? 'var(--ok)' : 'var(--bad)'}; font-weight:600;">${ok ? '✓ Working' + latency : '✗ Not responding'}</span>
+          <span style="display:flex; align-items:center; gap:8px;"><span class="dot ${ok ? 'ok' : 'bad'}"></span> ${label} <span class="text-muted">(${info.provider || '—'}, ${role})</span></span>
+          <span style="color:${ok ? 'var(--ok)' : 'var(--bad)'}; font-weight:600;">${ok ? 'Working' + latency : 'Not responding'}</span>
         </div>`;
+      };
+      const rows = ['llm', 'stt', 'tts'].map((k) => {
+        const primary = data[k] || {};
+        const backups = data[`${k}_backups`] || [];
+        return renderRow(primary, ENGINE_LABELS[k])
+          + backups.map(b => renderRow(b, `${ENGINE_LABELS[k]} backup`)).join('');
       }).join('');
-      out.innerHTML = rows;
+      targets.forEach((el) => { el.innerHTML = rows; });
     } catch (e) {
-      out.innerHTML = `<div class="alert alert-error" style="margin:0;">Couldn't run the check: ${e.message}</div>`;
+      const errHtml = `<div class="alert alert-error" style="margin:0;">Couldn't run the check: ${e.message}</div>`;
+      targets.forEach((el) => { el.innerHTML = errHtml; });
     }
   }
 

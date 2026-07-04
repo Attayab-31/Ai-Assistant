@@ -1,24 +1,38 @@
 {% extends "base.html" %}
-{% block title %}Audit Log{% endblock %}
-{% block page_title %}Audit Log{% endblock %}
+{% from "partials/macros.html" import list_pagination %}
+{% block title %}Activity log{% endblock %}
+{% block page_title %}Activity log{% endblock %}
+{% block page_sub %}<div class="sub">A record of important actions taken in the admin panel.</div>{% endblock %}
 {% block content %}
+<form class="toolbar" method="get" onsubmit="setBtnLoading(event.submitter, true, 'Filtering\u2026')">
+  <select name="action" aria-label="Filter by action">
+    <option value="">All actions</option>
+    {% for code, label in action_choices %}
+      <option value="{{ code }}" {{ "selected" if action_filter == code else "" }}>{{ label }}</option>
+    {% endfor %}
+  </select>
+  <button type="submit" class="btn btn-primary">Apply filters</button>
+  {% if action_filter %}
+  <a class="btn btn-secondary" href="/admin/audit-log">Clear filter</a>
+  {% endif %}
+</form>
 <div class="table-wrap">
 <table>
-  <thead><tr><th>Action</th><th>User</th><th>Entity</th><th>Date</th></tr></thead>
+  <thead><tr><th scope="col">Action</th><th scope="col">User</th><th scope="col">Record</th><th scope="col">When</th></tr></thead>
   <tbody>
   {% for log in logs %}
     <tr>
-      <td>{{ log.action }}</td>
-      <td>{{ user_map.get(log.admin_user_id|string, "-") }}</td>
-      <td>{{ log.entity_type or "-" }}</td>
-      <td>{{ log.created_at|time_ago }}</td>
+      <td>{{ log.action|friendly_audit_action }}</td>
+      <td>{{ user_map.get(log.admin_user_id|string, "—") }}</td>
+      <td>{{ log.entity_type|friendly_audit_entity }}</td>
+      <td class="muted">{{ log.created_at|time_ago }}</td>
     </tr>
   {% else %}
-    <tr><td colspan="4" class="muted">No audit entries.</td></tr>
+    <tr><td colspan="4"><div class="empty"><span class="empty-title">No activity yet</span>{% if action_filter %}Nothing matches this filter.{% else %}Changes made in the admin panel will be listed here.{% endif %}</div></td></tr>
   {% endfor %}
   </tbody>
 </table>
 </div>
-<p class="muted">Page {{ page }} of {{ total_pages }} | {{ total }} entries</p>
+{% set audit_filters = {'action': action_filter} if action_filter else {} %}
+{{ list_pagination('/admin/audit-log', page, total_pages, audit_filters, total, 'entry' if total == 1 else 'entries') }}
 {% endblock %}
-

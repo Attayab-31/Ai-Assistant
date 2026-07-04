@@ -17,23 +17,21 @@ DEEPGRAM_TTS_URL = "https://api.deepgram.com/v1/speak"
 DEFAULT_VOICE = "aura-2-thalia-en"
 VOICE_NAME_PATTERN = re.compile(r"^aura(?:-2)?-[a-z0-9-]+-[a-z]{2}$")
 
-# Bound (rather than fully serialize) concurrent Deepgram TTS requests. The old
-# DECRYPTION_FAILED_OR_BAD_RECORD_MAC / silent-audio bug came from a *shared*
-# httpx client being closed mid-flight; each synthesize() now opens and closes
-# its own client, so concurrent calls are safe. We still cap concurrency to avoid
-# opening unbounded TLS connections under many simultaneous calls.
 _DEEPGRAM_TTS_MAX_CONCURRENCY = 8
 _DEEPGRAM_TTS_SEMAPHORE = asyncio.Semaphore(_DEEPGRAM_TTS_MAX_CONCURRENCY)
 
+# One shared async client per process — avoids a TLS handshake on every utterance.
+_shared_client: httpx.AsyncClient | None = None
+_client_lock = asyncio.Lock()
+
 AVAILABLE_VOICES = [
-    "aura-2-thalia-en",  # Female, clear and energetic
-    "aura-2-andromeda-en",  # Female, expressive
-    "aura-2-helena-en",  # Female, caring and natural
-    "aura-2-apollo-en",  # Male, confident
-    "aura-2-arcas-en",  # Male, smooth and clear
-    "aura-2-aries-en",  # Male, warm
-    "aura-2-asteria-en",  # Female, clear and knowledgeable
-    # Older Aura-1 names are still accepted for existing settings.
+    "aura-2-thalia-en",
+    "aura-2-andromeda-en",
+    "aura-2-helena-en",
+    "aura-2-apollo-en",
+    "aura-2-arcas-en",
+    "aura-2-aries-en",
+    "aura-2-asteria-en",
     "aura-asteria-en",
     "aura-luna-en",
     "aura-stella-en",
@@ -42,6 +40,17 @@ AVAILABLE_VOICES = [
     "aura-angus-en",
     "aura-helios-en",
 ]
+
+
+async def _shared_http_client() -> httpx.AsyncClient:
+    global _shared_client
+    async with _client_lock:
+        if _shared_client is None or _shared_client.is_closed:
+            _shared_client = httpx.AsyncClient(
+                timeout=30.0,
+                limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
+            )
+        return _shared_client
 
 
 class DeepgramTTSProvider(BaseTTSProvider):
@@ -64,7 +73,7 @@ class DeepgramTTSProvider(BaseTTSProvider):
         return DEFAULT_VOICE
 
     async def close(self) -> None:
-        """No persistent client — kept for provider interface compatibility."""
+        """No per-provider teardown — shared client lives for process lifetime."""
         return None
 
     async def synthesize(
@@ -73,15 +82,6 @@ class DeepgramTTSProvider(BaseTTSProvider):
         voice: str | None = None,
         speed: float = 1.0,
     ) -> bytes:
-        """
-        Synthesize speech via Deepgram Aura-2 REST API.
-        Returns mulaw 8kHz audio bytes.
-
-        Args:
-            text: Text to synthesize
-            voice: Voice name override
-            speed: Speaking rate (ignored for Deepgram, kept for compatibility)
-        """
         if not settings.deepgram_api_key:
             raise ValueError("DEEPGRAM_API_KEY not set")
 
@@ -99,28 +99,28 @@ class DeepgramTTSProvider(BaseTTSProvider):
         }
 
         async with _DEEPGRAM_TTS_SEMAPHORE:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                try:
-                    response = await client.post(
-                        DEEPGRAM_TTS_URL,
-                        json={"text": text},
-                        params=params,
-                        headers=headers,
-                    )
-                    response.raise_for_status()
-                    logger.debug(
-                        "Deepgram TTS: %d chars → %d bytes",
-                        len(text),
-                        len(response.content),
-                    )
-                    return response.content
-                except httpx.HTTPStatusError as e:
-                    logger.error(
-                        "Deepgram TTS HTTP error %s: %s",
-                        e.response.status_code,
-                        e.response.text,
-                    )
-                    raise
-                except Exception as e:
-                    logger.error("Deepgram TTS error: %s", e)
-                    raise
+            client = await _shared_http_client()
+            try:
+                response = await client.post(
+                    DEEPGRAM_TTS_URL,
+                    json={"text": text},
+                    params=params,
+                    headers=headers,
+                )
+                response.raise_for_status()
+                logger.debug(
+                    "Deepgram TTS: %d chars → %d bytes",
+                    len(text),
+                    len(response.content),
+                )
+                return response.content
+            except httpx.HTTPStatusError as e:
+                logger.error(
+                    "Deepgram TTS HTTP error %s: %s",
+                    e.response.status_code,
+                    e.response.text,
+                )
+                raise
+            except Exception as e:
+                logger.error("Deepgram TTS error: %s", e)
+                raise

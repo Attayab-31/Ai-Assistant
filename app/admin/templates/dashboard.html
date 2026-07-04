@@ -1,75 +1,108 @@
 {% extends "base.html" %}
+{% from "partials/macros.html" import stat_tile %}
+{% from "partials/onboarding_checklist.html" import onboarding_checklist %}
 {% block title %}Home{% endblock %}
 {% block page_title %}Welcome back{% endblock %}
-{% block page_sub %}<div class="sub">Here's how your tenant screening is doing today.</div>{% endblock %}
+{% block page_sub %}<div class="sub">A quick overview of your phone screening activity.</div>{% endblock %}
 {% block content %}
 
-<!-- Quick actions -->
+{{ onboarding_checklist(onboarding) }}
+
+{% if can_monitor or can_calls or can_tenants or can_settings %}
 <div class="toolbar">
-  <a class="btn" href="/admin/monitor">📡 Live Monitor</a>
-  <a class="btn btn-secondary" href="/admin/calls">📞 View all calls</a>
-  <a class="btn btn-secondary" href="/admin/tenants">👤 Applicants</a>
-  <a class="btn btn-secondary" href="/test" target="_blank" rel="noopener">🎙️ Try a test call</a>
-  <a class="btn btn-secondary" href="/admin/settings/providers">⚙️ Settings</a>
+  {% if can_monitor %}
+  <a class="btn btn-secondary" href="/admin/monitor">Live Monitor</a>
+  {% endif %}
+  {% if can_calls %}
+  <a class="btn btn-secondary" href="/admin/calls">View all calls</a>
+  {% endif %}
+  {% if can_tenants %}
+  <a class="btn btn-secondary" href="/admin/tenants">Applicants</a>
+  {% endif %}
+  {% if can_settings and user.can_edit %}
+  <a class="btn btn-secondary" href="/test" target="_blank" rel="noopener">Try a screening call</a>
+  <a class="btn btn-secondary" href="/admin/settings/general">Settings</a>
+  {% elif can_settings %}
+  <a class="btn btn-secondary" href="/admin/settings/general">Settings</a>
+  {% endif %}
 </div>
+{% endif %}
 
-<!-- Key numbers -->
+{% if can_calls %}
 <section class="grid stats">
-  <div class="card stat-tile"><div class="label"><span class="ico">📞</span> Total calls</div><div class="metric">{{ stats.total_calls or 0 }}</div></div>
-  <div class="card stat-tile"><div class="label"><span class="ico">📅</span> Today</div><div class="metric">{{ stats.calls_today or 0 }}</div></div>
-  <div class="card stat-tile"><div class="label"><span class="ico">🗓️</span> This month</div><div class="metric">{{ stats.calls_this_month or 0 }}</div></div>
-  <div class="card stat-tile"><div class="label"><span class="ico">⏱️</span> Avg call length</div><div class="metric">{{ stats.avg_duration_seconds|duration }}</div></div>
+  {{ stat_tile('Total calls', stats.total_calls or 0) }}
+  {{ stat_tile('Today', stats.calls_today or 0) }}
+  {{ stat_tile('This month', stats.calls_this_month or 0) }}
+  {{ stat_tile('Avg call length', stats.avg_duration_seconds|duration) }}
 </section>
+{% endif %}
 
-<section class="grid two-col" style="margin-top: 16px;">
-  <!-- Recent calls -->
+{% if can_analytics and analytics_preview %}
+{% set qual = analytics_preview.get('qualification_breakdown') or {} %}
+<section class="grid stats" style="margin-top: 16px;">
+  {{ stat_tile('Qualified (7 days)', qual.get('qualified', 0)) }}
+  {{ stat_tile('Needs review (7 days)', qual.get('review', 0)) }}
+  {{ stat_tile('Not qualified (7 days)', qual.get('unqualified', 0)) }}
+  {{ stat_tile('Avg qualified score', analytics_preview.get('avg_qualified_score', 0)) }}
+</section>
+<p style="margin-top: 8px;"><a class="btn-ghost btn-sm" href="/admin/analytics">Open analytics</a></p>
+{% endif %}
+
+{% if can_tenants and needs_review_count %}
+<div class="card banner-warn" style="margin-top: 16px; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;">
+  <span><strong>{{ needs_review_count }}</strong> applicant{{ '' if needs_review_count == 1 else 's' }} still {% if needs_review_count == 1 %}needs{% else %}need{% endif %} your review.</span>
+  <a class="btn btn-sm" href="/admin/tenants?review=unreviewed">Review applicants</a>
+</div>
+{% endif %}
+
+{% if can_monitor %}
+<div class="card" style="padding: 12px 16px; display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 16px; flex-wrap: wrap;">
+  <span style="display: flex; align-items: center; gap: 8px;">
+    {% if active_count %}
+      <span class="dot live" aria-hidden="true"></span>
+      <span>{{ active_count }} call{{ '' if active_count == 1 else 's' }} in progress</span>
+    {% else %}
+      <span class="muted">No live calls right now</span>
+    {% endif %}
+  </span>
+  <a class="btn-ghost btn-sm" href="/admin/monitor">Open monitor</a>
+</div>
+{% endif %}
+
+{% if can_calls %}
+<section style="margin-top: 16px;">
   <div class="card">
     <div class="card-head">
       <h2>Recent calls</h2>
-      <a class="btn-ghost btn-sm" href="/admin/calls">See all →</a>
+      <a class="btn-ghost btn-sm" href="/admin/calls">See all</a>
     </div>
     <table>
-      <thead><tr><th>Caller</th><th>Status</th><th>Answered</th><th>When</th></tr></thead>
+      <thead><tr><th scope="col">Caller</th><th scope="col">Call status</th><th scope="col">Answered</th><th scope="col">When</th></tr></thead>
       <tbody>
       {% for call in recent_calls %}
         <tr>
           <td><a href="/admin/calls/{{ call.id }}">{{ call.phone_number|phone_display }}</a></td>
-          <td><span class="badge" style="background: {{ call.status|status_color }}">{{ call.status|replace('_',' ')|title }}</span></td>
+          <td><span class="badge" style="background: {{ call.status|status_color }}">{{ call.status|friendly_call_status }}</span></td>
           <td>{{ call.questions_answered }}</td>
           <td class="muted">{{ call.created_at|time_ago }}</td>
         </tr>
       {% else %}
-        <tr><td colspan="4"><div class="empty"><span class="ico">📭</span> No calls yet. Start a test call to see how it works.</div></td></tr>
+        <tr><td colspan="4"><div class="empty"><span class="empty-title">No calls yet</span>{% if can_settings and user.can_edit %}Use <strong>Try a screening call</strong> above to see how screening works.{% else %}Calls will appear here after your first screening.{% endif %}</div></td></tr>
       {% endfor %}
       </tbody>
     </table>
   </div>
-
-  <!-- Happening now -->
-  <div class="stack">
-    <div class="card">
-      <div class="card-head">
-        <h2>Happening now</h2>
-        <a class="btn-ghost btn-sm" href="/admin/monitor">Open monitor →</a>
-      </div>
-      {% for session in active_sessions %}
-        <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; padding:7px 0; border-bottom:1px solid var(--line-soft);">
-          <span style="display:flex; align-items:center; gap:8px;"><span class="dot live"></span> {{ session.phone_number|phone_display }}</span>
-          <span class="pill">{{ session.state|friendly_state }}</span>
-        </div>
-      {% else %}
-        <div class="empty" style="padding:18px;"><span class="ico">😴</span> No live calls right now.</div>
-      {% endfor %}
-    </div>
-
-    <div class="card">
-      <div class="card-head"><h2>Voice engines</h2></div>
-      <div style="display:grid; gap:8px;">
-        <div style="display:flex; align-items:center; justify-content:space-between;"><span class="muted">🧠 AI brain</span><span class="pill">{{ provider_status.llm or "—" }}</span></div>
-        <div style="display:flex; align-items:center; justify-content:space-between;"><span class="muted">🎧 Listening</span><span class="pill">{{ provider_status.stt or "—" }}</span></div>
-        <div style="display:flex; align-items:center; justify-content:space-between;"><span class="muted">🔊 Speaking</span><span class="pill">{{ provider_status.tts or "—" }}</span></div>
-      </div>
-    </div>
+</section>
+{% elif not can_monitor and not can_analytics %}
+<section style="margin-top: 16px;">
+  <div class="card">
+    <div class="card-head"><h2>Your access</h2></div>
+    <p class="muted" style="margin: 0 0 12px;">Use the sidebar to open the areas assigned to your account.</p>
+    <ul style="margin: 0; padding-left: 18px;">
+      {% if user.can('audit') %}<li><a href="/admin/audit-log">Activity log</a></li>{% endif %}
+      {% if user.can('settings') %}<li><a href="/admin/settings/general">Settings</a>{% if not user.can_edit %} (read-only){% endif %}</li>{% endif %}
+    </ul>
   </div>
 </section>
+{% endif %}
 {% endblock %}

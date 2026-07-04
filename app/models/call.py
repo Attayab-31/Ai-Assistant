@@ -42,6 +42,18 @@ class Call(Base):
     stt_provider: Mapped[str | None] = mapped_column(String(50))
     llm_provider: Mapped[str | None] = mapped_column(String(50))
     tts_provider: Mapped[str | None] = mapped_column(String(50))
+    # Real LLM token accounting for the call (summed across all LLM calls).
+    prompt_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    completion_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    total_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    llm_calls: Mapped[int] = mapped_column(Integer, default=0)
+    # Real response-latency accounting (ms), so admins can see where time is
+    # spent: the LLM brain, TTS voice synthesis, and the full turn.
+    avg_llm_ms: Mapped[int] = mapped_column(Integer, default=0)
+    avg_tts_ms: Mapped[int] = mapped_column(Integer, default=0)
+    avg_turn_ms: Mapped[int] = mapped_column(Integer, default=0)
+    max_turn_ms: Mapped[int] = mapped_column(Integer, default=0)
+    turn_count: Mapped[int] = mapped_column(Integer, default=0)
     error_log: Mapped[dict | None] = mapped_column(JSONB)
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(

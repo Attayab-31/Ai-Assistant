@@ -1,58 +1,66 @@
 {% extends "base.html" %}
-{% block title %}Tenant Detail{% endblock %}
-{% block page_title %}Tenant Detail{% endblock %}
+{% from "partials/reviewer_workflow.html" import review_status_strip, reviewer_action_bar %}
+{% block title %}Applicant{% endblock %}
+{% block page_title %}Applicant profile{% endblock %}
+{% block page_sub %}<div class="sub">Screening answers, reviewer notes, and edits for this caller.</div>{% endblock %}
 {% block content %}
 <style>
   .edit-form { max-width: 720px; }
-  .form-group { margin-bottom: 16px; }
-  .form-group label { display: block; font-weight: 500; margin-bottom: 4px; }
-  .form-group input, .form-group select, .form-group textarea { width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; }
-  .form-actions { display: flex; gap: 8px; margin-top: 20px; }
-  .btn { padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; }
-  .btn-primary { background: #007bff; color: white; }
-  .btn-secondary { background: #6c757d; color: white; }
-  .alert { padding: 12px; margin-bottom: 16px; border-radius: 4px; }
-  .alert-success { background: #d4edda; color: #155724; }
-  .alert-error { background: #f8d7da; color: #721c24; }
-  .badge { display: inline-block; padding: 4px 8px; border-radius: 3px; font-size: 12px; }
-  .screening-table td { padding: 4px 8px 4px 0; vertical-align: top; }
-  .screening-table .muted { width: 180px; }
 </style>
 
 <div class="stack">
+  {{ review_status_strip(tenant, linked_call, active_question_count) }}
+  {% if linked_call %}
+  {{ reviewer_action_bar(linked_call.id, tenant, user, show_delete=false) }}
+  {% endif %}
+
   <section class="card">
-    <h2>{{ tenant.full_name or tenant.phone_number|phone_display }}</h2>
-    <p>Caller ID: {{ tenant.phone_number|phone_display }}</p>
-    <p>Status: <span class="badge" style="background: {{ tenant.qualification_status|status_color }}">{{ tenant.qualification_status }}</span></p>
-    <p>Score: <span style="color: {{ tenant.qualification_score|score_color }}">{{ tenant.qualification_score or 0 }}/100</span></p>
+    <div class="card-head">
+      <div>
+        <h2 style="margin:0;">{{ tenant.full_name or tenant.phone_number|phone_display }}</h2>
+        <p class="hint" style="margin-top:4px;">
+          Phone: {{ tenant.phone_number|phone_display }}
+          {% if linked_call %} · <a href="/admin/calls/{{ linked_call.id }}">Open screening call</a>{% endif %}
+        </p>
+      </div>
+      {% if tenant.control_flags and tenant.control_flags.get('qualification_status_overridden') %}
+      <span class="pill" title="Result changed manually by an admin">Manual result</span>
+      {% endif %}
+    </div>
+    {% if user and user.can_edit %}
+    <div style="margin-top: 4px;">
+      {% if tenant.is_blacklisted %}
+      <span class="pill">On do-not-call list</span>
+      {% else %}
+      <button type="button" class="btn btn-danger btn-sm" onclick="withBtnLoading(this, blacklistTenant, 'Adding\u2026')">Add to do-not-call list</button>
+      {% endif %}
+    </div>
+    {% endif %}
   </section>
 
   <section class="card">
-    <h2>Extracted Screening Data</h2>
-    <table class="screening-table" style="width: 100%;">
-      <tbody>
-        <tr><td class="muted">Full name</td><td>{{ tenant.full_name or "-" }}</td></tr>
-        <tr><td class="muted">Contact phone</td><td>{{ tenant.contact_phone|phone_display if tenant.contact_phone else "-" }}</td></tr>
-        <tr><td class="muted">Email</td><td>{{ tenant.email or "-" }}</td></tr>
-        <tr><td class="muted">Move-in</td><td>{{ tenant.move_in_raw or tenant.move_in_date or "-" }}</td></tr>
-        <tr><td class="muted">Move timing</td><td>{{ tenant.move_timing or "-" }}</td></tr>
-        <tr><td class="muted">Occupants</td><td>{{ tenant.occupants_count or "-" }} total ({{ tenant.adults_count or "-" }} adults, {{ tenant.children_count or 0 }} children)</td></tr>
-        <tr><td class="muted">Current residence</td><td>{{ tenant.current_residence or "-" }}</td></tr>
-        <tr><td class="muted">Time at residence</td><td>{{ tenant.residence_duration or "-" }}</td></tr>
-        <tr><td class="muted">Move reason</td><td>{{ tenant.move_reason or "-" }}</td></tr>
-        <tr><td class="muted">Pets</td><td>{% if tenant.has_pets is none %}-{% elif tenant.has_pets %}Yes{% if tenant.pet_type %} — {{ tenant.pet_type }}{% endif %}{% if tenant.pet_breed %}, {{ tenant.pet_breed }}{% endif %}{% if tenant.pet_weight %}, ~{{ tenant.pet_weight }} lbs{% endif %}{% else %}No{% endif %}</td></tr>
-        <tr><td class="muted">Eviction history</td><td>{% if tenant.has_eviction is none %}-{% elif tenant.has_eviction %}Yes{% if tenant.eviction_circumstances %} — {{ tenant.eviction_circumstances }}{% endif %}{% else %}No{% endif %}</td></tr>
-        <tr><td class="muted">Monthly income</td><td>{{ tenant.monthly_income|currency if tenant.monthly_income else (tenant.income_raw or "-") }}</td></tr>
-        <tr><td class="muted">Employer</td><td>{{ tenant.employer or "-" }}</td></tr>
-        <tr><td class="muted">Employment duration</td><td>{{ tenant.employment_duration or "-" }}</td></tr>
-        <tr><td class="muted">Background notes</td><td>{{ tenant.general_notes or "-" }}</td></tr>
-      </tbody>
-    </table>
+    <div class="card-head"><h2>Screening answers</h2></div>
+    {% if using_legacy_question_config %}
+    <p class="banner banner-warn" style="margin: 0 0 12px;">
+      <strong>Note:</strong> No question snapshot on file for this applicant. Flow display uses current admin question settings.
+    </p>
+    {% endif %}
+    {% if not flow_rows and not summary_rows %}
+    <div class="empty" style="padding: 20px 12px;">
+      <span class="empty-title">No screening answers saved</span>
+      The call may have ended early or the applicant hung up before answering questions.
+      {% if linked_call %}<a href="/admin/calls/{{ linked_call.id }}">Open the call record</a> for more detail.{% endif %}
+    </div>
+    {% else %}
+    {% set flow_subtitle = "(at time of call)" if flow_from_snapshot else "(current question settings)" %}
+    {% include "partials/screening_summary.html" %}
+    {% endif %}
   </section>
 
+  {% if user and user.can_edit %}
   <section class="card">
-    <h2>Edit Tenant Information</h2>
-    <div id="msg"></div>
+    <div class="card-head"><h2>Edit applicant information</h2></div>
+    <p class="text-muted" style="margin-top: 0;">Update answers or add admin notes. Saving recalculates the score unless the result was manually changed.</p>
     <form class="edit-form" onsubmit="withFormLoading(event, saveTenant, 'Saving\u2026')">
       <div class="form-group">
         <label>Full name</label>
@@ -79,7 +87,7 @@
         <input type="number" id="children" value="{{ tenant.children_count or 0 }}" min="0" />
       </div>
       <div class="form-group">
-        <label>Move-in Date</label>
+        <label>Move-in date</label>
         <input type="text" id="moveDate" value="{{ tenant.move_in_raw or tenant.move_in_date or '' }}" placeholder="e.g. 2025-07-01" />
       </div>
       <div class="form-group">
@@ -95,7 +103,7 @@
         <input type="text" id="residenceDuration" value="{{ tenant.residence_duration or '' }}" />
       </div>
       <div class="form-group">
-        <label>Move Reason</label>
+        <label>Move reason</label>
         <input type="text" id="moveReason" value="{{ tenant.move_reason or '' }}" placeholder="e.g. Current lease ending" />
       </div>
       <div class="form-group">
@@ -112,10 +120,10 @@
       </div>
       <div class="form-group">
         <label>Admin notes</label>
-        <textarea id="notes" rows="3">{{ tenant.notes or '' }}</textarea>
+        <textarea id="notes" rows="3" placeholder="Private notes for your team — not shared with the caller">{{ tenant.notes or '' }}</textarea>
       </div>
       <div class="form-group">
-        <label>Eviction History</label>
+        <label>Eviction history</label>
         <select id="hasEviction">
           <option value="false" {% if not tenant.has_eviction %}selected{% endif %}>No</option>
           <option value="true" {% if tenant.has_eviction %}selected{% endif %}>Yes</option>
@@ -130,40 +138,120 @@
         </select>
       </div>
       <div class="form-actions">
-        <button type="submit" class="btn btn-primary">Save Changes</button>
+        <button type="submit" class="btn btn-primary">Save changes</button>
         <button type="button" class="btn btn-secondary" onclick="location.reload()">Cancel</button>
       </div>
     </form>
   </section>
+  {% else %}
+  <section class="card">
+    <div class="card-head"><h2>Applicant information</h2></div>
+    <p class="muted">You have view-only access. Contact an admin to edit applicant data.</p>
+  </section>
+  {% endif %}
 
   <section class="card">
-    <h2>Call History</h2>
+    <div class="card-head"><h2>Call history</h2></div>
+    <div class="table-wrap">
     <table>
-      <thead><tr><th>Status</th><th>Duration</th><th>Questions</th><th>Date</th></tr></thead>
+      <thead><tr><th scope="col">Status</th><th scope="col">Length</th><th scope="col">Answered</th><th scope="col">When</th></tr></thead>
       <tbody>
       {% for call in history_calls %}
         <tr>
-          <td><a href="/admin/calls/{{ call.id }}">{{ call.status }}</a></td>
+          <td><a href="/admin/calls/{{ call.id }}"><span class="badge" style="background: {{ call.status|status_color }}">{{ call.status|friendly_call_status }}</span></a></td>
           <td>{{ call.duration_seconds|duration }}</td>
           <td>{{ call.questions_answered or 0 }}</td>
-          <td>{{ call.created_at|time_ago }}</td>
+          <td class="muted">{{ call.created_at|time_ago }}</td>
         </tr>
       {% else %}
-        <tr><td colspan="4" class="muted">No call history.</td></tr>
+        <tr><td colspan="4"><div class="empty"><span class="empty-title">No call history</span>This phone number has no other saved calls.</div></td></tr>
       {% endfor %}
       </tbody>
     </table>
+    </div>
   </section>
 </div>
+
+{% if linked_call and user and user.can_edit %}
+<script>
+  const callId = "{{ linked_call.id }}";
+
+  async function resendEmail() {
+    try {
+      const r = await fetch(`/admin/api/calls/${callId}/resend-email`, { method: 'POST' });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        throw new Error(err.detail || r.statusText);
+      }
+      showMessage('Result email queued — it will arrive shortly.');
+    } catch (e) {
+      showMessage('Could not resend: ' + e.message, true);
+    }
+  }
+
+  async function patchCall(path, body) {
+    const opts = { method: 'PATCH' };
+    if (body !== undefined) {
+      opts.headers = { 'Content-Type': 'application/json' };
+      opts.body = JSON.stringify(body);
+    }
+    const r = await fetch(`/admin/api/calls/${callId}${path}`, opts);
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      throw new Error(err.detail || r.statusText);
+    }
+    return r.json().catch(() => ({}));
+  }
+
+  async function saveQualification() {
+    try {
+      const sel = document.getElementById('qualOverride');
+      const status = sel.value;
+      const label = sel.options[sel.selectedIndex].text;
+      await patchCall('/qualification', { status });
+      showMessage('Result updated to ' + label + '.');
+    } catch (e) {
+      showMessage(e.message, true);
+    }
+  }
+
+  async function toggleReviewed() {
+    try {
+      const data = await patchCall('/review');
+      const btn = document.getElementById('reviewBtn');
+      const pill = document.getElementById('reviewStatePill');
+      const reviewed = !!data.reviewed;
+      if (btn) {
+        btn.textContent = reviewed ? 'Mark unreviewed' : 'Mark as reviewed';
+      }
+      if (pill) {
+        pill.className = 'review-chip ' + (reviewed ? 'reviewed' : 'needs-review');
+        pill.innerHTML = reviewed
+          ? '<span class="dot ok" aria-hidden="true"></span> Reviewed'
+          : '<span class="dot warn" aria-hidden="true"></span> Needs your review';
+      }
+      showMessage(reviewed ? 'Marked as reviewed.' : 'Marked as not reviewed.');
+    } catch (e) {
+      showMessage(e.message, true);
+    }
+  }
+
+</script>
+{% endif %}
 
 <script>
   const tenantId = "{{ tenant.id }}";
 
-  function showMessage(text, isError = false) {
-    const msg = document.getElementById('msg');
-    msg.className = isError ? 'alert alert-error' : 'alert alert-success';
-    msg.textContent = text;
-    setTimeout(() => { msg.textContent = ''; msg.className = ''; }, 4000);
+  async function blacklistTenant() {
+    if (!confirm('Add this number to the do-not-call list? Future calls from it will be declined automatically.')) return;
+    try {
+      const r = await fetch(`/admin/api/tenants/${tenantId}/blacklist`, { method: 'POST' });
+      if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || r.statusText); }
+      showMessage('Added to do-not-call list.');
+      setTimeout(() => location.reload(), 900);
+    } catch (e) {
+      showMessage(e.message, true);
+    }
   }
 
   async function saveTenant(e) {
@@ -198,7 +286,7 @@
         body: JSON.stringify(data),
       });
       if (!r.ok) throw new Error(await r.text());
-      showMessage('Tenant updated successfully');
+      showMessage('Applicant updated successfully');
       setTimeout(() => location.reload(), 1500);
     } catch (e) {
       showMessage('Error: ' + e.message, true);

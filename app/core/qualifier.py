@@ -1,24 +1,18 @@
-"""Ready Rentals Online qualification scoring engine."""
+"""Ready Rentals Online qualification scoring engine.
+
+Scoring is driven entirely by admin-defined per-question rules. Each question
+with scoring enabled contributes its ``max_points`` to the achievable total and
+its earned points to the score; the result is normalized to 0–100. There is no
+separate built-in weighting — the admin's question definitions are the single
+source of truth, and deleting a question removes its score automatically.
+"""
 
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime
-from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from app.core.screening_flow import count_active_questions, count_answered_questions
-
 logger = logging.getLogger(__name__)
-
-
-def _decimal(value: Any) -> Decimal | None:
-    if value in (None, ""):
-        return None
-    try:
-        return Decimal(str(value))
-    except (InvalidOperation, ValueError):
-        return None
 
 
 def _int_setting(settings: dict, key: str, default: int) -> int:
@@ -26,40 +20,6 @@ def _int_setting(settings: dict, key: str, default: int) -> int:
         return int(settings.get(key, default))
     except (TypeError, ValueError):
         return default
-
-
-def _bool_setting(settings: dict, key: str, default: bool = False) -> bool:
-    value = settings.get(key, default)
-    if isinstance(value, bool):
-        return value
-    return str(value).strip().lower() in {"true", "1", "yes", "y"}
-
-
-def _decimal_setting(settings: dict, key: str, default: Decimal) -> Decimal:
-    try:
-        value = Decimal(str(settings.get(key, default)))
-        return value if value > 0 else default
-    except (InvalidOperation, ValueError, TypeError):
-        return default
-
-
-def _fmt_multiplier(multiplier: Decimal) -> str:
-    """Render a multiplier for written reasons, e.g. 3.0 -> '3x', 2.5 -> '2.5x'."""
-    s = format(multiplier, "f")
-    if "." in s:
-        s = s.rstrip("0").rstrip(".")
-    return f"{s}x"
-
-
-def _parse_date(value: Any) -> date | None:
-    if isinstance(value, date) and not isinstance(value, datetime):
-        return value
-    if not value:
-        return None
-    try:
-        return datetime.strptime(str(value)[:10], "%Y-%m-%d").date()
-    except ValueError:
-        return None
 
 
 def _add_reason(reasons: list[str], reason: str) -> None:
@@ -70,176 +30,41 @@ def _add_reason(reasons: list[str], reason: str) -> None:
 def calculate_qualification_score(
     tenant_data: dict,
     settings: dict,
+    *,
+    questions: list[dict] | None = None,
 ) -> tuple[int, str, list[str]]:
-    """
-    Calculate qualified/review/unqualified with explainable policy reasons.
+    """Score an applicant from the admin-defined per-question scoring rules.
 
-    Ready Rentals policy:
-    - Household income standard is 3x monthly rent when rent is configured.
-    - Eviction history is reviewed individually, not automatically denied unless
-      explicit config enables auto-disqualification.
-    - Credit/background concerns belong in review; credit alone is not an
-      automatic disqualifier.
+    The score is the earned points as a percentage of the points achievable for
+    THIS question set, so it always reflects the admin's chosen criteria and is
+    never capped by questions the admin chose not to score or chose to delete.
+
+    - A question's ``scoring`` config is the single source of truth.
+    - A question flagged to disqualify (e.g. "disqualify on yes") returns 0 /
+      unqualified immediately.
+    - When no question has scoring enabled, applicants can't be scored, so the
+      call routes to manual review rather than auto-qualifying or zeroing out.
     """
+    from app.core.question_scoring import score_custom_questions
+
     reasons: list[str] = []
-    score = 0
-
-    weights = {
-        "income": _int_setting(settings, "score_weight_income", 35),
-        "completion": _int_setting(settings, "score_weight_completion", 25),
-        "eviction": _int_setting(settings, "score_weight_eviction", 15),
-        "rental_history": _int_setting(settings, "score_weight_rental_history", 10),
-        "move_date": _int_setting(settings, "score_weight_move_date", 10),
-        "household_fit": _int_setting(settings, "score_weight_household_fit", 5),
-    }
-
-    disqualify_on_eviction = _bool_setting(
-        settings,
-        "disqualify_on_eviction",
-        False,
-    )
-    monthly_rent = _decimal(settings.get("monthly_rent_for_income_ratio"))
-    min_income = _decimal(settings.get("min_income_threshold"))
-    if min_income == Decimal("0"):
-        min_income = None
-
-    # Admin-configurable scoring policy (income multiple + status cutoffs).
-    income_multiplier = _decimal_setting(settings, "income_multiplier", Decimal("3"))
-    multiplier_label = _fmt_multiplier(income_multiplier)
     qualified_threshold = _int_setting(settings, "qualified_score_threshold", 75)
     review_threshold = _int_setting(settings, "review_score_threshold", 40)
 
-    # Completion
-    refused_states = tenant_data.get("refused_states") or []
-    answered = int(
-        tenant_data.get("questions_answered")
-        or count_answered_questions(tenant_data, refused_states)
+    earned, q_reasons, breakdown, disqualified = score_custom_questions(
+        questions, tenant_data
     )
-    active_total = max(count_active_questions(tenant_data), 1)
-    completion_ratio = min(1.0, answered / active_total)
-    score += int(weights["completion"] * completion_ratio)
-    if completion_ratio < 1:
-        _add_reason(
-            reasons,
-            f"Screening incomplete - {answered}/{active_total} required items captured",
-        )
+    reasons.extend(q_reasons)
+    if breakdown:
+        tenant_data["custom_question_scoring"] = breakdown
+    if disqualified:
+        logger.info("Auto-disqualified by a per-question rule")
+        return 0, "unqualified", reasons or ["Disqualifying answer provided"]
 
-    # Income
-    monthly_income = _decimal(tenant_data.get("monthly_income"))
-    if monthly_income is None:
-        if tenant_data.get("income_raw"):
-            score += int(weights["income"] * 0.35)
-            _add_reason(
-                reasons,
-                "Income needs review - caller gave income in a format that needs verification",
-            )
-        else:
-            _add_reason(reasons, "Income not disclosed")
-    else:
-        required_income = None
-        if monthly_rent and monthly_rent > 0:
-            required_income = monthly_rent * income_multiplier
-        elif min_income and min_income > 0:
-            required_income = min_income
+    possible = sum(int(b.get("max_points") or 0) for b in breakdown)
 
-        if required_income:
-            ratio = monthly_income / required_income
-            if ratio >= 1:
-                score += weights["income"]
-            elif ratio >= Decimal("0.8"):
-                score += int(weights["income"] * 0.65)
-                _add_reason(
-                    reasons,
-                    f"Income is close to the standard {multiplier_label} monthly rent "
-                    "requirement and should be reviewed",
-                )
-            else:
-                score += int(weights["income"] * 0.25)
-                _add_reason(
-                    reasons,
-                    f"Income appears below the standard {multiplier_label} monthly "
-                    "rent requirement",
-                )
-        else:
-            score += int(weights["income"] * 0.75)
-            _add_reason(
-                reasons,
-                f"Income captured; compare against the property's {multiplier_label} "
-                "rent standard during review",
-            )
-
-    # Eviction / court filing
-    has_eviction = tenant_data.get("has_eviction")
-    if has_eviction is True:
-        if disqualify_on_eviction:
-            _add_reason(
-                reasons,
-                "Eviction or landlord-tenant court filing disclosed and auto-disqualification is enabled",
-            )
-            logger.info("Auto-disqualified by eviction config")
-            return 0, "unqualified", reasons
-        score += int(weights["eviction"] * 0.35)
-        _add_reason(
-            reasons,
-            "Eviction or landlord-tenant court filing disclosed - reviewed individually",
-        )
-        if not tenant_data.get("eviction_circumstances") and not tenant_data.get(
-            "eviction_raw"
-        ):
-            _add_reason(reasons, "Eviction circumstances need follow-up")
-    elif has_eviction is False:
-        score += weights["eviction"]
-    else:
-        score += int(weights["eviction"] * 0.4)
-        _add_reason(reasons, "Eviction/court filing answer not confirmed")
-
-    # Rental history
-    rental_fields = [
-        tenant_data.get("current_residence"),
-        tenant_data.get("residence_duration"),
-        tenant_data.get("move_reason"),
-    ]
-    rental_count = sum(1 for value in rental_fields if value)
-    score += int(weights["rental_history"] * (rental_count / len(rental_fields)))
-    if rental_count < len(rental_fields):
-        _add_reason(reasons, "Rental history needs follow-up")
-
-    # Move timing
-    move_date = _parse_date(tenant_data.get("move_in_date"))
-    if move_date:
-        days_until = (move_date - date.today()).days
-        if days_until < 0:
-            score += int(weights["move_date"] * 0.25)
-            _add_reason(reasons, "Move-in date appears to be in the past")
-        elif days_until <= 120:
-            score += weights["move_date"]
-        else:
-            score += int(weights["move_date"] * 0.5)
-            _add_reason(
-                reasons, "Move-in timing is farther out and may depend on availability"
-            )
-    elif tenant_data.get("move_in_raw") or tenant_data.get("move_timing"):
-        score += int(weights["move_date"] * 0.6)
-        _add_reason(reasons, "Move-in timing captured but needs date confirmation")
-    else:
-        _add_reason(reasons, "Move-in timing not disclosed")
-
-    # Household / pet fit
-    occupants = tenant_data.get("occupants_count") or tenant_data.get("adults_count")
-    has_pets = tenant_data.get("has_pets")
-    pet_detail_ok = has_pets is False or (
-        has_pets is True
-        and (tenant_data.get("pet_type") or tenant_data.get("pets_raw"))
-        and (tenant_data.get("pet_weight") or tenant_data.get("pets_raw"))
-    )
-    if occupants and pet_detail_ok:
-        score += weights["household_fit"]
-    elif occupants:
-        score += int(weights["household_fit"] * 0.6)
-        _add_reason(reasons, "Pet details need follow-up for property matching")
-    else:
-        _add_reason(reasons, "Occupant count not disclosed")
-
+    # Caller-control signals always warrant a human look, regardless of score.
+    force_review = False
     if tenant_data.get("general_notes") and re_search_credit_issue(
         tenant_data.get("general_notes")
     ):
@@ -247,44 +72,91 @@ def calculate_qualification_score(
             reasons,
             "Credit/background note disclosed - full picture should be reviewed",
         )
-
+        force_review = True
     if tenant_data.get("human_requested"):
         _add_reason(reasons, "Caller requested a leasing specialist follow-up")
+        force_review = True
     if tenant_data.get("callback_requested"):
         _add_reason(reasons, "Caller requested a call back later")
+        force_review = True
     if tenant_data.get("stop_requested"):
         _add_reason(reasons, "Caller asked to stop before completing screening")
+        force_review = True
 
-    score = max(0, min(100, score))
-
-    review_only_reasons = [
-        reason
-        for reason in reasons
-        if any(
-            phrase in reason.lower()
-            for phrase in (
-                "review",
-                "follow-up",
-                "not confirmed",
-                "not disclosed",
-                "incomplete",
-                "needs",
-            )
+    if possible <= 0:
+        # No per-question scoring configured — we can't qualify automatically.
+        _add_reason(
+            reasons,
+            "No qualification scoring is configured - manual review recommended",
         )
-    ]
+        return 0, "review", reasons
 
-    if score >= qualified_threshold and not review_only_reasons:
+    score = max(0, min(100, int(round(earned / possible * 100))))
+
+    if score >= qualified_threshold and not force_review:
         status = "qualified"
-    elif score >= review_threshold or review_only_reasons:
+    elif score >= review_threshold or force_review:
         status = "review"
     else:
         status = "unqualified"
         _add_reason(reasons, f"Insufficient qualification score ({score}/100)")
 
     logger.info(
-        "Qualification: score=%s, status=%s, reasons=%s", score, status, reasons
+        "Qualification: %s/%s normalized=%s, status=%s",
+        round(earned, 1),
+        round(possible, 1),
+        score,
+        status,
     )
     return score, status, reasons
+
+
+def build_tenant_scoring_data(tenant: Any, questions_answered: int = 0) -> dict:
+    """Reconstruct the full scoring input for a stored tenant.
+
+    This MUST mirror the data the live finalize scored, so any recomputed score
+    matches the one persisted at the end of the call. It includes the standard
+    column fields, the per-call state lists (answered/refused), and any dynamic
+    custom-question fields stored in ``normalized_data['custom_fields']``.
+
+    Using anything less (e.g. a partial stub) makes the admin breakdown disagree
+    with the headline score — the exact bug this replaces.
+    """
+    data: dict[str, Any] = {
+        "monthly_income": float(tenant.monthly_income)
+        if tenant.monthly_income is not None
+        else None,
+        "income_raw": tenant.income_raw,
+        "has_eviction": tenant.has_eviction,
+        "eviction_circumstances": tenant.eviction_circumstances,
+        "eviction_raw": tenant.eviction_raw,
+        "current_residence": tenant.current_residence,
+        "residence_duration": tenant.residence_duration,
+        "move_reason": tenant.move_reason,
+        "move_in_date": tenant.move_in_date,
+        "move_in_raw": tenant.move_in_raw,
+        "move_timing": tenant.move_timing,
+        "occupants_count": tenant.occupants_count,
+        "adults_count": tenant.adults_count,
+        "children_count": tenant.children_count,
+        "has_pets": tenant.has_pets,
+        "pet_type": tenant.pet_type,
+        "pets_raw": tenant.pets_raw,
+        "pet_weight": tenant.pet_weight,
+        "general_notes": tenant.general_notes,
+        "questions_answered": questions_answered,
+        "answered_states": list(tenant.answered_states or []),
+        "refused_states": list(tenant.refused_states or []),
+    }
+    # Dynamic (non-column) custom question fields live in normalized_data. Don't
+    # clobber a real column if a custom field happens to share its key.
+    normalized = getattr(tenant, "normalized_data", None)
+    if isinstance(normalized, dict):
+        custom = normalized.get("custom_fields")
+        if isinstance(custom, dict):
+            for key, value in custom.items():
+                data.setdefault(key, value)
+    return data
 
 
 def re_search_credit_issue(text: Any) -> bool:
@@ -299,37 +171,28 @@ def re_search_credit_issue(text: Any) -> bool:
     )
 
 
-def get_score_breakdown(tenant_data: dict, settings: dict) -> dict:
-    """Return admin-friendly scoring context."""
-    score, status, reasons = calculate_qualification_score(tenant_data, settings)
-    monthly_rent = _decimal(settings.get("monthly_rent_for_income_ratio"))
-    income_multiplier = _decimal_setting(settings, "income_multiplier", Decimal("3"))
-    multiplier_label = _fmt_multiplier(income_multiplier)
-    required_income = (
-        monthly_rent * income_multiplier
-        if monthly_rent and monthly_rent > 0
-        else None
+def get_score_breakdown(
+    tenant_data: dict,
+    settings: dict,
+    *,
+    questions: list[dict] | None = None,
+) -> dict:
+    """Return admin-friendly scoring context built from per-question scoring."""
+    score, status, reasons = calculate_qualification_score(
+        tenant_data, settings, questions=questions
     )
+    breakdown = tenant_data.get("custom_question_scoring") or []
+    points_earned = sum(int(b.get("points") or 0) for b in breakdown)
+    points_possible = sum(int(b.get("max_points") or 0) for b in breakdown)
     return {
         "score": score,
         "status": status,
         "reasons": reasons,
-        "income": {
-            "monthly_income": str(tenant_data.get("monthly_income") or ""),
-            "standard": f"{multiplier_label} monthly rent",
-            "required_income": str(required_income) if required_income else None,
-        },
-        "eviction": {
-            "has_eviction": tenant_data.get("has_eviction"),
-            "policy": "Reviewed individually unless auto-disqualification is enabled.",
-        },
+        "points_earned": points_earned,
+        "points_possible": points_possible,
+        "questions": breakdown,
         "completion": {
             "questions_answered": tenant_data.get("questions_answered"),
             "refused_states": tenant_data.get("refused_states") or [],
-        },
-        "household": {
-            "occupants_count": tenant_data.get("occupants_count"),
-            "has_pets": tenant_data.get("has_pets"),
-            "pets_raw": tenant_data.get("pets_raw"),
         },
     }
