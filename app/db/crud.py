@@ -816,16 +816,6 @@ async def update_user_password(
     await db.commit()
 
 
-async def count_active_super_admins(db: AsyncSession) -> int:
-    """Number of active super_admins — used to prevent deleting the last one."""
-    result = await db.execute(
-        select(func.count())
-        .select_from(AdminUser)
-        .where(AdminUser.role == "super_admin", AdminUser.is_active == True)  # noqa: E712
-    )
-    return int(result.scalar() or 0)
-
-
 async def delete_user(db: AsyncSession, user_id: uuid.UUID) -> bool:
     """Delete an admin user.
 

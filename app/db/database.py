@@ -294,11 +294,16 @@ async def get_db() -> AsyncGenerator[AsyncSession]:
 
 def _register_orm_models() -> None:
     """Import all ORM models so SQLAlchemy registers them with Base.metadata."""
-    from app.models.audit_log import AuditLog  # noqa: F401
-    from app.models.call import Call  # noqa: F401
-    from app.models.settings import SystemSetting  # noqa: F401
-    from app.models.tenant import Tenant  # noqa: F401
-    from app.models.user import AdminUser  # noqa: F401
+    import importlib
+
+    for module in (
+        "app.models.audit_log",
+        "app.models.call",
+        "app.models.settings",
+        "app.models.tenant",
+        "app.models.user",
+    ):
+        importlib.import_module(module)
 
 
 async def init_db() -> None:
