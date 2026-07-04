@@ -226,3 +226,4 @@ app/
 
 - Live call sessions are in-memory (single web worker — see above).
 - Tests: install dev tooling with `pip install -r requirements-dev.txt`, then run `pytest`.
+Developed By automivex
