@@ -79,6 +79,7 @@ from app.core.screening_flow import (
     log_state_transition,
     normalize_extracted_fields,
 )
+from app.core.tenant_sanitize import sanitize_tenant_payload
 from config import provider_registry, settings
 
 # Session/audit-only keys kept in memory for scoring, email, and the CRM webhook
@@ -2649,6 +2650,20 @@ async def _finalize_call_impl(session: ConversationSession, db) -> dict:
                 tenant_payload["qualification_details"] = {
                     "custom_questions": merged["custom_question_scoring"],
                 }
+
+            persist_overflow: dict[str, Any] = {}
+            tenant_payload = sanitize_tenant_payload(
+                tenant_payload,
+                overflow=persist_overflow,
+                log_context=session.call_id,
+            )
+            if persist_overflow:
+                nd = dict(tenant_payload.get("normalized_data") or normalized_data)
+                nd["persist_overflow"] = {
+                    **nd.get("persist_overflow", {}),
+                    **persist_overflow,
+                }
+                tenant_payload["normalized_data"] = nd
 
             try:
                 await create_tenant(
