@@ -19,3 +19,7 @@ logs/
 .DS_Store
 Thumbs.db
 
+# Dead-code scan artifacts (local tooling output, not product code)
+dead_code_report_*.txt
+dead_code_summary_counts.txt
+
