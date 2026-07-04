@@ -64,10 +64,12 @@ from app.core.question_flow import (
     build_confirm_field_map,
     first_active_question_state,
     is_question_answered,
+    is_question_required,
     needs_readback_confirmation,
     next_unanswered_state,
     normalize_questions,
     primary_name_field,
+    questions_index,
     readback_prompt_for_state,
     repair_prompt_for_state,
     screening_complete,
@@ -1457,14 +1459,80 @@ async def process_tenant_speech(
             follow_up=follow_up,
         )
 
+    async def _refuse_and_advance(
+        *,
+        reason: str,
+    ) -> tuple[str, list[bytes], bool]:
+        """Mark the current question declined and move to the next one."""
+        prior_state_val = session.current_state
+        session.mark_refused(session.current_state, transcript)
+        session.next_state()
+        log_state_transition(
+            session.call_id,
+            prior_state_val,
+            session.current_state,
+            reason,
+            session.retry_count,
+            questions=session.questions,
+        )
+        text = brief_transition(session.questions_answered)
+        ack, follow_up = compose_agent_response(session, text, prior_state)
+        spoken = " ".join(part for part in (ack, follow_up) if part).strip()
+        is_complete = session.current_state in (
+            CallState.WRAP_UP.value,
+            CallState.ENDED.value,
+        )
+        return await finish_turn(
+            spoken,
+            complete=is_complete,
+            ack=ack,
+            follow_up=follow_up,
+        )
+
+    prior_q = questions_index(session.questions).get(prior_state)
+
+    # Optional questions: caller explicitly has nothing to add.
+    if intent_kind == "nothing" and understood:
+        if prior_q and not is_question_required(prior_q):
+            fields = prior_q.get("extract_fields") or []
+            primary = str(fields[0]) if fields else ""
+            if primary and not session.extracted_data.get(primary):
+                session.merge_extracted_data(
+                    {primary: "None disclosed"}, raw_text=transcript
+                )
+            session.mark_completed(prior_state)
+            return await _finish_advance(
+                ack_text=response_text or None,
+                reason="Optional question — caller has nothing to add",
+            )
+
     if done:
-        if question_complete and not deterministic_done:
+        if (
+            prior_q
+            and is_question_required(prior_q)
+            and not deterministic_done
+        ):
             logger.info(
-                "[%s] LLM marked %s complete (partial slots accepted)",
+                "[%s] Required %s incomplete — blocking early advance",
                 session.call_id,
                 prior_state,
             )
-            session.mark_completed(prior_state)
+            session.retry_count += 1
+            if session.retry_count > session.max_retries:
+                return await _refuse_and_advance(
+                    reason="Required question incomplete after max retries",
+                )
+            prompt = response_text or polite_redirect(session, "non_answer")
+            return await finish_turn(prompt, ack=prompt, follow_up="")
+
+        if question_complete and not deterministic_done:
+            if not prior_q or not is_question_required(prior_q):
+                logger.info(
+                    "[%s] LLM marked %s complete (partial slots accepted)",
+                    session.call_id,
+                    prior_state,
+                )
+                session.mark_completed(prior_state)
         return await _finish_advance()
 
     if intent_kind == "question":
@@ -1484,7 +1552,14 @@ async def process_tenant_speech(
         # name letter by letter) never gets cut off, while a stalled, vague caller
         # is still bounded so we eventually move on.
         made_progress = bool(extracted)
-        if made_progress:
+        slots_satisfied = is_question_answered(
+            prior_state,
+            session.extracted_data,
+            session.skip_states,
+            questions=session.questions,
+            confirmed_fields=session.confirmed_fields,
+        )
+        if made_progress and slots_satisfied:
             session.retry_count = 0
             if needs_readback_confirmation(
                 prior_state,
@@ -1495,9 +1570,22 @@ async def process_tenant_speech(
                 confirm_turn = await _maybe_request_confirmation(prior_state)
                 if confirm_turn is not None:
                     return confirm_turn
-        else:
+        elif not made_progress:
             session.retry_count += 1
         if session.retry_count > session.max_retries:
+            if (
+                prior_q
+                and is_question_required(prior_q)
+                and not slots_satisfied
+            ):
+                logger.info(
+                    "[%s] Required %s still incomplete after retries — declined",
+                    session.call_id,
+                    prior_state,
+                )
+                return await _refuse_and_advance(
+                    reason="Required question incomplete after bounded follow-ups",
+                )
             logger.info(
                 "[%s] Bounded follow-ups exhausted on %s (no progress) — accepting "
                 "partial",
@@ -1515,29 +1603,8 @@ async def process_tenant_speech(
     # Did not answer the current question (refusal or unclear) — escalate retries.
     session.retry_count += 1
     if session.retry_count > session.max_retries:
-        prior_state_val = session.current_state
-        session.mark_refused(session.current_state, transcript)
-        session.next_state()
-        log_state_transition(
-            session.call_id,
-            prior_state_val,
-            session.current_state,
-            "Max retries exceeded, marking as refused",
-            session.retry_count,
-            questions=session.questions,
-        )
-        response_text = brief_transition(session.questions_answered)
-        ack, follow_up = compose_agent_response(session, response_text, prior_state)
-        response_text = " ".join(part for part in (ack, follow_up) if part).strip()
-        is_complete = session.current_state in (
-            CallState.WRAP_UP.value,
-            CallState.ENDED.value,
-        )
-        return await finish_turn(
-            response_text,
-            complete=is_complete,
-            ack=ack,
-            follow_up=follow_up,
+        return await _refuse_and_advance(
+            reason="Max retries exceeded, marking as refused",
         )
 
     if not response_text:

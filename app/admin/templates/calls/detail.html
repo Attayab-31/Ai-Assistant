@@ -94,6 +94,25 @@
   </section>
   {% endif %}
 
+  {% if tenant and user and user.can_edit %}
+  <section class="card">
+    <div class="card-head">
+      <h2>Admin notes</h2>
+      <span class="muted">Private — not shared with the caller</span>
+    </div>
+    <div class="form-group" style="margin-bottom: 12px;">
+      <label class="sr-only" for="callAdminNotes">Admin notes</label>
+      <textarea id="callAdminNotes" rows="4" placeholder="Team notes about this screening call…">{{ tenant.notes or '' }}</textarea>
+    </div>
+    <button type="button" class="btn btn-secondary btn-sm" onclick="withBtnLoading(this, saveCallNotes, 'Saving\u2026')">Save notes</button>
+  </section>
+  {% elif tenant and tenant.notes %}
+  <section class="card">
+    <div class="card-head"><h2>Admin notes</h2></div>
+    <p class="muted" style="margin: 0; white-space: pre-wrap;">{{ tenant.notes }}</p>
+  </section>
+  {% endif %}
+
   {% if score_breakdown %}
   <section class="card">
     <div class="card-head"><h2>Score breakdown</h2></div>

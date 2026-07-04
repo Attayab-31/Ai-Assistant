@@ -111,6 +111,7 @@ _LEGACY_STATE_META: dict[str, dict[str, Any]] = {
         "answer_type": "text",
         "extract_fields": ("pet_type", "pet_breed", "pet_weight", "pets_raw"),
         "conditional": {"field": "has_pets", "operator": "eq", "value": True},
+        "require_all_extract_fields": True,
         "field_labels": {
             "pet_type": "pet type",
             "pet_breed": "breed",
@@ -295,6 +296,12 @@ def migrate_question_to_v2(q: dict[str, Any]) -> dict[str, Any]:
         "scoring": scoring,
         "understanding_guide": q.get(
             "understanding_guide", meta.get("understanding_guide", "")
+        ),
+        "require_all_extract_fields": bool(
+            q.get(
+                "require_all_extract_fields",
+                meta.get("require_all_extract_fields", False),
+            )
         ),
     }
 
@@ -490,6 +497,69 @@ def _parse_number(value: Any) -> Decimal | None:
         return None
 
 
+def is_question_required(q: dict[str, Any] | None) -> bool:
+    """False only when the admin explicitly marked the question optional."""
+    if not q:
+        return True
+    return q.get("required", True) is not False
+
+
+def require_all_extract_fields(q: dict[str, Any]) -> bool:
+    """When true, every non-raw extract field must be captured before advancing."""
+    return bool(q.get("require_all_extract_fields"))
+
+
+def non_raw_extract_fields(q: dict[str, Any]) -> list[str]:
+    return [
+        str(f)
+        for f in (q.get("extract_fields") or [])
+        if not str(f).endswith("_raw")
+    ]
+
+
+def _extract_fields_satisfied(
+    q: dict[str, Any],
+    data: dict[str, Any],
+    *,
+    answer_type: str,
+) -> bool:
+    """True when configured extract slots for this question are filled."""
+    from app.core.screening_flow import _has_value
+
+    if require_all_extract_fields(q):
+        for field in non_raw_extract_fields(q):
+            if field.startswith(("has_", "is_")):
+                if data.get(field) not in (True, False):
+                    return False
+            elif not _has_value(data, field):
+                return False
+        return True
+
+    primary = _primary_field(q)
+    if answer_type == "yes_no":
+        return data.get(primary) in (True, False)
+    if answer_type in ("number", "currency"):
+        if _parse_number(data.get(primary)) is not None:
+            return True
+        return _has_value(data, primary)
+    if answer_type == "date":
+        raw_field = f"{primary}_raw" if primary else ""
+        date_fields = [primary]
+        if raw_field and raw_field not in date_fields:
+            date_fields.append(raw_field)
+        return _has_value(data, *date_fields)
+    if answer_type == "phone":
+        return _is_valid_phone(data.get(primary))
+    if answer_type == "email":
+        return _is_valid_email(data.get(primary))
+    if answer_type in ("text", "long_text"):
+        if _has_value(data, primary):
+            return True
+        state = str(q.get("state") or "")
+        return bool((data.get("raw_answers") or {}).get(state))
+    return _has_value(data, primary)
+
+
 def is_question_answered_for_def(
     q: dict[str, Any],
     data: dict[str, Any],
@@ -511,29 +581,7 @@ def is_question_answered_for_def(
         return False
 
     answer_type = str(q.get("answer_type") or "text")
-    primary = _primary_field(q)
-
-    if answer_type == "yes_no":
-        return data.get(primary) in (True, False)
-    if answer_type in ("number", "currency"):
-        if _parse_number(data.get(primary)) is not None:
-            return True
-        return _has_value(data, primary)
-    if answer_type == "date":
-        raw_field = f"{primary}_raw" if primary else ""
-        date_fields = [primary]
-        if raw_field and raw_field not in date_fields:
-            date_fields.append(raw_field)
-        return _has_value(data, *date_fields)
-    if answer_type == "phone":
-        return _is_valid_phone(data.get(primary))
-    if answer_type == "email":
-        return _is_valid_email(data.get(primary))
-    if answer_type in ("text", "long_text"):
-        if _has_value(data, primary):
-            return True
-        return bool((data.get("raw_answers") or {}).get(state))
-    return _has_value(data, primary)
+    return _extract_fields_satisfied(q, data, answer_type=answer_type)
 
 
 def readback_prompt_for_question(q: dict[str, Any], value: str) -> str:
@@ -933,8 +981,13 @@ def build_question_slot_config(q: dict[str, Any]) -> dict[str, Any]:
     fields = list(q.get("extract_fields") or [])
     labels = dict(q.get("field_labels") or _default_field_labels(fields))
     answer_type = str(q.get("answer_type") or "text")
-    required = fields[:1] if fields else []
-    optional = fields[1:]
+    non_raw = [f for f in fields if not str(f).endswith("_raw")]
+    if require_all_extract_fields(q) and non_raw:
+        required = non_raw
+        optional = [f for f in fields if f not in non_raw]
+    else:
+        required = fields[:1] if fields else []
+        optional = fields[1:]
     cfg: dict[str, Any] = {
         "required": tuple(required),
         "optional": tuple(optional),

@@ -454,6 +454,9 @@
             <div class="extra-fields-container">${extraFieldsHtml(q.extract_fields, q.field_labels, field)}</div>
             <button type="button" class="btn btn-secondary btn-sm add-extra-field-btn settings-edit-only">+ Add field</button>
           </fieldset>
+          <label style="display:flex;align-items:center;gap:8px;font-weight:600;">
+            <input type="checkbox" class="edit-require-all-fields" ${q.require_all_extract_fields ? 'checked' : ''} style="width:auto;max-width:none;"> Require every saved field before moving on
+          </label>
           <label>Retry prompt (2nd) <textarea class="edit-retry2" rows="2">${esc(q.retry_prompt_2 || '')}</textarea></label>
           <label>Retry prompt (3rd) <textarea class="edit-retry3" rows="2">${esc(q.retry_prompt_3 || '')}</textarea></label>
           ${advancedCondPanelHtml(cond)}
@@ -840,6 +843,7 @@
       active: card.querySelector('.edit-active').checked,
       required: card.querySelector('.edit-required')?.checked ?? true,
       requires_confirmation: card.querySelector('.edit-confirm').checked,
+      require_all_extract_fields: card.querySelector('.edit-require-all-fields')?.checked ?? false,
       understanding_guide: card.querySelector('.edit-understanding-guide')?.value.trim() || '',
       conditional: buildConditionalFromSimple(card),
       scoring,

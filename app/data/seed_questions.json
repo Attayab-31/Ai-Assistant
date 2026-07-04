@@ -209,6 +209,7 @@
     "order": 7,
     "required": true,
     "requires_confirmation": false,
+    "require_all_extract_fields": true,
     "conditional": {
       "field": "has_pets",
       "operator": "eq",

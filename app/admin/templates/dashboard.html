@@ -8,6 +8,13 @@
 
 {{ onboarding_checklist(onboarding) }}
 
+{% if is_production and celery_health and not celery_health.ok and (can_monitor or can_settings) %}
+<div class="card banner-row warn">
+  <span><strong>Background tasks offline.</strong> Result emails, CRM webhooks, and scheduled data cleanup need the Celery worker and beat services running (see <code>render.yaml</code>). {{ celery_health.detail }}</span>
+  {% if can_monitor %}<a class="btn btn-sm" href="/admin/monitor">Open monitor</a>{% endif %}
+</div>
+{% endif %}
+
 {% if can_monitor or can_calls or can_tenants or can_settings %}
 <div class="toolbar">
   {% if can_monitor %}

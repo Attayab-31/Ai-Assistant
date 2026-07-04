@@ -24,6 +24,29 @@ async function resendEmail() {
   } catch (e) { showMessage(e.message, true); }
 }
 
+async function saveCallNotes() {
+  const el = document.getElementById('callAdminNotes');
+  if (!el || !window._reviewerCallId) return;
+  try {
+    await patchCall('/notes', { notes: el.value });
+    showMessage('Admin notes saved.');
+  } catch (e) { showMessage(e.message, true); }
+}
+
+async function saveTenantNotesOnly() {
+  const tenantId = window._tenantDetailId;
+  const el = document.getElementById('notes');
+  if (!tenantId || !el) return;
+  try {
+    await apiFetch('/admin/api/tenants/' + tenantId + '/notes', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ notes: el.value }),
+    });
+    showMessage('Admin notes saved.');
+  } catch (e) { showMessage(e.message, true); }
+}
+
 async function deleteCall() {
   try {
     const ok = await confirmAction({

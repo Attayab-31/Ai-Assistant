@@ -216,6 +216,18 @@ async def dashboard_page(
             can_tenants=can_tenants,
         )
 
+    celery_health = None
+    if can_monitor or can_settings:
+        try:
+            from app.services.celery_health import check_celery_health
+
+            celery_health = await check_celery_health()
+        except Exception as e:
+            logger.debug("Dashboard Celery health check failed: %s", e)
+            celery_health = {"ok": False, "workers": 0, "detail": "Unavailable"}
+
+    from config import settings as env_settings
+
     return await _render_admin_page(
         db,
         request,
@@ -231,6 +243,8 @@ async def dashboard_page(
         can_tenants=can_tenants,
         can_analytics=can_analytics,
         can_settings=can_settings,
+        celery_health=celery_health,
+        is_production=env_settings.is_production,
         active_page="dashboard",
     )
 
@@ -943,6 +957,20 @@ async def api_monitor(
     except Exception as e:
         logger.debug("Redis ping failed: %s", e)
 
+    celery_health = {"ok": True, "broker": False, "workers": 0, "detail": ""}
+    try:
+        from app.services.celery_health import check_celery_health
+
+        celery_health = await check_celery_health()
+    except Exception as e:
+        logger.debug("Celery health check failed: %s", e)
+        celery_health = {
+            "ok": False,
+            "broker": False,
+            "workers": 0,
+            "detail": "Health check failed",
+        }
+
     uptime_seconds = None
     try:
         import main
@@ -972,6 +1000,7 @@ async def api_monitor(
         "health": {
             "database": True,
             "redis": redis_ok,
+            "celery": celery_health,
             "uptime_seconds": uptime_seconds,
             "providers": provider_status,
         },
@@ -1128,6 +1157,7 @@ async def api_resend_email(
 async def api_update_call_notes(
     call_id: uuid.UUID,
     payload: dict,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     user: AdminUser = Depends(require_scope("calls", edit=True)),
 ):
@@ -1136,7 +1166,17 @@ async def api_update_call_notes(
     if not tenant:
         raise HTTPException(status_code=404, detail="No tenant record for this call")
 
-    await crud.update_tenant(db, tenant.id, notes=payload.get("notes", ""))
+    notes = payload.get("notes", "")
+    await crud.update_tenant(db, tenant.id, notes=notes)
+    await crud.create_audit_log(
+        db,
+        action="updated_call_notes",
+        admin_user_id=user.id,
+        entity_type="tenant",
+        entity_id=tenant.id,
+        new_value={"call_id": str(call_id), "notes_length": len(notes or "")},
+        ip_address=request.client.host if request.client else None,
+    )
     return {"saved": True}
 
 
@@ -1336,11 +1376,26 @@ async def api_blacklist_tenant(
 async def api_update_tenant_notes(
     tenant_id: uuid.UUID,
     payload: dict,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     user: AdminUser = Depends(require_scope("tenants", edit=True)),
 ):
     """Update notes on a tenant profile."""
-    await crud.update_tenant(db, tenant_id, notes=payload.get("notes", ""))
+    tenant = await crud.get_tenant_by_id(db, tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+
+    notes = payload.get("notes", "")
+    await crud.update_tenant(db, tenant_id, notes=notes)
+    await crud.create_audit_log(
+        db,
+        action="updated_tenant_notes",
+        admin_user_id=user.id,
+        entity_type="tenant",
+        entity_id=tenant_id,
+        new_value={"notes_length": len(notes or "")},
+        ip_address=request.client.host if request.client else None,
+    )
     return {"saved": True}
 
 

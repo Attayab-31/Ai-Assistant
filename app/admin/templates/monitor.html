@@ -170,9 +170,13 @@
   function renderHealth(h) {
     const p = h.providers || {};
     const allProv = p.initialized;
+    const celery = h.celery || {};
+    const celeryOk = !!celery.ok;
+    const celeryDetail = celery.worker_detail || celery.detail || (celeryOk ? 'Ready' : 'Not running');
     $('health').innerHTML = [
       healthRow('Database', h.database),
       healthRow('Speed cache', h.redis, h.redis ? 'Connected' : 'Optional — not connected'),
+      healthRow('Background tasks', celeryOk, celeryDetail),
       healthRow('Voice providers', !!allProv, allProv ? 'Ready' : 'Not ready'),
       `<div style="display:flex; align-items:center; justify-content:space-between;"><span style="display:flex; align-items:center; gap:8px;"><span class="dot ok"></span> Server uptime</span><span class="muted">${uptimeLabel(h.uptime_seconds)}</span></div>`,
       `<hr style="border:none; border-top:1px solid var(--line-soft); margin:4px 0;">`,

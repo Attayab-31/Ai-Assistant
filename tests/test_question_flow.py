@@ -411,6 +411,41 @@ def test_scoring_skips_inactive_questions():
     assert breakdown == []
 
 
+def test_pet_details_require_all_extract_fields():
+    from app.core.question_flow import (
+        build_question_slot_config,
+        default_questions_v2,
+        is_question_answered_for_def,
+    )
+
+    pet_followup = next(
+        q for q in default_questions_v2() if q["state"] == "Q6A_PET_DETAILS"
+    )
+    assert pet_followup.get("require_all_extract_fields") is True
+
+    partial = {"has_pets": True, "pet_type": "dog"}
+    assert not is_question_answered_for_def(pet_followup, partial)
+
+    complete = {
+        **partial,
+        "pet_breed": "labrador",
+        "pet_weight": "60 lbs",
+    }
+    assert is_question_answered_for_def(pet_followup, complete)
+
+    slots = build_question_slot_config(pet_followup)
+    assert set(slots["required"]) == {"pet_type", "pet_breed", "pet_weight"}
+
+
+def test_optional_question_not_required_by_default():
+    from app.core.question_flow import default_questions_v2, is_question_required
+
+    notes = next(
+        q for q in default_questions_v2() if q["state"] == "Q15_GENERAL_NOTES"
+    )
+    assert is_question_required(notes) is False
+
+
 def test_skipped_conditional_is_not_counted_answered():
     from app.core.question_flow import (
         build_flow_rows,
