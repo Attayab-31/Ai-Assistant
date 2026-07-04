@@ -650,7 +650,44 @@ def test_build_system_prompt_includes_admin_flow_outline():
     assert "read-back confirm" in prompt
 
 
-def test_retry_prompt_for_count_uses_admin_escalation():
+def test_merge_extracted_data_rejects_unknown_fields():
+    from app.core.conversation import ConversationSession
+    from app.core.question_flow import default_questions_v2
+
+    session = ConversationSession(
+        call_id="t",
+        phone_number="+15550000000",
+        questions=default_questions_v2(),
+    )
+    session.merge_extracted_data(
+        {
+            "full_name": "Dawn Smith",
+            "pet_age": "three years",
+            "made_up_field": "nope",
+        }
+    )
+    assert session.extracted_data.get("full_name") == "Dawn Smith"
+    assert "pet_age" not in session.extracted_data
+    assert "made_up_field" not in session.extracted_data
+
+
+def test_merge_extracted_data_allows_admin_custom_field():
+    from app.core.conversation import ConversationSession
+    from app.core.question_flow import new_custom_question, validate_questions_for_save
+
+    custom = new_custom_question(question="Pet age?", answer_type="text", order=99)
+    custom["extract_fields"] = ["pet_age"]
+    custom["field_labels"] = {"pet_age": "pet age"}
+    questions = validate_questions_for_save([custom])
+    session = ConversationSession(
+        call_id="t",
+        phone_number="+15550000000",
+        questions=questions,
+        current_state=custom["state"],
+    )
+    session.merge_extracted_data({"pet_age": "three years"})
+    assert session.extracted_data.get("pet_age") == "three years"
+
     from app.core.question_flow import retry_prompt_for_count
 
     q = {

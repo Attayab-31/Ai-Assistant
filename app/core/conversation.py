@@ -11,6 +11,7 @@ from enum import Enum
 from typing import Any
 
 from app.core.question_flow import (
+    active_extract_fields,
     build_field_maps,
     build_question_slot_config,
     confirm_field_for_question,
@@ -71,6 +72,17 @@ class TranscriptEntry:
         default_factory=lambda: datetime.now(UTC).strftime("%H:%M:%S")
     )
     state: str = ""
+
+
+# Tenant columns call_handler sets via merge_extracted_data (not admin questions).
+_RUNTIME_MERGE_FIELDS = frozenset(
+    {
+        "human_requested",
+        "callback_requested",
+        "stop_requested",
+        "special_notes",
+    }
+)
 
 
 @dataclass
@@ -280,8 +292,11 @@ class ConversationSession:
         self.refresh_progress()
 
     def merge_extracted_data(self, data: dict[str, Any], *, raw_text: str = "") -> None:
+        allowed = active_extract_fields(self.questions) | _RUNTIME_MERGE_FIELDS
         clean: dict[str, Any] = {}
         for key, value in (data or {}).items():
+            if key not in allowed:
+                continue
             value = _unwrap_confidence(value)
             if value not in (None, ""):
                 clean[key] = value
