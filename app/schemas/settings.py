@@ -40,19 +40,6 @@ class ProviderApiKeyUpdate(BaseModel):
         return value
 
 
-class ProviderTestRequest(BaseModel):
-    provider_type: Literal["llm", "stt", "tts"]
-    provider: str
-    test_text: str = "Hello, this is a provider test."
-
-
-class ProviderTestResponse(BaseModel):
-    success: bool
-    latency_ms: float
-    response: str | None = None
-    error: str | None = None
-
-
 class ConditionalRule(BaseModel):
     field: str
     operator: Literal["eq", "ne", "truthy", "falsy"] = "truthy"

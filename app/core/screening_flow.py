@@ -610,16 +610,6 @@ def _digits_spaced(value: str) -> str:
     return ", ".join(groups)
 
 
-def build_readback(state_value: str, value: str) -> str:
-    """Deprecated — use question_flow.readback_prompt_for_state with admin questions."""
-    return f"Just to confirm, I have {value}. Is that correct?"
-
-
-def repair_prompt(state_value: str) -> str:
-    """Deprecated — use question_flow.repair_prompt_for_state with admin questions."""
-    return "No problem — could you say that again?"
-
-
 def normalize_money(value: Any) -> Decimal | None:
     if value in (None, ""):
         return None
@@ -1002,10 +992,6 @@ _BARE_ACK_WORDS = frozenset(
         "wrong",
     }
 )
-_DURATION_HINT_RE = re.compile(
-    r"\d|year|month|week|since|ago|long|couple|few|while",
-    re.I,
-)
 
 
 def _is_refusal_text(text: str) -> bool:
@@ -1016,30 +1002,6 @@ def _is_refusal_text(text: str) -> bool:
 
 def _is_bare_ack(text: str) -> bool:
     return normalize_text(text) in _BARE_ACK_WORDS
-
-
-def _looks_like_duration(text: str) -> bool:
-    return bool(_DURATION_HINT_RE.search(normalize_text(text)))
-
-
-def _looks_like_residence(text: str) -> bool:
-    norm = normalize_text(text)
-    if not norm or norm in _BARE_ACK_WORDS:
-        return False
-    if _is_refusal_text(text):
-        return False
-    if re.search(
-        r"\b(section eight|section 8|handle section|do you accept|faq)\b",
-        norm,
-    ):
-        return False
-    if "?" in text and not re.search(
-        r"\b(street|avenue|road|drive|lane|apt|apartment|city|town|"
-        r"live in|living in|address|house|home)\b",
-        norm,
-    ):
-        return False
-    return len(norm) > 2
 
 
 # Correction / lead-in markers. When a caller restates a value

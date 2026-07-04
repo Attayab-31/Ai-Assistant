@@ -17,7 +17,6 @@ from typing import Any
 class Phase:
     CALL_START = "call:start"
     CALL_END = "call:end"
-    SETTINGS = "settings"
     STT = "stt"
     STT_STREAM = "stt:stream"
     STT_FALLBACK = "stt:fallback"
@@ -44,9 +43,7 @@ class Phase:
     UI_FINAL = "ui:final"
     AUDIO_ENQUEUE = "audio:enqueue"
     BARGE_IN = "audio:barge-in"
-    SILENCE = "audio:silence"
     ECHO = "audio:echo"
-    STATE = "state"
     TENANT = "tenant"
 
 

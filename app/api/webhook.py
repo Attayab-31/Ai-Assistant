@@ -262,11 +262,6 @@ async def handle_call_answered_event(db: AsyncSession, call_payload: dict) -> No
             )
 
 
-async def _finalize_call_background(call_control_id: str) -> None:
-    """Run finalize_call in its own DB session so the webhook can return fast."""
-    await call_handler.finalize_active_session_background(call_control_id)
-
-
 async def handle_call_hangup(db: AsyncSession, call_payload: dict) -> None:
     """Handle call.hangup — stop the audio stream and finalize after it ends."""
     call_control_id = call_payload.get("call_control_id", "")

@@ -24,7 +24,6 @@ from app.db import crud
 from app.db.crud import create_audit_log, get_user_by_email, update_last_login
 from app.db.database import AsyncSessionLocal, get_db
 from app.utils.security import (
-    MAX_BCRYPT_PASSWORD_BYTES,
     create_access_token,
     decode_access_token,
     hash_password,
@@ -38,7 +37,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 COOKIE_NAME = "access_token"
-MIN_PASSWORD_LENGTH = 8
 
 
 class LoginRequest(BaseModel):
@@ -64,19 +62,6 @@ def _cookie_secure(request: Request) -> bool:
     if forwarded.split(",")[0].strip().lower() == "https":
         return True
     return request.url.scheme == "https"
-
-
-def _validate_password(password: str) -> None:
-    if len(password) < MIN_PASSWORD_LENGTH:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Password must be at least {MIN_PASSWORD_LENGTH} characters",
-        )
-    if len(password.encode("utf-8")) > MAX_BCRYPT_PASSWORD_BYTES:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Password must be {MAX_BCRYPT_PASSWORD_BYTES} bytes or fewer",
-        )
 
 
 async def _post_login_tasks(

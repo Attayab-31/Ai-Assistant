@@ -40,7 +40,6 @@ from app.utils.helpers import (
     friendly_audit_action,
     friendly_audit_entity,
     friendly_call_status,
-    friendly_chart_label,
     friendly_provider_name,
     friendly_qualification,
     friendly_state,
@@ -73,7 +72,6 @@ templates.env.filters["score_color"] = score_color
 templates.env.filters["friendly_state"] = friendly_state
 templates.env.filters["friendly_call_status"] = friendly_call_status
 templates.env.filters["friendly_qualification"] = friendly_qualification
-templates.env.filters["friendly_chart_label"] = friendly_chart_label
 templates.env.filters["glossary_label"] = glossary_label
 templates.env.filters["glossary_tip"] = glossary_tip
 templates.env.filters["friendly_provider"] = friendly_provider_name

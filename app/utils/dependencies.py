@@ -126,8 +126,8 @@ def require_role(*allowed_roles: str):
 
 # Staff = anyone allowed to mutate data. The "viewer" role is read-only and is
 # intentionally excluded so viewers cannot edit notes, override qualification,
-# resend emails, change settings, etc.
-require_staff = require_role("super_admin", "admin")
+# resend emails, change settings, etc. Use ``require_scope(..., edit=True)`` on
+# write endpoints instead of a separate staff dependency.
 
 
 def require_scope(scope: str, *, edit: bool = False):

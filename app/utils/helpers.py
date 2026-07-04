@@ -28,11 +28,6 @@ def set_display_timezone(name: str | None) -> None:
         _display_tz_name = candidate
 
 
-def get_display_timezone() -> str:
-    """Return the cached admin display timezone name."""
-    return _display_tz_name
-
-
 def _zone(name: str | None) -> ZoneInfo:
     """Resolve a timezone name, falling back to the default then UTC."""
     for candidate in (name, _display_tz_name, _DEFAULT_DISPLAY_TZ):
@@ -378,18 +373,6 @@ def build_onboarding_checklist(
         "done_count": done_count,
         "total_count": len(steps),
     }
-
-
-def friendly_chart_label(category: str, key: str | None) -> str:
-    """Plain label for analytics chart keys."""
-    if not key:
-        return ""
-    k = str(key).lower()
-    if category == "qualification":
-        return _QUALIFICATION_LABELS.get(k, k.replace("_", " ").title())
-    if category == "call_status":
-        return _CALL_STATUS_LABELS.get(k, k.replace("_", " ").title())
-    return k.replace("_", " ").title()
 
 
 _LLM_PROVIDER_LABELS = {
