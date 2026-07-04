@@ -80,6 +80,8 @@ def build_extraction_prompt(
 def _clean_text(value: Any, max_len: int | None = None) -> str | None:
     if value in (None, ""):
         return None
+    if isinstance(value, bool):
+        return None
     text = re.sub(r"\s+", " ", str(value)).strip()
     if not text:
         return None

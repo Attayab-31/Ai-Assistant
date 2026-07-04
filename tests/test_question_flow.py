@@ -177,6 +177,31 @@ def test_normalize_coerces_has_flags_to_bool():
     assert out["has_eviction"] is True
 
 
+def test_normalize_keeps_eviction_raw_as_caller_text():
+    from app.core.screening_flow import normalize_extracted_fields
+    from app.core.seed_data import load_seed_questions
+
+    utterance = "No. I have not experienced any such kind of"
+    out = normalize_extracted_fields(
+        {
+            "has_eviction": False,
+            "eviction_raw": utterance,
+        },
+        questions=load_seed_questions(),
+    )
+    assert out["has_eviction"] is False
+    assert out["eviction_raw"] == utterance
+    assert isinstance(out["eviction_raw"], str)
+
+
+def test_coerce_extracted_data_drops_bool_raw_fields():
+    from app.core.data_extractor import coerce_extracted_data
+
+    out = coerce_extracted_data({"eviction_raw": False, "has_eviction": False})
+    assert out["has_eviction"] is False
+    assert out["eviction_raw"] is None
+
+
 def test_infer_monthly_income_from_stt_annual_garble():
     from app.core.screening_flow import (
         infer_monthly_income_from_raw,

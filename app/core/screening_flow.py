@@ -412,7 +412,9 @@ def normalize_extracted_fields(
     # break boolean checks ("no" is truthy in Python) used by skip/conditional
     # logic and scoring. Any field prefixed has_/is_ is treated as a flag.
     for key in list(out.keys()):
-        if key.startswith("has_") or key.startswith("is_"):
+        if (key.startswith("has_") or key.startswith("is_")) and not key.endswith(
+            "_raw"
+        ):
             coerced = _coerce_bool(out.get(key))
             if coerced is not None:
                 out[key] = coerced
@@ -444,6 +446,8 @@ def normalize_extracted_fields(
         from app.core.question_flow import field_answer_types_from_questions
 
         for field, answer_type in field_answer_types_from_questions(questions).items():
+            if str(field).endswith("_raw"):
+                continue
             value = out.get(field)
             if value in (None, ""):
                 continue
