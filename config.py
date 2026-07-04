@@ -111,9 +111,7 @@ class Settings(BaseSettings):
 
     # Supabase
     supabase_url: str = ""
-    supabase_publishable_key: str = ""
     supabase_secret_key: str = ""
-    supabase_jwks_url: str = ""
     supabase_storage_bucket: str = "call-recordings"
 
     # Redis (separate databases for different purposes to avoid memory conflicts)
@@ -138,7 +136,6 @@ class Settings(BaseSettings):
 
     # TTS
     google_application_credentials: str = ""
-    google_tts_project_id: str = ""
 
     # Email
     resend_api_key: str = ""

@@ -62,7 +62,7 @@ async def test_end_call_for_provider_failure_sets_review_flags(monkeypatch):
 
     session = _session()
 
-    async def fake_tts(text, sess, **kwargs):
+    async def fake_tts(text, _session, **kwargs):
         return b"\xff" * 80
 
     monkeypatch.setattr(

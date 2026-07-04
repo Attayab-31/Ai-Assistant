@@ -113,7 +113,6 @@ class ConversationSession:
     faqs: list[dict] = field(default_factory=list)
 
     started_at: datetime = field(default_factory=lambda: datetime.now(UTC))
-    last_activity: datetime = field(default_factory=lambda: datetime.now(UTC))
     # Set when the live WebSocket stream closes; hides the call from Monitor and
     # freezes duration. The session may remain for Test Console "End & score".
     stream_ended_at: datetime | None = None
@@ -153,9 +152,7 @@ class ConversationSession:
     # synthesis, and the full turn (transcript-in → audio-ready). "Other" is
     # derived as turn − llm − tts (STT assembly, normalization, queueing).
     llm_latency_ms_total: float = 0.0
-    llm_latency_samples: int = 0
     tts_latency_ms_total: float = 0.0
-    tts_latency_samples: int = 0
     turn_latency_ms_total: float = 0.0
     turn_latency_samples: int = 0
     max_turn_latency_ms: float = 0.0
@@ -314,7 +311,6 @@ class ConversationSession:
             state=self.current_state,
         )
         self.transcript.append(entry)
-        self.last_activity = datetime.now(UTC)
 
     def append_streaming_ai_transcript(self, sentence: str) -> str:
         """Update transcript as LLM streams speakable sentences to TTS."""
@@ -408,7 +404,6 @@ class ConversationSession:
         if ms <= 0:
             return
         self.llm_latency_ms_total += ms
-        self.llm_latency_samples += 1
 
     def record_tts_latency(self, ms: float | None) -> None:
         """Record one TTS synthesis latency (ms). Never raises."""
@@ -419,7 +414,6 @@ class ConversationSession:
         if ms <= 0:
             return
         self.tts_latency_ms_total += ms
-        self.tts_latency_samples += 1
 
     def record_turn_latency(self, ms: float | None) -> None:
         """Record one full turn's latency (transcript-in → audio-ready, ms)."""
@@ -605,8 +599,6 @@ def navigation_repeat_text(session: ConversationSession) -> str:
     if pending and pending.get("mode") == "correction":
         fields = pending.get("fields") or []
         if fields:
-            from app.core.question_flow import build_correction_readback
-
             return build_correction_readback(fields)
     if pending and not pending.get("mode"):
         rb = readback_prompt_for_state(

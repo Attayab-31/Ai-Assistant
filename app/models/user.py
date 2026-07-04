@@ -88,10 +88,6 @@ class AdminUser(Base):
 
     # ── Access helpers ────────────────────────────────────────────────────────
     @property
-    def is_super(self) -> bool:
-        return self.role == "super_admin"
-
-    @property
     def is_env_account(self) -> bool:
         """True only for the permanent super admin defined by ADMIN_EMAIL.
 

@@ -10,7 +10,6 @@ from __future__ import annotations
 import logging
 import random
 import re
-from collections.abc import Iterable
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -63,22 +62,6 @@ PET_TYPES = (
     "snake",
     "lizard",
 )
-
-
-def normalize_questions(questions: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
-    """Normalize admin questions (v2 dynamic flow)."""
-    from app.core.question_flow import normalize_questions as _normalize_v2
-
-    return _normalize_v2(questions)
-
-
-def validate_questions_for_save(
-    questions: list[dict[str, Any]]
-) -> list[dict[str, Any]]:
-    """Validate admin question updates (dynamic add/delete/reorder)."""
-    from app.core.question_flow import validate_questions_for_save as _validate_v2
-
-    return _validate_v2(questions)
 
 
 def normalize_text(text: str) -> str:
@@ -1165,81 +1148,6 @@ def parse_spoken_name(text: str) -> str:
 
 def _has_value(data: dict[str, Any], *fields: str) -> bool:
     return any(data.get(field) not in (None, "", []) for field in fields)
-
-
-def is_question_answered(
-    state: str, data: dict[str, Any], refused_states: Iterable[str] | None = None,
-    *, questions: list[dict[str, Any]] | None = None,
-    confirmed_fields: Iterable[str] | None = None,
-) -> bool:
-    """Delegate to dynamic question_flow (admin question list required)."""
-    if questions is None:
-        return False
-    from app.core.question_flow import is_question_answered as _answered
-
-    return _answered(
-        state,
-        data,
-        refused_states,
-        questions=questions,
-        confirmed_fields=confirmed_fields,
-    )
-
-
-def next_unanswered_state(
-    data: dict[str, Any],
-    refused_states: Iterable[str] | None = None,
-    *,
-    questions: list[dict[str, Any]] | None = None,
-    confirmed_fields: Iterable[str] | None = None,
-) -> str | None:
-    from app.core.question_flow import next_unanswered_state as _next
-
-    return _next(
-        data,
-        refused_states,
-        questions=questions,
-        confirmed_fields=confirmed_fields,
-    )
-
-
-def count_answered_questions(
-    data: dict[str, Any],
-    refused_states: Iterable[str] | None = None,
-    *,
-    questions: list[dict[str, Any]] | None = None,
-    confirmed_fields: Iterable[str] | None = None,
-) -> int:
-    from app.core.question_flow import count_answered_questions as _count
-
-    return _count(
-        data,
-        refused_states,
-        questions=questions,
-        confirmed_fields=confirmed_fields,
-    )
-
-
-def count_active_questions(
-    data: dict[str, Any],
-    skip_states: Iterable[str] | None = None,
-    *,
-    questions: list[dict[str, Any]] | None = None,
-) -> int:
-    from app.core.question_flow import count_active_questions as _active
-
-    return _active(data, skip_states, questions=questions)
-
-
-def screening_complete(
-    data: dict[str, Any],
-    refused_states: Iterable[str] | None = None,
-    *,
-    questions: list[dict[str, Any]] | None = None,
-) -> bool:
-    from app.core.question_flow import screening_complete as _complete
-
-    return _complete(data, refused_states, questions=questions)
 
 
 _TRANSITIONS = (

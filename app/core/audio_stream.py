@@ -71,7 +71,6 @@ MIN_SPEECH_CHUNKS = 5
 FORCE_FLUSH_BYTES = 16000 * 2
 MAX_BUFFER_BYTES = 16000 * 10  # ~10 s safety cap
 TURN_PAUSE_SECONDS = 0.18  # natural pause between ack and next question
-TURN_TIMEOUT_SECONDS = 15.0  # default outer budget when session has no admin profile
 
 
 def _turn_budget_seconds(session: ConversationSession) -> float:
