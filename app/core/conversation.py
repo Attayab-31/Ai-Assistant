@@ -21,11 +21,16 @@ from app.core.question_flow import (
     inactive_flow_states,
     next_unanswered_state,
     normalize_questions,
+    prompt_confirmation_fields,
     prompt_fields_catalog,
+    prompt_required_questions_summary,
+    prompt_screening_flow_outline,
     questions_index,
+    retry_prompt_for_count,
     screening_complete,
     slot_fill_examples_for_question,
     understanding_guide_for_question,
+    validation_hint_for_question,
 )
 from app.core.screening_flow import (
     BUSINESS_NAME,
@@ -608,14 +613,7 @@ def navigation_repeat_text(session: ConversationSession) -> str:
     question_cfg = session.get_current_question()
     if not question_cfg:
         return "Go ahead whenever you're ready."
-    retry_count = session.retry_count
-    if question_cfg.get("retry_prompt_3") and retry_count >= 2:
-        return str(question_cfg["retry_prompt_3"])
-    if question_cfg.get("retry_prompt_2") and retry_count >= 1:
-        return str(question_cfg["retry_prompt_2"])
-    if question_cfg.get("retry_prompt") and retry_count > 0:
-        return str(question_cfg["retry_prompt"])
-    return str(question_cfg.get("question", ""))
+    return retry_prompt_for_count(question_cfg, session.retry_count)
 
 
 def needs_extended_turn_budget(session: ConversationSession) -> bool:
@@ -771,12 +769,9 @@ def polite_redirect(session: ConversationSession, kind: str) -> str:
         return "No problem. Please continue when you are ready."
 
     retry_count = session.retry_count
-    if question_cfg.get("retry_prompt_3") and retry_count >= 2:
-        prompt = question_cfg["retry_prompt_3"]
-    elif question_cfg.get("retry_prompt_2") and retry_count >= 1:
-        prompt = question_cfg["retry_prompt_2"]
-    else:
-        prompt = question_cfg.get("retry_prompt") or question_cfg["question"]
+    prompt = retry_prompt_for_count(question_cfg, retry_count)
+    if not prompt:
+        prompt = str(question_cfg.get("question") or "")
 
     if kind == "refusal":
         return (
@@ -931,12 +926,7 @@ def compose_agent_response(
             return ack, ""
 
         if current == prior_state and session.retry_count > 0:
-            if question.get("retry_prompt_3") and session.retry_count >= 3:
-                prompt = question["retry_prompt_3"]
-            elif question.get("retry_prompt_2") and session.retry_count >= 2:
-                prompt = question["retry_prompt_2"]
-            else:
-                prompt = question.get("retry_prompt", question["question"])
+            prompt = retry_prompt_for_count(question, session.retry_count)
         else:
             prompt = question["question"]
 
@@ -1199,7 +1189,9 @@ def build_system_prompt(
     question = session.get_current_question()
     question_text = question["question"] if question else "Close the call politely."
     retry_prompt = (
-        question.get("retry_prompt", question_text) if question else question_text
+        retry_prompt_for_count(question, session.retry_count)
+        if question
+        else question_text
     )
     # Use the admin-configured property/business name in the agent's identity so
     # it introduces itself correctly; fall back to the built-in constant.
@@ -1209,6 +1201,9 @@ def build_system_prompt(
         understanding_guide_for_question(question)
         if question
         else "Extract the field that matches the current screening question."
+    )
+    validation_hint = (
+        validation_hint_for_question(question) if question else ""
     )
 
     active_faqs = [
@@ -1261,6 +1256,9 @@ def build_system_prompt(
         )
 
     fields_catalog = prompt_fields_catalog(session.questions)
+    flow_outline = prompt_screening_flow_outline(session.questions)
+    confirm_fields = prompt_confirmation_fields(session.questions)
+    required_summary = prompt_required_questions_summary(session.questions)
     slot_examples = slot_fill_examples_for_question(question)
     yes_no_fields = [
         field
@@ -1369,8 +1367,14 @@ Respond with ONE JSON object only — no markdown, no code fences. response_text
 You are the conversational intelligence for "{business}", an AI voice agent screening tenants on a live call. Understand the caller like an experienced human leasing agent — they may answer casually, partially, with corrections, rambling, or mixed with a question. Extract their info into JSON and reply warmly and briefly.
 
 # CONTEXT
+- Property: {business}
+- Active screening flow (admin-configured order):
+{flow_outline}
+- {required_summary}
+- Read-back confirmation fields before advancing: {confirm_fields}
 - Current question: {state_value} — "{question_text}"
 - Understanding guide: {question_guide}
+- Completeness expectation: {validation_hint or "capture a complete answer for the current question"}
 - CURRENT QUESTION SLOTS (your memory for this question only):
 {slots_block}
 - All data captured so far (incl. future questions they volunteered): {extracted_json}

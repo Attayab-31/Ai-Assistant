@@ -15,6 +15,7 @@ from app.core.question_flow import (
     extract_fields_from_speech,
     field_labels_from_questions,
     normalize_questions,
+    prompt_extraction_rules,
 )
 from app.core.screening_flow import (
     normalize_email,
@@ -34,13 +35,6 @@ _CONTROL_FIELDS = (
 
 _EXTRACTION_RULES = """Rules:
 - Preserve raw caller wording in *_raw fields.
-- For income, the question asks for MONTHLY income. Respect the period the caller states:
-  - If they say "monthly", "a month", "per month", "/mo", or give no period at all, use the number AS-IS as monthly_income. Do NOT divide it, even if it seems large.
-  - Only divide by 12 when the caller clearly says it is yearly ("a year", "yearly", "annually", "per year", "annual salary").
-  - For hourly pay, convert only if the hours are stated; otherwise leave monthly_income null and preserve income_raw.
-  - Always preserve the caller's exact wording in income_raw.
-- Eviction means an eviction or landlord-tenant court filing. If unclear, leave has_eviction null.
-- If the caller says bad credit or eviction should be reviewed, put that context in general_notes or special_notes.
 - Return JSON only, no markdown.
 
 Today's date: {today}"""
@@ -66,6 +60,10 @@ def build_extraction_prompt(
         label = labels.get(field, field.replace("_", " "))
         field_lines.append(f"- {field}: {label}")
 
+    rules = prompt_extraction_rules(normalized, today=today) if normalized else (
+        _EXTRACTION_RULES.format(today=today)
+    )
+
     return (
         "You extract structured data from a tenant screening phone call.\n"
         "Return ONLY a valid JSON object. Use null when a field is not mentioned.\n\n"
@@ -73,7 +71,7 @@ def build_extraction_prompt(
         "Extract these fields:\n"
         + "\n".join(field_lines)
         + "\n\n"
-        + _EXTRACTION_RULES.format(today=today)
+        + rules
     )
 
 

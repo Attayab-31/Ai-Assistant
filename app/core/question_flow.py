@@ -892,6 +892,41 @@ def inactive_flow_states(questions: list[dict[str, Any]] | None) -> set[str]:
     return result
 
 
+def validation_hint_for_question(q: dict[str, Any]) -> str:
+    """Admin ``validation`` text, or a sensible default derived from answer_type."""
+    explicit = str(q.get("validation") or "").strip()
+    if explicit:
+        return explicit
+    answer_type = str(q.get("answer_type") or "text")
+    labels = q.get("field_labels") or {}
+    primary = _primary_field(q)
+    label = labels.get(primary, primary.replace("_", " "))
+    defaults = {
+        "email": "valid email address",
+        "phone": "valid phone number",
+        "date": "date or timeframe",
+        "yes_no": "clear yes or no",
+        "number": "numeric count",
+        "currency": "money amount; preserve exact wording in any *_raw field",
+        "long_text": f"complete answer for {label}",
+        "text": f"clear answer for {label}",
+    }
+    return defaults.get(answer_type, defaults["text"])
+
+
+def retry_prompt_for_count(question: dict[str, Any] | None, retry_count: int) -> str:
+    """Pick the admin retry prompt for the current retry attempt."""
+    if not question:
+        return ""
+    if retry_count >= 2 and question.get("retry_prompt_3"):
+        return str(question["retry_prompt_3"])
+    if retry_count >= 1 and question.get("retry_prompt_2"):
+        return str(question["retry_prompt_2"])
+    if retry_count > 0 and question.get("retry_prompt"):
+        return str(question["retry_prompt"])
+    return str(question.get("question") or "")
+
+
 def build_question_slot_config(q: dict[str, Any]) -> dict[str, Any]:
     fields = list(q.get("extract_fields") or [])
     labels = dict(q.get("field_labels") or _default_field_labels(fields))
@@ -902,7 +937,7 @@ def build_question_slot_config(q: dict[str, Any]) -> dict[str, Any]:
         "required": tuple(required),
         "optional": tuple(optional),
         "labels": labels,
-        "complete_hint": q.get("validation") or "",
+        "complete_hint": validation_hint_for_question(q),
     }
     if answer_type == "date" and len(fields) > 1:
         cfg["required_any"] = True
@@ -1296,10 +1331,24 @@ def field_answer_types_from_questions(
     return out
 
 
+def _field_question_meta(
+    questions: list[dict[str, Any]] | None,
+) -> dict[str, dict[str, Any]]:
+    """Map each extract field to its owning active question metadata."""
+    out: dict[str, dict[str, Any]] = {}
+    for q in normalize_questions(questions):
+        if not q.get("active", True):
+            continue
+        for field in q.get("extract_fields") or []:
+            out.setdefault(str(field), q)
+    return out
+
+
 def prompt_fields_catalog(questions: list[dict[str, Any]] | None) -> str:
     """Build the LLM extraction field list from the admin question snapshot."""
     labels = field_labels_from_questions(questions)
     types = field_answer_types_from_questions(questions)
+    meta_by_field = _field_question_meta(questions)
     lines: list[str] = []
     seen: set[str] = set()
     for q in normalize_questions(questions):
@@ -1312,8 +1361,133 @@ def prompt_fields_catalog(questions: list[dict[str, Any]] | None) -> str:
             seen.add(field)
             label = labels.get(field, field.replace("_", " "))
             answer_type = types.get(field, "text")
-            lines.append(f"- {field}: {label} ({answer_type})")
+            owner = meta_by_field.get(field) or q
+            tags: list[str] = []
+            if owner.get("required", True) is False:
+                tags.append("optional question")
+            if confirm_field_for_question(owner) == field:
+                tags.append("read-back confirm")
+            hint = validation_hint_for_question(owner)
+            if hint:
+                tags.append(f"expect: {hint}")
+            suffix = f" [{'; '.join(tags)}]" if tags else ""
+            lines.append(f"- {field}: {label} ({answer_type}){suffix}")
     return "\n".join(lines) if lines else "- (no active extract fields configured)"
+
+
+def prompt_screening_flow_outline(questions: list[dict[str, Any]] | None) -> str:
+    """Ordered list of active admin questions for the LLM flow context."""
+    lines: list[str] = []
+    for q in normalize_questions(questions):
+        if not q.get("active", True):
+            continue
+        parts = [f'{q.get("state")}: "{q.get("question", "")}"']
+        cond = q.get("conditional")
+        if cond:
+            ref = cond.get("field", "")
+            op = cond.get("operator", "")
+            val = cond.get("value", "")
+            val_bit = f" {val!r}" if val not in (None, "") else ""
+            parts.append(f"(only when {ref} {op}{val_bit})")
+        if q.get("required", True) is False:
+            parts.append("(optional)")
+        if q.get("requires_confirmation"):
+            parts.append("(confirm read-back)")
+        lines.append("  " + " ".join(parts))
+    return "\n".join(lines) if lines else "  (no active questions configured)"
+
+
+def prompt_confirmation_fields(questions: list[dict[str, Any]] | None) -> str:
+    """Fields the admin marked for spoken read-back confirmation."""
+    fields: list[str] = []
+    labels = field_labels_from_questions(questions)
+    for q in normalize_questions(questions):
+        if not q.get("active", True):
+            continue
+        field = confirm_field_for_question(q)
+        if field:
+            fields.append(f"{field} ({labels.get(field, field.replace('_', ' '))})")
+    return ", ".join(fields) if fields else "none configured"
+
+
+def prompt_required_questions_summary(questions: list[dict[str, Any]] | None) -> str:
+    """Short required vs optional summary from admin flags."""
+    required: list[str] = []
+    optional: list[str] = []
+    for q in normalize_questions(questions):
+        if not q.get("active", True):
+            continue
+        label = str(q.get("question") or q.get("state") or "question")
+        if q.get("required", True):
+            required.append(label)
+        else:
+            optional.append(label)
+    parts: list[str] = []
+    if required:
+        parts.append("Required: " + "; ".join(required))
+    if optional:
+        parts.append("Optional: " + "; ".join(optional))
+    return " ".join(parts) if parts else "No active questions configured."
+
+
+def prompt_extraction_rules(
+    questions: list[dict[str, Any]] | None,
+    *,
+    today: str | None = None,
+) -> str:
+    """Build end-of-call extraction rules from the active admin question list."""
+    from datetime import date as _date
+
+    today = today or _date.today().isoformat()
+    normalized = normalize_questions(questions)
+    active_fields = active_extract_fields(normalized)
+    types = field_answer_types_from_questions(normalized)
+    lines = ["Rules:"]
+
+    if any(str(f).endswith("_raw") for f in active_fields):
+        lines.append("- Preserve raw caller wording in *_raw fields.")
+
+    currency_fields = [f for f in active_fields if types.get(f) == "currency"]
+    if "monthly_income" in active_fields or currency_fields:
+        income_fields = sorted({"monthly_income", *currency_fields})
+        lines.append(
+            "- For money fields "
+            f"({', '.join(income_fields)}): respect the period the caller states. "
+            "If monthly or no period is given, store as monthly. "
+            "Divide by 12 only when clearly yearly. "
+            "Preserve exact income wording in income_raw or matching *_raw fields."
+        )
+
+    if "has_eviction" in active_fields or "eviction_raw" in active_fields:
+        lines.append(
+            "- Eviction means an eviction or landlord-tenant court filing. "
+            "If unclear, leave has_eviction null and keep caller wording in eviction_raw."
+        )
+
+    notes_fields = [
+        f
+        for f in active_fields
+        if "notes" in str(f).lower() or types.get(f) == "long_text"
+    ]
+    if notes_fields:
+        lines.append(
+            "- For open-ended note fields "
+            f"({', '.join(sorted(notes_fields))}): capture disclosures the caller wants reviewed."
+        )
+
+    if any(types.get(f) == "date" for f in active_fields):
+        lines.append(
+            "- For date fields: use ISO YYYY-MM-DD when clear; keep vague wording in *_raw fields."
+        )
+
+    if any(types.get(f) in ("phone", "email") for f in active_fields):
+        lines.append(
+            "- For phone/email fields: extract the value; formatting is normalized after extraction."
+        )
+
+    lines.append("- Return JSON only, no markdown.")
+    lines.append(f"Today's date: {today}")
+    return "\n".join(lines)
 
 
 def primary_name_field(questions: list[dict[str, Any]] | None) -> str | None:

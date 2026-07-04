@@ -628,3 +628,52 @@ def test_understanding_guide_reaches_system_prompt():
     prompt = build_system_prompt(session, transcript="Two cars")
     assert "Count cars and motorcycles separately." in prompt
 
+
+def test_build_system_prompt_includes_admin_flow_outline():
+    from app.core.conversation import ConversationSession, build_system_prompt
+    from app.core.question_flow import new_custom_question
+
+    custom = new_custom_question(question="Do you smoke?", answer_type="yes_no", order=1)
+    custom["requires_confirmation"] = True
+    session = ConversationSession(
+        call_id="t",
+        phone_number="+15550000000",
+        questions=[custom],
+        current_state=custom["state"],
+    )
+    prompt = build_system_prompt(session, transcript="No")
+    assert "Active screening flow" in prompt
+    assert "Do you smoke?" in prompt
+    assert "Read-back confirmation fields" in prompt
+    field = custom["extract_fields"][0]
+    assert field in prompt
+    assert "read-back confirm" in prompt
+
+
+def test_retry_prompt_for_count_uses_admin_escalation():
+    from app.core.question_flow import retry_prompt_for_count
+
+    q = {
+        "question": "Base?",
+        "retry_prompt": "Retry 1",
+        "retry_prompt_2": "Retry 2",
+        "retry_prompt_3": "Retry 3",
+    }
+    assert retry_prompt_for_count(q, 0) == "Base?"
+    assert retry_prompt_for_count(q, 1) == "Retry 2"
+    assert retry_prompt_for_count(q, 2) == "Retry 3"
+
+
+def test_prompt_extraction_rules_follow_active_questions_only():
+    from app.core.question_flow import new_custom_question, prompt_extraction_rules
+
+    custom = new_custom_question(question="Favorite color?", answer_type="text", order=1)
+    rules = prompt_extraction_rules([custom])
+    assert "Eviction means" not in rules
+    assert "monthly_income" not in rules
+    assert "Today's date:" in rules
+
+    income_q = new_custom_question(question="Income?", answer_type="currency", order=2)
+    rules_income = prompt_extraction_rules([income_q])
+    assert "money fields" in rules_income
+

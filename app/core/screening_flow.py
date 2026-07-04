@@ -21,13 +21,11 @@ BUSINESS_NAME = "Ready Rentals Online"
 
 
 def build_greeting_intro(business: str = BUSINESS_NAME) -> str:
-    """Ready Rentals approved opening script (before the first screening question)."""
+    """Short default opening when admin has not set a custom greeting."""
     name = (business or "").strip() or BUSINESS_NAME
     return (
-        f"Hello and thank you for calling {name}! I'm your virtual assistant. "
-        "We've been helping people find their perfect homes for over 30 years. "
-        "I'm here to listen to what makes you unique, because we're not just looking "
-        "at numbers, we're looking at you as an individual. Let's get started!"
+        f"Hello and thank you for calling {name}! "
+        "I'm your virtual assistant. Let's get started!"
     )
 
 

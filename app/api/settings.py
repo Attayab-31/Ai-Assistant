@@ -513,10 +513,15 @@ async def preview_conversation_flow(
     property_name = await crud.get_setting_value(
         db, "property_name", "Ready Rentals Online"
     )
+    greeting_message = await crud.get_setting_value(db, "greeting_message", "")
+    closing_message = await crud.get_setting_value(db, "closing_message", "")
     business = (property_name or "").strip() or "Ready Rentals Online"
 
     sample_data = {"has_pets": False, "has_eviction": False}
-    intro = build_greeting_intro(business)
+    if (greeting_message or "").strip():
+        intro = str(greeting_message).replace("{property_name}", business).strip()
+    else:
+        intro = build_greeting_intro(business)
     first_state = first_active_question_state(questions)
     first_q = next(
         (q for q in questions if q.get("state") == first_state),
@@ -544,12 +549,15 @@ async def preview_conversation_flow(
         flow.append({"speaker": "AI", "text": q["question"]})
         flow.append({"speaker": "Tenant", "text": "(tenant responds here)"})
 
-    flow.append(
-        {
-            "speaker": "AI",
-            "text": "Thank you so much for your time. We'll be in touch soon!",
-        }
-    )
+    closing = (closing_message or "").strip()
+    if closing:
+        closing = closing.replace("{property_name}", business)
+    else:
+        closing = (
+            "Thank you. A leasing specialist will review your information "
+            "and follow up soon."
+        )
+    flow.append({"speaker": "AI", "text": closing})
     active_list = ordered_active_questions(questions, sample_data)
     return {
         "flow": flow,
