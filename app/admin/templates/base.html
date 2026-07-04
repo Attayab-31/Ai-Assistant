@@ -226,7 +226,6 @@
     .transcript-review { display: grid; gap: 10px; max-height: 720px; overflow-y: auto; padding-right: 4px; }
     .transcript-line { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 10px 12px; background: #fff; }
     .transcript-line.ai { border-left: 3px solid #2563eb; }
-    .transcript-line.caller { border-left: 3px solid #64748b; }
     .transcript-line.tenant { border-left: 3px solid #64748b; }
     .transcript-meta { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; font-size: 12px; }
     .transcript-text { font-size: 14px; line-height: 1.45; white-space: pre-wrap; }
@@ -335,7 +334,6 @@
 
     /* Help / hint text for non-technical users */
     .hint { color: var(--muted); font-size: 12px; margin-top: 4px; }
-    .text-muted { color: var(--muted); font-size: 13px; }
     .callout { background: var(--accent-soft); border: 1px solid #cdddff; color: #1e40af; border-radius: var(--radius-sm); padding: 12px 14px; font-size: 13px; line-height: 1.45; }
 
     .sr-only {
@@ -722,152 +720,6 @@
   </div>
 
   <script src="/static/js/admin.js"></script>
-  <script>
-    function toggleNav(open) {
-      document.getElementById('sidebar').classList.toggle('open', open);
-      document.getElementById('scrim').classList.toggle('show', open);
-      const btn = document.getElementById('menuBtn');
-      if (btn) btn.setAttribute('aria-expanded', open ? 'true' : 'false');
-    }
-    function showToast(message, kind) {
-      const wrap = document.getElementById('toastWrap');
-      const el = document.createElement('div');
-      el.className = 'toast ' + (kind || '');
-      el.textContent = message;
-      wrap.appendChild(el);
-      requestAnimationFrame(() => el.classList.add('show'));
-      setTimeout(() => { el.classList.remove('show'); setTimeout(() => el.remove(), 250); }, 3200);
-    }
-    async function adminLogout(e) {
-      if (e) e.preventDefault();
-      try {
-        await fetch('/auth/logout', {
-          method: 'POST',
-          headers: { 'X-Requested-With': 'XMLHttpRequest' },
-        });
-      } catch (err) { /* ignore */ }
-      window.location.href = '/admin/login';
-    }
-    // Patch fetch so all admin API calls include the CSRF header expected by
-    // cookie-authenticated mutating routes.
-    (function () {
-      const origFetch = window.fetch;
-      window.fetch = function (url, opts) {
-        opts = opts || {};
-        const headers = new Headers(opts.headers || {});
-        if (!headers.has('X-Requested-With')) {
-          headers.set('X-Requested-With', 'XMLHttpRequest');
-        }
-        opts.headers = headers;
-        return origFetch(url, opts);
-      };
-    })();
-    // Unified flash message for every admin page. Pages historically defined
-    // their own showMessage/showAcctMsg/showCallMsg helpers; they all delegate
-    // here now so there is a single notification standard.
-    function showMessage(text, isError) {
-      const cleaned = String(text || '').replace(/^[\u2713\u2717✓✗]\s*/, '').trim();
-      showToast(cleaned || String(text), isError ? 'bad' : 'ok');
-    }
-
-    // ── Button loading states ─────────────────────────────────────────────
-    // Show a spinner + disable a button while an async action runs, then
-    // restore it. Used everywhere via withBtnLoading / withFormLoading.
-    function setBtnLoading(btn, loading, text) {
-      if (!btn) return;
-      if (loading) {
-        if (btn.dataset.loading === '1') return;
-        btn.dataset.loading = '1';
-        btn.dataset.originalHtml = btn.innerHTML;
-        if (!btn.style.minWidth) btn.style.minWidth = btn.offsetWidth + 'px';
-        btn.classList.add('is-loading');
-        btn.setAttribute('aria-busy', 'true');
-        btn.disabled = true;
-        const label = text || btn.dataset.loadingText || 'Working\u2026';
-        btn.innerHTML = '<span class="btn-spinner" aria-hidden="true"></span><span>' + label + '</span>';
-      } else {
-        if (btn.dataset.loading !== '1') return;
-        btn.disabled = false;
-        btn.classList.remove('is-loading');
-        btn.removeAttribute('aria-busy');
-        if (btn.dataset.originalHtml !== undefined) btn.innerHTML = btn.dataset.originalHtml;
-        delete btn.dataset.loading;
-        delete btn.dataset.originalHtml;
-      }
-    }
-
-    // Wrap an async onclick handler:  onclick="withBtnLoading(this, () => doThing(arg))"
-    async function withBtnLoading(btn, fn, text) {
-      setBtnLoading(btn, true, text);
-      try { return await fn(); }
-      finally { setBtnLoading(btn, false); }
-    }
-
-    // Wrap a form submit:  onsubmit="withFormLoading(event, saveThing)"
-    // fn receives the original event (so it can still call preventDefault()).
-    async function withFormLoading(event, fn, text) {
-      const form = event.currentTarget || event.target;
-      const btn = event.submitter
-        || (form.querySelector && form.querySelector('button[type="submit"], button:not([type])'));
-      setBtnLoading(btn, true, text);
-      try { return await fn(event); }
-      finally { setBtnLoading(btn, false); }
-    }
-
-    // ── Instant navigation: hover-prefetch + top progress bar ─────────────
-    // Speculatively prefetch internal admin pages on hover/touch so the HTML
-    // (and a warm DB connection) is ready before the click lands, then show a
-    // progress bar immediately on navigation for snappy perceived performance.
-    (function () {
-      const prefetched = new Set();
-      function isInternalNav(a) {
-        if (!a || !a.href) return false;
-        if (a.target === '_blank' || a.hasAttribute('download')) return false;
-        if (a.getAttribute('href').startsWith('#')) return false;
-        if (a.dataset.noPrefetch !== undefined) return false;
-        try {
-          const u = new URL(a.href, location.href);
-          return u.origin === location.origin && u.pathname.startsWith('/admin/') && u.pathname !== location.pathname;
-        } catch (_) { return false; }
-      }
-      function prefetch(a) {
-        if (!isInternalNav(a) || prefetched.has(a.href)) return;
-        prefetched.add(a.href);
-        const link = document.createElement('link');
-        link.rel = 'prefetch';
-        link.href = a.href;
-        link.as = 'document';
-        document.head.appendChild(link);
-      }
-      // Warm on intent (hover / touch start), capped to avoid bursts.
-      document.addEventListener('pointerenter', (e) => {
-        const a = e.target.closest && e.target.closest('a');
-        if (a) prefetch(a);
-      }, { capture: true, passive: true });
-      document.addEventListener('touchstart', (e) => {
-        const a = e.target.closest && e.target.closest('a');
-        if (a) prefetch(a);
-      }, { capture: true, passive: true });
-
-      // Progress bar on actual navigation.
-      const bar = document.getElementById('navbar');
-      let timer = null;
-      function startBar() {
-        if (!bar) return;
-        bar.classList.add('go');
-        bar.style.width = '18%';
-        clearInterval(timer);
-        let w = 18;
-        timer = setInterval(() => { w = Math.min(w + (90 - w) * 0.18, 90); bar.style.width = w + '%'; }, 240);
-      }
-      document.addEventListener('click', (e) => {
-        if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-        const a = e.target.closest && e.target.closest('a');
-        if (isInternalNav(a)) startBar();
-      }, true);
-      window.addEventListener('pageshow', () => { if (bar) { clearInterval(timer); bar.style.width = '0'; bar.classList.remove('go'); } });
-    })();
-  </script>
   {% block scripts %}{% endblock %}
 </body>
 </html>

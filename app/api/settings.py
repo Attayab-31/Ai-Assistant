@@ -31,6 +31,121 @@ from config import provider_registry
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+EMAIL_SETTING_KEYS = (
+    "landlord_email",
+    "email_from_name",
+    "email_from_address",
+    "email_subject_template",
+    "email_body_template",
+    "email_include_transcript",
+    "cc_emails",
+    "bcc_emails",
+    "timezone",
+)
+
+_CACHE_STALE_WARNING = (
+    "Settings saved, but the live settings cache could not be refreshed. "
+    "New calls may use stale values for up to 30 seconds. Check that Redis "
+    "is reachable with read-write credentials."
+)
+
+
+async def _reload_registry_or_400(db: AsyncSession, *, label: str) -> None:
+    """Reload the provider registry or raise HTTP 400."""
+    try:
+        await provider_registry.reload_from_db(db)
+    except Exception as e:
+        logger.error("Failed to switch %s provider: %s", label, e)
+        raise HTTPException(
+            status_code=400, detail=f"Failed to switch provider: {str(e)}"
+        ) from e
+
+
+def _validate_general_settings_updates(updates: dict, current: dict) -> None:
+    """Cross-field and numeric guards for general settings saves."""
+
+    def _as_int(key: str, fallback: int) -> int:
+        try:
+            return int(updates.get(key, current.get(key, fallback) or fallback))
+        except (TypeError, ValueError):
+            return fallback
+
+    if (
+        "qualified_score_threshold" in updates
+        or "review_score_threshold" in updates
+    ):
+        qualified = _as_int("qualified_score_threshold", 75)
+        review = _as_int("review_score_threshold", 40)
+        if not (0 <= review <= qualified <= 100):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Score cutoffs must satisfy 0 ≤ review ≤ qualified ≤ 100 "
+                    f"(got review={review}, qualified={qualified})"
+                ),
+            )
+
+    if updates.get("llm_temperature") is not None:
+        try:
+            temp = float(updates["llm_temperature"])
+        except (TypeError, ValueError):
+            temp = -1.0
+        if not (0.0 <= temp <= 1.0):
+            raise HTTPException(
+                status_code=400,
+                detail="AI reply creativity must be between 0.0 and 1.0.",
+            )
+
+    if updates.get("llm_max_tokens") is not None:
+        try:
+            max_tok = int(updates["llm_max_tokens"])
+        except (TypeError, ValueError):
+            max_tok = -1
+        if not (0 <= max_tok <= 2000):
+            raise HTTPException(
+                status_code=400,
+                detail="Max reply length must be between 0 and 2000 tokens (0 = default).",
+            )
+
+    for ret_key in (
+        "retention_calls_days",
+        "retention_recording_days",
+        "retention_audit_days",
+        "retention_soft_deleted_days",
+    ):
+        if updates.get(ret_key) is not None:
+            try:
+                days = int(updates[ret_key])
+            except (TypeError, ValueError):
+                days = -1
+            if days < 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Retention windows must be 0 or more days (0 = keep forever).",
+                )
+
+    if updates.get("retention_stale_call_hours") is not None:
+        try:
+            hours = int(updates["retention_stale_call_hours"])
+        except (TypeError, ValueError):
+            hours = -1
+        if hours < 0:
+            raise HTTPException(
+                status_code=400,
+                detail="Stale-call window must be 0 or more hours (0 = disable).",
+            )
+
+    crm_url = updates.get("crm_webhook_url")
+    if crm_url:
+        from app.utils.security import UnsafeURLError, assert_safe_external_url
+
+        try:
+            assert_safe_external_url(str(crm_url), require_https=True)
+        except UnsafeURLError as e:
+            raise HTTPException(
+                status_code=400, detail=f"Unsafe CRM webhook URL: {e}"
+            ) from e
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Provider Hot-Swap Endpoints
@@ -64,13 +179,7 @@ async def switch_llm_provider(
             db, f"{payload.provider}_api_key_encrypted", encrypted, updated_by=user.id
         )
 
-    try:
-        await provider_registry.reload_from_db(db)
-    except Exception as e:
-        logger.error("Failed to switch LLM provider: %s", e)
-        raise HTTPException(
-            status_code=400, detail=f"Failed to switch provider: {str(e)}"
-        ) from e
+    await _reload_registry_or_400(db, label="LLM")
 
     await crud.create_audit_log(
         db,
@@ -117,13 +226,7 @@ async def switch_stt_provider(
             db, f"{payload.provider}_api_key_encrypted", encrypted, updated_by=user.id
         )
 
-    try:
-        await provider_registry.reload_from_db(db)
-    except Exception as e:
-        logger.error("Failed to switch STT provider: %s", e)
-        raise HTTPException(
-            status_code=400, detail=f"Failed to switch provider: {str(e)}"
-        ) from e
+    await _reload_registry_or_400(db, label="STT")
 
     await crud.create_audit_log(
         db,
@@ -165,13 +268,7 @@ async def switch_tts_provider(
     if payload.speed is not None:
         await crud.set_setting(db, "tts_speed", str(payload.speed), updated_by=user.id)
 
-    try:
-        await provider_registry.reload_from_db(db)
-    except Exception as e:
-        logger.error("Failed to switch TTS provider: %s", e)
-        raise HTTPException(
-            status_code=400, detail=f"Failed to switch provider: {str(e)}"
-        ) from e
+    await _reload_registry_or_400(db, label="TTS")
 
     await crud.create_audit_log(
         db,
@@ -237,11 +334,6 @@ async def set_provider_api_key(
         "reload_applied": reload_applied,
         "reload_error": reload_error,
     }
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Provider Testing
-# ──────────────────────────────────────────────────────────────────────────────
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -536,9 +628,7 @@ async def test_faq_phrase(
     user: AdminUser = Depends(require_scope("settings")),
 ):
     """Server-side FAQ match preview (same logic as live calls)."""
-    import re
-
-    from app.core.conversation import _select_faq_block
+    from app.core.conversation import _select_faq_block, match_faqs_by_pattern
     from app.core.screening_flow import normalize_faqs, validate_faqs_for_save
 
     phrase = str(payload.get("phrase") or "").strip()
@@ -560,23 +650,14 @@ async def test_faq_phrase(
         if entry.get("active", True) and entry.get("answer")
     ]
 
-    matched: list[dict] = []
-    for entry in active:
-        pattern = str(entry.get("pattern") or "").strip()
-        if not pattern:
-            continue
-        try:
-            if re.search(pattern, phrase, re.I):
-                matched.append(
-                    {
-                        "topic": entry.get("topic", ""),
-                        "title": entry.get("title", ""),
-                        "answer": str(entry.get("answer", "")).strip(),
-                    }
-                )
-        except re.error:
-            continue
-
+    matched = [
+        {
+            "topic": entry.get("topic", ""),
+            "title": entry.get("title", ""),
+            "answer": str(entry.get("answer", "")).strip(),
+        }
+        for entry in match_faqs_by_pattern(phrase, active)
+    ]
     block, is_full = _select_faq_block(active, phrase)
     return {
         "phrase": phrase,
@@ -598,7 +679,7 @@ async def _persist_email_settings(
     user: AdminUser,
     request: Request,
 ) -> dict[str, str | bool]:
-    """Shared save path for PUT and POST email settings."""
+    """Shared save path for POST email settings."""
     updates = payload.model_dump(exclude_none=True)
     for key, value in updates.items():
         await crud.set_setting(db, key, str(value), updated_by=user.id)
@@ -632,19 +713,8 @@ async def send_test_email(
     if not app_settings.resend_api_key:
         raise HTTPException(status_code=400, detail="RESEND_API_KEY not configured")
 
-    email_keys = (
-        "landlord_email",
-        "email_from_name",
-        "email_from_address",
-        "email_subject_template",
-        "email_body_template",
-        "email_include_transcript",
-        "cc_emails",
-        "bcc_emails",
-        "timezone",
-    )
     email_settings = {
-        key: await crud.get_setting_value(db, key, "") for key in email_keys
+        key: await crud.get_setting_value(db, key, "") for key in EMAIL_SETTING_KEYS
     }
 
     from_name = email_settings.get("email_from_name") or app_settings.email_from_name
@@ -748,94 +818,8 @@ async def update_general_settings(
 ):
     """Update general application settings (property, scoring, call config)."""
     updates = payload.model_dump(exclude_none=True)
-
-    # Validate qualification status cutoffs when present.
-    if (
-        "qualified_score_threshold" in updates
-        or "review_score_threshold" in updates
-    ):
-        current = await crud.get_all_settings(db)
-
-        def _as_int(key: str, fallback: int) -> int:
-            try:
-                return int(updates.get(key, current.get(key, fallback) or fallback))
-            except (TypeError, ValueError):
-                return fallback
-
-        qualified = _as_int("qualified_score_threshold", 75)
-        review = _as_int("review_score_threshold", 40)
-        if not (0 <= review <= qualified <= 100):
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "Score cutoffs must satisfy 0 ≤ review ≤ qualified ≤ 100 "
-                    f"(got review={review}, qualified={qualified})"
-                ),
-            )
-
-    # Validate AI tuning knobs so a bad value can't break live calls.
-    if updates.get("llm_temperature") is not None:
-        try:
-            temp = float(updates["llm_temperature"])
-        except (TypeError, ValueError):
-            temp = -1.0
-        if not (0.0 <= temp <= 1.0):
-            raise HTTPException(
-                status_code=400,
-                detail="AI reply creativity must be between 0.0 and 1.0.",
-            )
-    if updates.get("llm_max_tokens") is not None:
-        try:
-            max_tok = int(updates["llm_max_tokens"])
-        except (TypeError, ValueError):
-            max_tok = -1
-        if not (0 <= max_tok <= 2000):
-            raise HTTPException(
-                status_code=400,
-                detail="Max reply length must be between 0 and 2000 tokens (0 = default).",
-            )
-
-    # Retention windows must be non-negative day counts (0 = keep forever).
-    for ret_key in (
-        "retention_calls_days",
-        "retention_recording_days",
-        "retention_audit_days",
-        "retention_soft_deleted_days",
-    ):
-        if updates.get(ret_key) is not None:
-            try:
-                days = int(updates[ret_key])
-            except (TypeError, ValueError):
-                days = -1
-            if days < 0:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Retention windows must be 0 or more days (0 = keep forever).",
-                )
-
-    if updates.get("retention_stale_call_hours") is not None:
-        try:
-            hours = int(updates["retention_stale_call_hours"])
-        except (TypeError, ValueError):
-            hours = -1
-        if hours < 0:
-            raise HTTPException(
-                status_code=400,
-                detail="Stale-call window must be 0 or more hours (0 = disable).",
-            )
-
-    # Reject an unsafe CRM webhook URL at save time (not just when it fires) so
-    # an admin can't store a URL pointed at internal/loopback hosts (SSRF).
-    crm_url = updates.get("crm_webhook_url")
-    if crm_url:
-        from app.utils.security import UnsafeURLError, assert_safe_external_url
-
-        try:
-            assert_safe_external_url(str(crm_url), require_https=True)
-        except UnsafeURLError as e:
-            raise HTTPException(
-                status_code=400, detail=f"Unsafe CRM webhook URL: {e}"
-            ) from e
+    current = await crud.get_all_settings(db)
+    _validate_general_settings_updates(updates, current)
 
     cache_failed = False
     for key, value in updates.items():
@@ -878,11 +862,7 @@ async def update_general_settings(
     )
     response: dict = {"success": True, "updated": list(updates.keys())}
     if cache_failed:
-        response["warnings"] = [
-            "Settings saved, but the live settings cache could not be refreshed. "
-            "New calls may use stale values for up to 30 seconds. Check that Redis "
-            "is reachable with read-write credentials."
-        ]
+        response["warnings"] = [_CACHE_STALE_WARNING]
     return response
 
 

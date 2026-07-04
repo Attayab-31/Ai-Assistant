@@ -123,7 +123,6 @@ class Settings(BaseSettings):
     # Telephony
     telnyx_api_key: str = ""
     telnyx_public_key: str = ""
-    telnyx_phone_number: str = ""
 
     # STT
     deepgram_api_key: str = ""

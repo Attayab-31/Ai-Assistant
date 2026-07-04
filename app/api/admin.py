@@ -61,26 +61,29 @@ router = APIRouter()
 TEMPLATES_DIR = Path(__file__).parent.parent / "admin" / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
-# Register custom Jinja2 filters
-templates.env.filters["duration"] = format_duration
-templates.env.filters["currency"] = format_currency
-templates.env.filters["phone_display"] = format_phone_display
-templates.env.filters["time_ago"] = time_ago
-templates.env.filters["localtime"] = localtime
-templates.env.filters["status_color"] = status_badge_color
-templates.env.filters["score_color"] = score_color
-templates.env.filters["friendly_state"] = friendly_state
-templates.env.filters["friendly_call_status"] = friendly_call_status
-templates.env.filters["friendly_qualification"] = friendly_qualification
-templates.env.filters["glossary_label"] = glossary_label
-templates.env.filters["glossary_tip"] = glossary_tip
-templates.env.filters["friendly_provider"] = friendly_provider_name
-templates.env.filters["friendly_audit_action"] = friendly_audit_action
-templates.env.filters["friendly_audit_entity"] = friendly_audit_entity
-templates.env.filters["pagination_url"] = pagination_url
-templates.env.filters["list_filter_url"] = list_filter_url
+# Register custom Jinja2 filters (list_filter_url is a global — templates call it directly)
+_ADMIN_JINJA_FILTERS = {
+    "duration": format_duration,
+    "currency": format_currency,
+    "phone_display": format_phone_display,
+    "time_ago": time_ago,
+    "localtime": localtime,
+    "status_color": status_badge_color,
+    "score_color": score_color,
+    "friendly_state": friendly_state,
+    "friendly_call_status": friendly_call_status,
+    "friendly_qualification": friendly_qualification,
+    "glossary_label": glossary_label,
+    "glossary_tip": glossary_tip,
+    "friendly_provider": friendly_provider_name,
+    "friendly_audit_action": friendly_audit_action,
+    "friendly_audit_entity": friendly_audit_entity,
+    "pagination_url": pagination_url,
+    "tenant_display": tenant_display_name,
+}
+for _filter_name, _filter_fn in _ADMIN_JINJA_FILTERS.items():
+    templates.env.filters[_filter_name] = _filter_fn
 templates.env.globals["list_filter_url"] = list_filter_url
-templates.env.filters["tenant_display"] = tenant_display_name
 
 # Contextual in-app help links (href, label)
 PAGE_HELP: dict[str, tuple[str, str]] = {
@@ -399,7 +402,6 @@ async def call_detail_page(
         active_page="calls",
         nav_prev_id=nav_prev_id,
         nav_next_id=nav_next_id,
-        nav_queue="unreviewed",
     )
 
 
@@ -532,7 +534,6 @@ async def tenant_detail_page(
         active_page="tenants",
         nav_prev_id=nav_prev_id,
         nav_next_id=nav_next_id,
-        nav_queue="unreviewed",
     )
 
 
@@ -555,7 +556,6 @@ async def analytics_page(
         ),
         "qualified": qual.get("qualified", 0),
         "unqualified": qual.get("unqualified", 0),
-        "review": qual.get("review", 0),
         "avg_qualified_score": analytics.get("avg_qualified_score", 0),
     }
 
@@ -848,7 +848,6 @@ async def account_page(request: Request, db: AsyncSession = Depends(get_db)):
         return guard
 
     users = await crud.list_users(db)
-    super_admin_count = await crud.count_active_super_admins(db)
     from app.models.user import PERMISSION_SCOPES
 
     return await _render_admin_page(
@@ -857,7 +856,6 @@ async def account_page(request: Request, db: AsyncSession = Depends(get_db)):
         "account.html",
         user,
         users=users,
-        super_admin_count=super_admin_count,
         permission_scopes=PERMISSION_SCOPES,
         active_page="account",
     )
@@ -870,6 +868,30 @@ async def account_page(request: Request, db: AsyncSession = Depends(get_db)):
 
 # Approx number of core questions, used only for the live progress bar.
 _PROGRESS_DENOMINATOR = 15
+
+
+def _csv_attachment_response(
+    *,
+    filename_stem: str,
+    header: list[str],
+    rows: list[list],
+) -> StreamingResponse:
+    """Build a one-shot CSV download response."""
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(header)
+    writer.writerows(rows)
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": (
+                f"attachment; filename={filename_stem}_"
+                f"{datetime.now().strftime('%Y%m%d')}.csv"
+            )
+        },
+    )
 
 
 @router.get("/api/monitor")
@@ -1236,21 +1258,40 @@ async def api_export_calls_csv(
     status: str | None = None,
     qualification: str | None = None,
     phone: str | None = None,
+    q: str | None = None,
+    days: int | None = None,
 ):
     """Export filtered calls as CSV."""
+    date_from, date_to = date_range_from_days(days)
+    search = (q or phone or "").strip() or None
     calls, _ = await crud.list_calls(
         db,
         page=1,
         per_page=10000,
         status=status,
         qualification_status=qualification,
-        phone_search=phone,
+        text_search=search,
+        date_from=date_from,
+        date_to=date_to,
     )
 
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(
+    rows = [
         [
+            c.phone_number,
+            c.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+            c.duration_seconds or "",
+            c.status,
+            c.questions_answered,
+            c.tenant.qualification_status if c.tenant else "",
+            c.tenant.qualification_score if c.tenant else "",
+            c.llm_provider or "",
+            "Yes" if (c.tenant and c.tenant.email_sent) else "No",
+        ]
+        for c in calls
+    ]
+    return _csv_attachment_response(
+        filename_stem="calls_export",
+        header=[
             "Phone Number",
             "Date",
             "Duration (s)",
@@ -1260,30 +1301,8 @@ async def api_export_calls_csv(
             "Score",
             "LLM Provider",
             "Email Sent",
-        ]
-    )
-    for c in calls:
-        writer.writerow(
-            [
-                c.phone_number,
-                c.created_at.strftime("%Y-%m-%d %H:%M:%S"),
-                c.duration_seconds or "",
-                c.status,
-                c.questions_answered,
-                c.tenant.qualification_status if c.tenant else "",
-                c.tenant.qualification_score if c.tenant else "",
-                c.llm_provider or "",
-                "Yes" if (c.tenant and c.tenant.email_sent) else "No",
-            ]
-        )
-
-    output.seek(0)
-    return StreamingResponse(
-        iter([output.getvalue()]),
-        media_type="text/csv",
-        headers={
-            "Content-Disposition": f"attachment; filename=calls_export_{datetime.now().strftime('%Y%m%d')}.csv"
-        },
+        ],
+        rows=rows,
     )
 
 
@@ -1334,19 +1353,13 @@ async def api_export_analytics_csv(
     """Export analytics raw data as CSV."""
     analytics = await crud.get_analytics_data(db, days=days)
 
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(["Date", "Call Count"])
-    for row in analytics["calls_by_day"]:
-        writer.writerow([row["date"], row["count"]])
-
-    output.seek(0)
-    return StreamingResponse(
-        iter([output.getvalue()]),
-        media_type="text/csv",
-        headers={
-            "Content-Disposition": f"attachment; filename=analytics_{datetime.now().strftime('%Y%m%d')}.csv"
-        },
+    rows = [
+        [row["date"], row["count"]] for row in analytics["calls_by_day"]
+    ]
+    return _csv_attachment_response(
+        filename_stem="analytics",
+        header=["Date", "Call Count"],
+        rows=rows,
     )
 
 

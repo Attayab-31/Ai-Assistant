@@ -71,7 +71,7 @@
 {% endmacro %}
 
 {# Prev/next links on applicant review queue #}
-{% macro review_queue_nav(prev_id, next_id, queue='unreviewed') %}
+{% macro review_queue_nav(prev_id, next_id) %}
 {% if prev_id or next_id %}
 <nav class="review-queue-nav" aria-label="Review queue navigation">
   {% if prev_id %}

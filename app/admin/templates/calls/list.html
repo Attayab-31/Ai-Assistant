@@ -23,7 +23,7 @@
   </select>
   <button type="submit" class="btn btn-primary">Apply filters</button>
   <a class="btn btn-secondary" data-no-prefetch
-     href="/admin/api/calls/export?status={{ filters.status or '' }}&qualification={{ filters.qualification or '' }}&phone={{ (filters.q or filters.phone or '')|urlencode }}">Export CSV</a>
+     href="/admin/api/calls/export?status={{ filters.status or '' }}&qualification={{ filters.qualification or '' }}&q={{ (filters.q or filters.phone or '')|urlencode }}{% if filters.days %}&days={{ filters.days }}{% endif %}">Export CSV</a>
 </form>
 <div class="table-wrap">
 <table>

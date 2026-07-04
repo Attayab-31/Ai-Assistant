@@ -37,20 +37,6 @@ MONEY_RE = re.compile(
     r"(?P<prefix>\$)?\b(?P<num>\d{2,3}(?:,\d{3})+|\d+(?:\.\d+)?)\s*(?P<suffix>k|thousand|grand)?\b",
     re.I,
 )
-OCCUPANT_WORDS = {
-    "one": 1,
-    "two": 2,
-    "three": 3,
-    "four": 4,
-    "five": 5,
-    "six": 6,
-    "seven": 7,
-    "eight": 8,
-    "nine": 9,
-    "ten": 10,
-    "eleven": 11,
-    "twelve": 12,
-}
 PET_TYPES = (
     "dog",
     "cat",
@@ -517,6 +503,22 @@ _NUMBER_WORDS = {
     "nineteen": 19,
     "twenty": 20,
 }
+
+_OCCUPANT_WORD_KEYS = (
+    "one",
+    "two",
+    "three",
+    "four",
+    "five",
+    "six",
+    "seven",
+    "eight",
+    "nine",
+    "ten",
+    "eleven",
+    "twelve",
+)
+OCCUPANT_WORDS = {word: _NUMBER_WORDS[word] for word in _OCCUPANT_WORD_KEYS}
 
 
 def _coerce_count(value: Any) -> int | None:
@@ -1216,10 +1218,6 @@ def log_state_transition(
     questions: list[dict[str, Any]] | None = None,
 ) -> None:
     """Log state transition with context."""
-    import logging
-
-    logger = logging.getLogger(__name__)
-
     is_valid = validate_state_transition(from_state, to_state, questions)
     status = "VALID" if is_valid else "INVALID"
 

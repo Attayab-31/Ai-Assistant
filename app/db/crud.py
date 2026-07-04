@@ -8,13 +8,24 @@ records across all models. Used by API routes and background tasks.
 import json
 import logging
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import and_, delete, desc, func, or_, select, update
+from sqlalchemy import (
+    and_,
+    delete,
+    desc,
+    extract,
+    func,
+    literal_column,
+    or_,
+    select,
+    update,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.redis_client import cache_get_json, cache_set_json
 from app.models.audit_log import AuditLog
 from app.models.call import Call
 from app.models.settings import SystemSetting
@@ -447,8 +458,6 @@ async def clear_recording_url(db: AsyncSession, call_id: uuid.UUID) -> None:
 
 async def get_call_stats(db: AsyncSession) -> dict:
     """Get aggregate call statistics for dashboard - OPTIMIZED: 2 queries instead of 7."""
-    from datetime import timedelta
-
     now = datetime.now(UTC)
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     week_start = today_start - timedelta(days=today_start.weekday())
@@ -551,24 +560,68 @@ async def update_tenant(
     return result.scalar_one_or_none()
 
 
+def _tenant_visible_clause():
+    """Applicants visible when unlinked or their call is not soft-deleted."""
+    return or_(Tenant.call_id.is_(None), Call.is_deleted == False)
+
+
+def _apply_tenant_list_filters(
+    stmt,
+    *,
+    qualification_status: str | None = None,
+    phone_search: str | None = None,
+    name_search: str | None = None,
+    text_search: str | None = None,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    review_filter: str | None = None,
+):
+    if qualification_status:
+        stmt = stmt.where(Tenant.qualification_status == qualification_status)
+    if phone_search:
+        stmt = stmt.where(Tenant.phone_number.ilike(f"%{phone_search}%"))
+    if name_search:
+        stmt = stmt.where(
+            or_(
+                Tenant.full_name.ilike(f"%{name_search}%"),
+                Tenant.email.ilike(f"%{name_search}%"),
+            )
+        )
+    if text_search:
+        stmt = stmt.where(
+            or_(
+                Tenant.full_name.ilike(f"%{text_search}%"),
+                Tenant.email.ilike(f"%{text_search}%"),
+                Tenant.phone_number.ilike(f"%{text_search}%"),
+            )
+        )
+    if date_from:
+        stmt = stmt.where(Tenant.created_at >= date_from)
+    if date_to:
+        stmt = stmt.where(Tenant.created_at <= date_to)
+    if review_filter == "unreviewed":
+        stmt = stmt.where(Tenant.reviewed_by_admin == False)
+    elif review_filter == "reviewed":
+        stmt = stmt.where(Tenant.reviewed_by_admin == True)
+    return stmt
+
+
 async def count_tenants_needing_review(db: AsyncSession) -> int:
     """Count visible applicants not yet marked reviewed by an admin."""
-    visible = or_(Tenant.call_id.is_(None), Call.is_deleted == False)
     result = await db.execute(
         select(func.count(Tenant.id))
         .outerjoin(Call, Tenant.call_id == Call.id)
-        .where(visible, Tenant.reviewed_by_admin == False)
+        .where(_tenant_visible_clause(), Tenant.reviewed_by_admin == False)
     )
     return result.scalar() or 0
 
 
 async def count_reviewed_tenants(db: AsyncSession) -> int:
     """Count visible applicants marked reviewed by an admin."""
-    visible = or_(Tenant.call_id.is_(None), Call.is_deleted == False)
     result = await db.execute(
         select(func.count(Tenant.id))
         .outerjoin(Call, Tenant.call_id == Call.id)
-        .where(visible, Tenant.reviewed_by_admin == True)
+        .where(_tenant_visible_clause(), Tenant.reviewed_by_admin == True)
     )
     return result.scalar() or 0
 
@@ -606,76 +659,30 @@ async def list_tenants(
     deleted call's applicant never lingers in the Applicants list. Going forward
     deletes are hard deletes (CASCADE removes the tenant outright).
     """
-    # An applicant is visible if it has no linked call, or its call isn't deleted.
-    visible = or_(Tenant.call_id.is_(None), Call.is_deleted == False)
+    visible = _tenant_visible_clause()
+    filter_kwargs = {
+        "qualification_status": qualification_status,
+        "phone_search": phone_search,
+        "name_search": name_search,
+        "text_search": text_search,
+        "date_from": date_from,
+        "date_to": date_to,
+        "review_filter": review_filter,
+    }
 
     query = (
         select(Tenant)
         .outerjoin(Call, Tenant.call_id == Call.id)
         .where(visible)
     )
-    if qualification_status:
-        query = query.where(Tenant.qualification_status == qualification_status)
-    if phone_search:
-        query = query.where(Tenant.phone_number.ilike(f"%{phone_search}%"))
-    if name_search:
-        query = query.where(
-            or_(
-                Tenant.full_name.ilike(f"%{name_search}%"),
-                Tenant.email.ilike(f"%{name_search}%"),
-            )
-        )
-    if text_search:
-        query = query.where(
-            or_(
-                Tenant.full_name.ilike(f"%{text_search}%"),
-                Tenant.email.ilike(f"%{text_search}%"),
-                Tenant.phone_number.ilike(f"%{text_search}%"),
-            )
-        )
-    if date_from:
-        query = query.where(Tenant.created_at >= date_from)
-    if date_to:
-        query = query.where(Tenant.created_at <= date_to)
-    if review_filter == "unreviewed":
-        query = query.where(Tenant.reviewed_by_admin == False)
-    elif review_filter == "reviewed":
-        query = query.where(Tenant.reviewed_by_admin == True)
+    query = _apply_tenant_list_filters(query, **filter_kwargs)
 
     count_query = (
         select(func.count(Tenant.id))
         .outerjoin(Call, Tenant.call_id == Call.id)
         .where(visible)
     )
-    if qualification_status:
-        count_query = count_query.where(
-            Tenant.qualification_status == qualification_status
-        )
-    if phone_search:
-        count_query = count_query.where(Tenant.phone_number.ilike(f"%{phone_search}%"))
-    if name_search:
-        count_query = count_query.where(
-            or_(
-                Tenant.full_name.ilike(f"%{name_search}%"),
-                Tenant.email.ilike(f"%{name_search}%"),
-            )
-        )
-    if text_search:
-        count_query = count_query.where(
-            or_(
-                Tenant.full_name.ilike(f"%{text_search}%"),
-                Tenant.email.ilike(f"%{text_search}%"),
-                Tenant.phone_number.ilike(f"%{text_search}%"),
-            )
-        )
-    if date_from:
-        count_query = count_query.where(Tenant.created_at >= date_from)
-    if date_to:
-        count_query = count_query.where(Tenant.created_at <= date_to)
-    if review_filter == "unreviewed":
-        count_query = count_query.where(Tenant.reviewed_by_admin == False)
-    elif review_filter == "reviewed":
-        count_query = count_query.where(Tenant.reviewed_by_admin == True)
+    count_query = _apply_tenant_list_filters(count_query, **filter_kwargs)
 
     count_result = await db.execute(count_query)
     total = count_result.scalar() or 0
@@ -697,18 +704,16 @@ async def list_tenant_ids_for_navigation(
     limit: int = 500,
 ) -> list[uuid.UUID]:
     """Ordered tenant IDs for prev/next navigation in a review queue."""
-    visible = or_(Tenant.call_id.is_(None), Call.is_deleted == False)
     query = (
         select(Tenant.id)
         .outerjoin(Call, Tenant.call_id == Call.id)
-        .where(visible)
+        .where(_tenant_visible_clause())
     )
-    if qualification_status:
-        query = query.where(Tenant.qualification_status == qualification_status)
-    if review_filter == "unreviewed":
-        query = query.where(Tenant.reviewed_by_admin == False)
-    elif review_filter == "reviewed":
-        query = query.where(Tenant.reviewed_by_admin == True)
+    query = _apply_tenant_list_filters(
+        query,
+        qualification_status=qualification_status,
+        review_filter=review_filter,
+    )
     query = query.order_by(desc(Tenant.created_at)).limit(limit)
     result = await db.execute(query)
     return list(result.scalars().all())
@@ -1086,13 +1091,6 @@ async def list_audit_logs(
 
 async def get_analytics_data(db: AsyncSession, days: int = 30) -> dict:
     """Get comprehensive analytics data - OPTIMIZED: 2 queries + Redis caching instead of 7."""
-    from datetime import timedelta
-
-    from sqlalchemy import extract, literal_column
-
-    # Try Redis cache first (shared pooled client — no per-call connections).
-    from app.core.redis_client import cache_get_json, cache_set_json
-
     cache_key = f"analytics:{days}:{datetime.now(UTC).date()}"
     cached = await cache_get_json(cache_key)
     if cached is not None:

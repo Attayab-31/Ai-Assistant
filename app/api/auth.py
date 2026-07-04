@@ -1,5 +1,5 @@
 """
-app/api/auth.py — Authentication routes: login, logout, current user.
+app/api/auth.py — Authentication routes: login and logout.
 
 Uses JWT tokens stored in httpOnly cookies. Rate-limited login endpoint
 (5 attempts then 15-min lockout) protects against brute force.
@@ -23,6 +23,7 @@ from app.core.ratelimit import (
 from app.db import crud
 from app.db.crud import create_audit_log, get_user_by_email, update_last_login
 from app.db.database import AsyncSessionLocal, get_db
+from app.utils.dependencies import ACCESS_TOKEN_COOKIE_NAME
 from app.utils.security import (
     create_access_token,
     decode_access_token,
@@ -35,8 +36,6 @@ from config import settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-
-COOKIE_NAME = "access_token"
 
 
 class LoginRequest(BaseModel):
@@ -139,7 +138,7 @@ async def login(
     )
 
     response.set_cookie(
-        key=COOKIE_NAME,
+        key=ACCESS_TOKEN_COOKIE_NAME,
         value=token,
         httponly=True,
         secure=_cookie_secure(request),
@@ -175,7 +174,7 @@ async def logout(request: Request, response: Response):
     """Clear the auth cookie and revoke the current session token."""
     from app.core.redis_client import revoke_token
 
-    token = request.cookies.get(COOKIE_NAME)
+    token = request.cookies.get(ACCESS_TOKEN_COOKIE_NAME)
     if token:
         payload = decode_access_token(token)
         if payload and payload.get("exp"):
@@ -184,7 +183,7 @@ async def logout(request: Request, response: Response):
                 await revoke_token(token, remaining)
 
     response.delete_cookie(
-        key=COOKIE_NAME,
+        key=ACCESS_TOKEN_COOKIE_NAME,
         path="/",
         httponly=True,
         secure=_cookie_secure(request),

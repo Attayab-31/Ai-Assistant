@@ -2,10 +2,8 @@
 app/services/telnyx_service.py — Telnyx telephony integration.
 
 Handles:
-- Call Control API actions (answer, hangup, speak, transfer)
+- Call Control API actions (answer, hangup, stream, record)
 - Webhook signature verification
-- Outbound SMS (for follow-ups)
-- Phone number management
 """
 
 import base64

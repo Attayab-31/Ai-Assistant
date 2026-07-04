@@ -402,6 +402,8 @@ def fire_crm_webhook_task(
         return {"sent": False, "error": "unsafe_webhook_url"}
 
     try:
+        email_settings = _get_email_settings_sync()
+
         payload = {
             "event": "tenant_screened",
             "timestamp": datetime.now(UTC).isoformat(),
@@ -431,7 +433,7 @@ def fire_crm_webhook_task(
         }
         body = json.dumps(payload).encode()
 
-        secret = _get_webhook_secret_sync()
+        secret = email_settings.get("crm_webhook_secret") or ""
         headers = {"Content-Type": "application/json"}
         if secret:
             headers["X-Signature-SHA256"] = generate_hmac_signature(body, secret)
@@ -590,27 +592,24 @@ def provider_health_check_task():
     """
     import asyncio
 
+    from config import provider_registry
+
     logger.info("Running provider health check...")
     try:
-        asyncio.run(_run_health_checks())
+        async def _ping_llm() -> dict:
+            results = {}
+            try:
+                ok, latency = await provider_registry.llm.ping()
+                results["llm"] = {"healthy": ok, "latency_ms": latency}
+            except Exception as e:
+                results["llm"] = {"healthy": False, "error": str(e)}
+            return results
+
+        results = asyncio.run(_ping_llm())
+        logger.info(f"Health check results: {results}")
     except Exception as e:
         logger.error(f"Health check task failed: {e}")
     return {"checked": True}
-
-
-async def _run_health_checks():
-    """Async helper to ping all providers."""
-    from config import provider_registry
-
-    results = {}
-    try:
-        ok, latency = await provider_registry.llm.ping()
-        results["llm"] = {"healthy": ok, "latency_ms": latency}
-    except Exception as e:
-        results["llm"] = {"healthy": False, "error": str(e)}
-
-    logger.info(f"Health check results: {results}")
-    return results
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -654,6 +653,7 @@ def _get_email_settings_sync() -> dict:
         "cc_emails",
         "bcc_emails",
         "timezone",
+        "crm_webhook_secret",
     )
 
     async def _fetch():
@@ -679,24 +679,8 @@ def _get_email_settings_sync() -> dict:
         "cc_emails": raw.get("cc_emails") or "",
         "bcc_emails": raw.get("bcc_emails") or "",
         "timezone": raw.get("timezone") or "",
+        "crm_webhook_secret": raw.get("crm_webhook_secret") or "",
     }
-
-
-def _get_webhook_secret_sync() -> str:
-    """Get CRM webhook secret synchronously."""
-    import asyncio
-
-    from app.db.crud import get_setting_value
-    from app.db.database import AsyncSessionLocal
-
-    async def _fetch():
-        async with AsyncSessionLocal() as db:
-            return await get_setting_value(db, "crm_webhook_secret", "")
-
-    try:
-        return asyncio.run(_fetch())
-    except RuntimeError:
-        return ""
 
 
 def _mark_email_sent_sync(call_id: str) -> None:

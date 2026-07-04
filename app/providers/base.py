@@ -9,8 +9,74 @@ import asyncio
 import logging
 import time
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
+
+import httpx
 
 logger = logging.getLogger(__name__)
+
+
+def build_llm_messages(system_prompt: str, messages: list[dict]) -> list[dict]:
+    """Prepend the system prompt to a chat message list."""
+    return [{"role": "system", "content": system_prompt}] + messages
+
+
+def openai_chat_kwargs(
+    *,
+    model: str,
+    system_prompt: str,
+    messages: list[dict],
+    json_mode: bool = False,
+    temperature: float = 0.3,
+    max_tokens: int = 500,
+    stream: bool = False,
+    extra: dict | None = None,
+) -> dict:
+    """Build kwargs for OpenAI-compatible ``chat.completions.create`` calls."""
+    kwargs: dict = {
+        "model": model,
+        "messages": build_llm_messages(system_prompt, messages),
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+    }
+    if json_mode:
+        kwargs["response_format"] = {"type": "json_object"}
+    if stream:
+        kwargs["stream"] = True
+    if extra:
+        kwargs.update(extra)
+    return kwargs
+
+
+async def complete_openai_chat(
+    provider: "BaseLLMProvider",
+    client,
+    kwargs: dict,
+) -> str:
+    """Run a non-streaming OpenAI-compatible chat completion."""
+    provider.last_usage = None
+    response = await client.chat.completions.create(**kwargs)
+    content = response.choices[0].message.content or ""
+    provider.last_usage = usage_from_response(response)
+    return content
+
+
+async def stream_openai_chat(
+    provider: "BaseLLMProvider",
+    client,
+    kwargs: dict,
+) -> AsyncIterator[str]:
+    """Yield text deltas from a streaming OpenAI-compatible chat completion."""
+    provider.last_usage = None
+    stream = await client.chat.completions.create(**kwargs)
+    async for chunk in stream:
+        if getattr(chunk, "usage", None):
+            provider.last_usage = usage_from_response(chunk)
+        if not chunk.choices:
+            continue
+        delta = chunk.choices[0].delta.content
+        if delta:
+            yield delta
 
 
 def usage_from_response(response) -> dict | None:
@@ -37,6 +103,24 @@ def usage_from_response(response) -> dict | None:
         "completion_tokens": completion,
         "total_tokens": total,
     }
+
+
+async def http_api_ping(
+    url: str,
+    headers: dict[str, str],
+    *,
+    timeout: float = 6.0,
+) -> tuple[bool, float]:
+    """GET *url* with *headers*; return (ok, latency_ms)."""
+    start = time.time()
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.get(url, headers=headers)
+        latency_ms = (time.time() - start) * 1000
+        return resp.status_code == 200, round(latency_ms, 1)
+    except Exception as e:
+        logger.debug("HTTP API ping failed for %s: %s", url, e)
+        return False, 0.0
 
 
 class BaseSTTProvider(ABC):

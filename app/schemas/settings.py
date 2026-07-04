@@ -53,7 +53,6 @@ class ScoringRule(BaseModel):
         "any_answer", "yes_no", "numeric_range", "date_within", "required_field"
     ] = "any_answer"
     pass_config: dict[str, Any] = Field(default_factory=dict)
-    auto_disqualify: bool = False
 
 
 class ScreeningQuestion(BaseModel):
@@ -82,16 +81,6 @@ class ScreeningQuestion(BaseModel):
 class QuestionsUpdateRequest(BaseModel):
     questions: list[ScreeningQuestion]
 
-    @field_validator("questions")
-    @classmethod
-    def question_ids_must_be_unique(
-        cls, value: list[ScreeningQuestion]
-    ) -> list[ScreeningQuestion]:
-        ids = [question.id for question in value]
-        if len(ids) != len(set(ids)):
-            raise ValueError("Question IDs must be unique")
-        return value
-
 
 class ScreeningFaq(BaseModel):
     id: str
@@ -105,14 +94,6 @@ class ScreeningFaq(BaseModel):
 
 class FaqsUpdateRequest(BaseModel):
     faqs: list[ScreeningFaq]
-
-    @field_validator("faqs")
-    @classmethod
-    def faq_topics_must_be_unique(cls, value: list[ScreeningFaq]) -> list[ScreeningFaq]:
-        topics = [faq.topic for faq in value]
-        if len(topics) != len(set(topics)):
-            raise ValueError("FAQ topics must be unique")
-        return value
 
 
 class EmailSettingsUpdate(BaseModel):
@@ -190,13 +171,8 @@ class GeneralSettingsUpdate(BaseModel):
     llm_temperature: float | None = None
     llm_max_tokens: int | None = None
     timezone: str | None = None
-    tts_voice_google: str | None = None
-    tts_voice_deepgram: str | None = None
-    tts_speed: float | None = None
-    deepgram_model: str | None = None
     crm_webhook_url: str | None = None
     crm_webhook_secret: str | None = None
-    blacklisted_numbers: Any | None = None
     retention_enabled: bool | None = None
     retention_calls_days: int | None = None
     retention_recording_days: int | None = None

@@ -1,12 +1,11 @@
 """
 Deterministic utterance helpers used by the screening flow.
 
-These are the cheap regex fast-paths for yes/no parsing, refusal detection, and
-a "is the caller asking us a question?" check. All LLM-based intent
-classification was removed when the call flow became LLM-first: a single
-conversational model call (see ``conversation.build_system_prompt`` and
-``call_handler.process_tenant_speech``) now resolves intent, FAQ answering, and
-field extraction for every turn.
+These are the cheap regex fast-paths for yes/no parsing and refusal detection.
+All LLM-based intent classification was removed when the call flow became
+LLM-first: a single conversational model call (see ``conversation.build_system_prompt``
+and ``call_handler.process_tenant_speech``) now resolves FAQ answering and field
+extraction for every turn.
 """
 
 from __future__ import annotations

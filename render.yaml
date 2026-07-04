@@ -57,8 +57,6 @@ services:
         sync: false
       - key: TELNYX_PUBLIC_KEY
         sync: false
-      - key: TELNYX_PHONE_NUMBER
-        sync: false
       - key: DEEPGRAM_API_KEY
         sync: false
       - key: GROQ_API_KEY

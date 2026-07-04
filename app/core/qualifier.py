@@ -10,6 +10,7 @@ source of truth, and deleting a question removes its score automatically.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -65,14 +66,15 @@ def calculate_qualification_score(
 
     # Caller-control signals always warrant a human look, regardless of score.
     force_review = False
-    if tenant_data.get("general_notes") and re_search_credit_issue(
-        tenant_data.get("general_notes")
-    ):
-        _add_reason(
-            reasons,
-            "Credit/background note disclosed - full picture should be reviewed",
-        )
-        force_review = True
+    for note_field in ("general_notes", "special_notes"):
+        note = tenant_data.get(note_field)
+        if note and re_search_credit_issue(note):
+            _add_reason(
+                reasons,
+                "Credit/background note disclosed - full picture should be reviewed",
+            )
+            force_review = True
+            break
     if tenant_data.get("human_requested"):
         _add_reason(reasons, "Caller requested a leasing specialist follow-up")
         force_review = True
@@ -141,9 +143,16 @@ def build_tenant_scoring_data(tenant: Any, questions_answered: int = 0) -> dict:
         "children_count": tenant.children_count,
         "has_pets": tenant.has_pets,
         "pet_type": tenant.pet_type,
+        "pet_breed": tenant.pet_breed,
         "pets_raw": tenant.pets_raw,
         "pet_weight": tenant.pet_weight,
+        "employer": tenant.employer,
+        "employment_duration": tenant.employment_duration,
         "general_notes": tenant.general_notes,
+        "special_notes": tenant.special_notes,
+        "human_requested": tenant.human_requested,
+        "callback_requested": tenant.callback_requested,
+        "stop_requested": tenant.stop_requested,
         "questions_answered": questions_answered,
         "answered_states": list(tenant.answered_states or []),
         "refused_states": list(tenant.refused_states or []),
@@ -160,8 +169,6 @@ def build_tenant_scoring_data(tenant: Any, questions_answered: int = 0) -> dict:
 
 
 def re_search_credit_issue(text: Any) -> bool:
-    import re
-
     return bool(
         re.search(
             r"\b(credit|background|criminal|bankrupt|collection|judgment|judgement)\b",

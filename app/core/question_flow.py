@@ -449,8 +449,10 @@ def needs_readback_confirmation(
     confirmed_fields: Iterable[str] | None = None,
 ) -> bool:
     """True when a captured value still needs spoken read-back confirmation."""
-    confirm_map = build_confirm_field_map(questions)
-    field = confirm_map.get(str(state))
+    q = questions_index(questions).get(str(state))
+    if not q:
+        return False
+    field = confirm_field_for_question(q)
     if not field or field in set(confirmed_fields or ()):
         return False
     value = data.get(field)
@@ -1173,8 +1175,8 @@ def missing_contact_fields(questions: list[dict[str, Any]] | None) -> list[str]:
     """Contact fields not covered by any active question."""
     present = active_extract_fields(questions)
     return [
-        CONTACT_FIELD_LABELS[key]
-        for key in ("full_name", "contact_phone", "email")
+        label
+        for key, label in CONTACT_FIELD_LABELS.items()
         if key not in present
     ]
 

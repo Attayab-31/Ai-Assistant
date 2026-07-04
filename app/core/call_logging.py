@@ -16,21 +16,31 @@ from typing import Any
 
 # Grep-friendly phase tags (e.g. ``grep 'llm:fail' logs/voice.trace.log``).
 class Phase:
+    # Call lifecycle
     CALL_START = "call:start"
     CALL_END = "call:end"
+    TENANT = "tenant"
+
+    # Speech-to-text
     STT = "stt"
     STT_STREAM = "stt:stream"
     STT_FALLBACK = "stt:fallback"
+
+    # Turn / VAD
     TURN_START = "turn:start"
     TURN_END = "turn:end"
     TURN_TIMEOUT = "turn:timeout"
     TURN_RECOVERY = "turn:recovery"
+
+    # LLM
     LLM_TRY = "llm:try"
     LLM_OK = "llm:ok"
     LLM_FAIL = "llm:fail"
     LLM_FALLBACK = "llm:fallback"
     LLM_SKIP = "llm:skip"
     LLM_HARDCODED = "llm:hardcoded"
+
+    # Text-to-speech
     TTS_TRY = "tts:try"
     TTS_OK = "tts:ok"
     TTS_FAIL = "tts:fail"
@@ -40,12 +50,15 @@ class Phase:
     TTS_FINISH = "tts:finish"
     TTS_REMAINDER = "tts:remainder"
     TTS_DEDUP_SKIP = "tts:skip_dup"
+
+    # Test console / UI stream
     UI_STREAM = "ui:stream"
     UI_FINAL = "ui:final"
+
+    # Audio pipeline
     AUDIO_ENQUEUE = "audio:enqueue"
     BARGE_IN = "audio:barge-in"
     ECHO = "audio:echo"
-    TENANT = "tenant"
 
 
 # Keys copied into JSON logs and shown in dev console prefix (after message).
@@ -64,7 +77,6 @@ VOICE_CTX_KEYS: tuple[str, ...] = (
     "duration_s",
     "budget_s",
     "primary",
-    "fallback_chain",
 )
 
 

@@ -5,7 +5,7 @@ Bootstraps the AI Tenant Screening Platform:
 - Registers all routers
 - Sets up middleware (CORS, security headers, rate limiting)
 - Initializes DB, Redis, and ProviderRegistry on startup
-- Serves static files and Jinja2 admin templates
+- Serves static files and admin templates (via app/api/admin.py)
 - Provides /health endpoint
 """
 
@@ -18,7 +18,6 @@ from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
@@ -33,6 +32,7 @@ from app.api.webhook import router as webhook_router
 # ──────────────────────────────────────────────────────────────────────────────
 from app.core.logging_config import setup_logging
 from app.core.ratelimit import limiter
+from app.utils.dependencies import ACCESS_TOKEN_COOKIE_NAME
 from config import provider_registry, settings
 
 setup_logging()
@@ -156,6 +156,9 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 # Middleware
 # ──────────────────────────────────────────────────────────────────────────────
 
+_CSRF_PROTECTED_PREFIXES = ("/admin/api/", "/api/settings/")
+_CSRF_PROTECTED_PATHS = frozenset({"/auth/logout"})
+
 # With cookie-based auth we need credentialed CORS, which browsers reject
 # alongside a "*" origin. Use explicit origins (credentials on) in production
 # and a permissive, non-credentialed policy in development.
@@ -171,21 +174,21 @@ app.add_middleware(
 @app.middleware("http")
 async def csrf_middleware(request: Request, call_next):
     """Require a custom header on cookie-authenticated mutating requests."""
-    if request.method in ("POST", "PUT", "PATCH", "DELETE"):
-        path = request.url.path
-        protected = (
-            path.startswith("/admin/api/")
-            or path.startswith("/api/settings/")
-            or path == "/auth/logout"
-        )
-        if protected and request.cookies.get("access_token"):
-            auth_header = request.headers.get("Authorization", "")
-            if not auth_header.startswith("Bearer "):
-                if request.headers.get("X-Requested-With") != "XMLHttpRequest":
-                    return JSONResponse(
-                        {"detail": "Missing CSRF header"},
-                        status_code=403,
-                    )
+    if request.method not in ("POST", "PUT", "PATCH", "DELETE"):
+        return await call_next(request)
+
+    path = request.url.path
+    protected = path in _CSRF_PROTECTED_PATHS or path.startswith(_CSRF_PROTECTED_PREFIXES)
+    if not protected or not request.cookies.get(ACCESS_TOKEN_COOKIE_NAME):
+        return await call_next(request)
+
+    # Bearer-authenticated API clients are not vulnerable to cookie CSRF.
+    if request.headers.get("Authorization", "").startswith("Bearer "):
+        return await call_next(request)
+
+    if request.headers.get("X-Requested-With") != "XMLHttpRequest":
+        return JSONResponse({"detail": "Missing CSRF header"}, status_code=403)
+
     return await call_next(request)
 
 
@@ -221,14 +224,12 @@ async def request_logging_middleware(request: Request, call_next):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Static files & templates
+# Static files
 # ──────────────────────────────────────────────────────────────────────────────
 
 STATIC_DIR = Path(__file__).parent / "app" / "admin" / "static"
-TEMPLATES_DIR = Path(__file__).parent / "app" / "admin" / "templates"
 
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
-templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Routers

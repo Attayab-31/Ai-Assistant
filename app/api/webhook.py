@@ -35,6 +35,27 @@ router = APIRouter()
 WEBHOOK_TIMESTAMP_TOLERANCE_S = 300
 
 
+async def _dedupe_webhook_event(
+    call_control_id: str,
+    lock_key: str,
+    *,
+    log_label: str,
+) -> bool:
+    """Return True when this delivery is the first for *lock_key* (process it)."""
+    if not call_control_id:
+        return True
+    from app.core.redis_client import acquire_once
+
+    if await acquire_once(
+        lock_key,
+        3600,
+        fail_closed=settings.is_production,
+    ):
+        return True
+    logger.info("Duplicate %s for %s — ignoring", log_label, call_control_id)
+    return False
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Webhook signature verification dependency
 # ──────────────────────────────────────────────────────────────────────────────
@@ -151,17 +172,11 @@ async def handle_call_initiated(db: AsyncSession, call_payload: dict) -> None:
     direction = call_payload.get("direction", "incoming")
     phone_number = sanitize_phone_number(raw_phone)
 
-    # Idempotency: Telnyx may deliver call.initiated more than once. Process the
-    # first delivery only so a retry can't create a duplicate call row (the
-    # call_id is unique) or answer the call twice. Fails open if Redis is down.
-    from app.core.redis_client import acquire_once
-
-    if call_control_id and not await acquire_once(
+    if not await _dedupe_webhook_event(
+        call_control_id,
         f"webhook:initiated:{call_control_id}",
-        3600,
-        fail_closed=settings.is_production,
+        log_label="call.initiated",
     ):
-        logger.info("Duplicate call.initiated for %s — ignoring", call_control_id)
         return
 
     # Check blacklist
@@ -210,16 +225,11 @@ async def handle_call_answered_event(db: AsyncSession, call_payload: dict) -> No
     """
     call_control_id = call_payload.get("call_control_id", "")
 
-    # Idempotency: Telnyx may redeliver call.answered. Process once so we don't
-    # start recording/streaming twice for the same call. Fails open if Redis down.
-    from app.core.redis_client import acquire_once
-
-    if call_control_id and not await acquire_once(
+    if not await _dedupe_webhook_event(
+        call_control_id,
         f"webhook:answered:{call_control_id}",
-        3600,
-        fail_closed=settings.is_production,
+        log_label="call.answered",
     ):
-        logger.info("Duplicate call.answered for %s — ignoring", call_control_id)
         return
 
     recording_enabled = await get_setting_value(db, "call_recording_enabled", False)
@@ -266,17 +276,11 @@ async def handle_call_hangup(db: AsyncSession, call_payload: dict) -> None:
     """Handle call.hangup — stop the audio stream and finalize after it ends."""
     call_control_id = call_payload.get("call_control_id", "")
 
-    # Idempotency: Telnyx may redeliver call.hangup. Process once so we don't kick
-    # off finalize twice (the finalize path also has its own dedup lock). Fails
-    # open if Redis is down.
-    from app.core.redis_client import acquire_once
-
-    if call_control_id and not await acquire_once(
+    if not await _dedupe_webhook_event(
+        call_control_id,
         f"webhook:hangup:{call_control_id}",
-        3600,
-        fail_closed=settings.is_production,
+        log_label="call.hangup",
     ):
-        logger.info("Duplicate call.hangup for %s — ignoring", call_control_id)
         return
 
     session = call_handler.get_session(call_control_id)

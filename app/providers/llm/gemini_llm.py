@@ -12,7 +12,12 @@ from collections.abc import AsyncIterator
 
 from openai import AsyncOpenAI
 
-from app.providers.base import BaseLLMProvider, usage_from_response
+from app.providers.base import (
+    BaseLLMProvider,
+    complete_openai_chat,
+    openai_chat_kwargs,
+    stream_openai_chat,
+)
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -34,7 +39,7 @@ AVAILABLE_MODELS = [
 _JSON_MIN_MAX_TOKENS = 768
 
 
-def _extract_json(text: str) -> str:
+def extract_json_from_llm_text(text: str) -> str:
     """Best-effort salvage of a single JSON object from a model reply.
 
     Strips ```json fences and any prose around the object so the caller's
@@ -52,6 +57,10 @@ def _extract_json(text: str) -> str:
     if start != -1 and end != -1 and end > start:
         return s[start : end + 1].strip()
     return s
+
+
+# Registry / call_handler import the private name from earlier releases.
+_extract_json = extract_json_from_llm_text
 
 
 class GeminiLLMProvider(BaseLLMProvider):
@@ -75,6 +84,16 @@ class GeminiLLMProvider(BaseLLMProvider):
             )
         return self._client
 
+    def _gemini_request_extra(
+        self, *, json_mode: bool, max_tokens: int
+    ) -> tuple[int, dict]:
+        effective_max = max(max_tokens, _JSON_MIN_MAX_TOKENS) if json_mode else max_tokens
+        extra: dict = {}
+        # Disable Gemini 2.5 "thinking" so reasoning tokens don't eat the budget.
+        if self.model.startswith("gemini-2.5"):
+            extra["extra_body"] = {"reasoning_effort": "none"}
+        return effective_max, extra
+
     async def get_response(
         self,
         system_prompt: str,
@@ -83,37 +102,22 @@ class GeminiLLMProvider(BaseLLMProvider):
         temperature: float = 0.3,
         max_tokens: int = 500,
     ) -> str:
-        all_messages = [{"role": "system", "content": system_prompt}] + messages
-
-        # Gemini 2.5 models "think" by default, and on the OpenAI-compatible
-        # endpoint those reasoning tokens are billed against max_tokens. With a
-        # small budget they consume it entirely and the body comes back empty or
-        # truncated (the JSON parse failures seen in production). Disabling
-        # thinking returns the budget to the actual answer and slashes latency.
-        effective_max = max(max_tokens, _JSON_MIN_MAX_TOKENS) if json_mode else max_tokens
-        kwargs = {
-            "model": self.model,
-            "messages": all_messages,
-            "temperature": temperature,
-            "max_tokens": effective_max,
-        }
-        if json_mode:
-            kwargs["response_format"] = {"type": "json_object"}
-        # Disable Gemini 2.5 "thinking" so reasoning tokens don't eat the budget.
-        # Passed via extra_body (raw request body) so it works even on older
-        # openai SDK versions that don't expose reasoning_effort as a kwarg.
-        # "none" is only valid for 2.5 models; older flash models aren't thinking
-        # models, so we skip it there to avoid a 400.
-        if self.model.startswith("gemini-2.5"):
-            kwargs["extra_body"] = {"reasoning_effort": "none"}
-
-        self.last_usage = None
+        effective_max, extra = self._gemini_request_extra(
+            json_mode=json_mode, max_tokens=max_tokens
+        )
+        kwargs = openai_chat_kwargs(
+            model=self.model,
+            system_prompt=system_prompt,
+            messages=messages,
+            json_mode=json_mode,
+            temperature=temperature,
+            max_tokens=effective_max,
+            extra=extra,
+        )
         try:
-            response = await self.client.chat.completions.create(**kwargs)
-            content = response.choices[0].message.content or ""
-            self.last_usage = usage_from_response(response)
+            content = await complete_openai_chat(self, self.client, kwargs)
             if json_mode:
-                content = _extract_json(content)
+                content = extract_json_from_llm_text(content)
             logger.debug(f"Gemini response: {content[:100]}...")
             return content
         except Exception as e:
@@ -129,27 +133,18 @@ class GeminiLLMProvider(BaseLLMProvider):
         max_tokens: int = 500,
     ) -> AsyncIterator[str]:
         """Yield text deltas from a streaming Gemini completion."""
-        all_messages = [{"role": "system", "content": system_prompt}] + messages
-        effective_max = max(max_tokens, _JSON_MIN_MAX_TOKENS) if json_mode else max_tokens
-        kwargs = {
-            "model": self.model,
-            "messages": all_messages,
-            "temperature": temperature,
-            "max_tokens": effective_max,
-            "stream": True,
-        }
-        if json_mode:
-            kwargs["response_format"] = {"type": "json_object"}
-        if self.model.startswith("gemini-2.5"):
-            kwargs["extra_body"] = {"reasoning_effort": "none"}
-
-        self.last_usage = None
-        stream = await self.client.chat.completions.create(**kwargs)
-        async for chunk in stream:
-            if getattr(chunk, "usage", None):
-                self.last_usage = usage_from_response(chunk)
-            if not chunk.choices:
-                continue
-            delta = chunk.choices[0].delta.content
-            if delta:
-                yield delta
+        effective_max, extra = self._gemini_request_extra(
+            json_mode=json_mode, max_tokens=max_tokens
+        )
+        kwargs = openai_chat_kwargs(
+            model=self.model,
+            system_prompt=system_prompt,
+            messages=messages,
+            json_mode=json_mode,
+            temperature=temperature,
+            max_tokens=effective_max,
+            stream=True,
+            extra=extra,
+        )
+        async for delta in stream_openai_chat(self, self.client, kwargs):
+            yield delta

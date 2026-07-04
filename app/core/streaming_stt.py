@@ -16,6 +16,7 @@ from collections.abc import Awaitable, Callable
 
 from deepgram import DeepgramClient, LiveOptions, LiveTranscriptionEvents
 
+from app.core.voice_latency import DEEPGRAM_UTTERANCE_END_MIN_MS, clamp_utterance_end_ms
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -29,7 +30,7 @@ logger = logging.getLogger(__name__)
 # (word-timing based, ignores background noise) is the turn boundary; 1000ms is
 # Deepgram's documented floor and gives a natural, not-rushed turn handoff.
 DEFAULT_ENDPOINTING_MS = 1000
-DEFAULT_UTTERANCE_END_MS = 1000
+DEFAULT_UTTERANCE_END_MS = DEEPGRAM_UTTERANCE_END_MIN_MS
 
 # Keyterm prompting (nova-3, English only) biases recognition toward known,
 # frequently-mangled vocabulary without hurting general accuracy. We boost the
@@ -83,10 +84,8 @@ class DeepgramStreamingSession:
         self.language = language
         self.encoding = encoding
         self.sample_rate = sample_rate
-        from app.core.voice_latency import _clamp_utterance_end_ms
-
         self.endpointing_ms = endpointing_ms
-        self.utterance_end_ms = _clamp_utterance_end_ms(utterance_end_ms)
+        self.utterance_end_ms = clamp_utterance_end_ms(utterance_end_ms)
         self.keyterms = keyterms or ()
         self.on_interim = on_interim
         self.on_speech_started = on_speech_started

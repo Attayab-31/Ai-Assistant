@@ -292,6 +292,15 @@ async def get_db() -> AsyncGenerator[AsyncSession]:
 # ──────────────────────────────────────────────────────────────────────────────
 
 
+def _register_orm_models() -> None:
+    """Import all ORM models so SQLAlchemy registers them with Base.metadata."""
+    from app.models.audit_log import AuditLog  # noqa: F401
+    from app.models.call import Call  # noqa: F401
+    from app.models.settings import SystemSetting  # noqa: F401
+    from app.models.tenant import Tenant  # noqa: F401
+    from app.models.user import AdminUser  # noqa: F401
+
+
 async def init_db() -> None:
     """
     Initialize the database schema using Alembic migrations.
@@ -300,14 +309,9 @@ async def init_db() -> None:
     In production, the default migration mode validates that migrations were
     already applied before the app starts.
     """
-    # Import all models so SQLAlchemy registers them with Base.metadata
     from app.db.migrations import initialize_database_schema
-    from app.models.audit_log import AuditLog  # noqa: F401
-    from app.models.call import Call  # noqa: F401
-    from app.models.settings import SystemSetting  # noqa: F401
-    from app.models.tenant import Tenant  # noqa: F401
-    from app.models.user import AdminUser  # noqa: F401
 
+    _register_orm_models()
     try:
         await initialize_database_schema()
     except Exception as exc:

@@ -174,64 +174,14 @@
   </section>
 </div>
 
-{% if linked_call and user and user.can_edit %}
+{% endblock %}
+
+{% block scripts %}
 <script src="/static/js/reviewer.js"></script>
-<script>initReviewerWorkflow("{{ linked_call.id }}");</script>
-{% endif %}
-
 <script>
-  const tenantId = "{{ tenant.id }}";
-
-  async function blacklistTenant() {
-    const ok = await confirmAction({
-      title: 'Add to do-not-call list?',
-      message: 'Future calls from this number will be declined automatically.',
-      confirmLabel: 'Add to list',
-      danger: true,
-    });
-    if (!ok) return;
-    await apiFetch(`/admin/api/tenants/${tenantId}/blacklist`, { method: 'POST' });
-    showMessage('Added to do-not-call list.');
-    setTimeout(() => location.reload(), 900);
-  }
-
-  async function saveTenant(e) {
-    e.preventDefault();
-    const petsVal = document.getElementById('hasPets').value;
-    const data = {
-      full_name: document.getElementById('fullName').value.trim(),
-      contact_phone: document.getElementById('contactPhone').value.trim(),
-      email: document.getElementById('email').value.trim(),
-      monthly_income: parseInt(document.getElementById('income').value) || 0,
-      adults_count: parseInt(document.getElementById('adults').value) || 0,
-      children_count: parseInt(document.getElementById('children').value) || 0,
-      move_in_raw: document.getElementById('moveDate').value,
-      move_timing: document.getElementById('moveTiming').value,
-      current_residence: document.getElementById('currentResidence').value,
-      residence_duration: document.getElementById('residenceDuration').value,
-      move_reason: document.getElementById('moveReason').value,
-      employer: document.getElementById('employer').value,
-      employment_duration: document.getElementById('employmentDuration').value,
-      general_notes: document.getElementById('generalNotes').value,
-      notes: document.getElementById('notes').value,
-      has_eviction: document.getElementById('hasEviction').value === 'true',
-    };
-    if (petsVal !== '') {
-      data.has_pets = petsVal === 'true';
-    }
-
-    try {
-      const r = await fetch(`/admin/api/tenants/${tenantId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data),
-      });
-      if (!r.ok) throw new Error(await r.text());
-      showMessage('Applicant updated successfully');
-      setTimeout(() => location.reload(), 1500);
-    } catch (e) {
-      showMessage('Error: ' + e.message, true);
-    }
-  }
+  initTenantDetail("{{ tenant.id }}");
+  {% if linked_call and user and user.can_edit %}
+  initReviewerWorkflow("{{ linked_call.id }}");
+  {% endif %}
 </script>
 {% endblock %}

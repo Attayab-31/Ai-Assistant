@@ -72,10 +72,6 @@ class DeepgramTTSProvider(BaseTTSProvider):
         )
         return DEFAULT_VOICE
 
-    async def close(self) -> None:
-        """No per-provider teardown — shared client lives for process lifetime."""
-        return None
-
     async def synthesize(
         self,
         text: str,

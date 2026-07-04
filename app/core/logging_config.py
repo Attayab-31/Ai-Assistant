@@ -128,9 +128,7 @@ def setup_logging() -> None:
     console_handler.setFormatter(JsonFormatter() if use_json else TextFormatter())
     root.addHandler(console_handler)
 
-    log_dir = Path(
-        settings.log_dir if hasattr(settings, "log_dir") else "/var/log/ai-screener"
-    )
+    log_dir = Path(settings.log_dir)
 
     if is_production:
         log_dir.mkdir(parents=True, exist_ok=True)
@@ -144,7 +142,7 @@ def setup_logging() -> None:
         root.addHandler(file_handler)
 
     # Dev voice trace: grep-friendly file with only call pipeline lines.
-    if not is_production and getattr(settings, "log_voice_trace", True):
+    if not is_production and settings.log_voice_trace:
         log_dir.mkdir(parents=True, exist_ok=True)
         trace_handler = RotatingFileHandler(
             filename=log_dir / "voice.trace.log",
@@ -205,6 +203,6 @@ def setup_logging() -> None:
         "Logging configured — environment=%s json=%s voice_trace=%s log_dir=%s",
         settings.environment,
         use_json,
-        getattr(settings, "log_voice_trace", True) and not is_production,
+        settings.log_voice_trace and not is_production,
         log_dir,
     )

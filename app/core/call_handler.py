@@ -53,6 +53,7 @@ from app.core.conversation import (
     polite_redirect,
     provider_failure_message_for_session,
     reset_turn_streaming,
+    streamed_audio_complete,
     strip_upcoming_question_from_ack,
     validate_llm_response,
 )
@@ -597,18 +598,6 @@ def _strip_streamed_speech(text: str, session: ConversationSession) -> str:
     return text
 
 
-def _streamed_audio_complete(session: ConversationSession, intended: str) -> bool:
-    """True when streaming TTS already covered everything we would synthesize."""
-    if not getattr(session, "streamed_audio_sent_during_turn", False):
-        return False
-    prefix = (getattr(session, "streamed_speakable_prefix", "") or "").strip()
-    intended = (intended or "").strip()
-    if not prefix or not intended:
-        return False
-    remainder = _strip_streamed_speech(intended, session)
-    return not remainder
-
-
 AudioPartCallback = Callable[[bytes, bool], Awaitable[None]]
 SpeakableCallback = Callable[[str], Awaitable[None]]
 
@@ -785,7 +774,7 @@ async def process_tenant_speech(
                 "streamed_sent": session.streamed_audio_sent_during_turn,
                 "display": display,
             }
-            if _streamed_audio_complete(session, intended):
+            if streamed_audio_complete(session, intended):
                 vinfo(
                     logger,
                     "Skipping batch TTS — streaming already covered full response",
@@ -1707,8 +1696,6 @@ async def get_llm_response_with_fallback(
     Returns:
         Parsed LLM response dict
     """
-    import time
-
     if voice_mode:
         max_retries = 0
         llm_timeout = float(getattr(session, "llm_timeout_voice_seconds", 5.5) or 5.5)
@@ -1786,8 +1773,6 @@ async def get_llm_response_with_fallback(
                 )
 
                 # Parse and validate
-                import re
-
                 clean = re.sub(r"```json\s*|\s*```", "", raw).strip()
                 if getattr(provider, "provider_name", "") == "gemini":
                     from app.providers.llm.gemini_llm import _extract_json
@@ -2199,8 +2184,6 @@ async def synthesize_with_fallback(
     """
     if not text.strip():
         return b""
-
-    import time
 
     t0 = time.monotonic()
     providers = get_call_providers(session)

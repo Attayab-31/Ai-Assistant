@@ -10,7 +10,12 @@ from alembic.script import ScriptDirectory
 from sqlalchemy import inspect, text
 
 from alembic import command
-from app.db.database import Base, DatabaseInitializationError, engine
+from app.db.database import (
+    Base,
+    DatabaseInitializationError,
+    _register_orm_models,
+    engine,
+)
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -102,6 +107,7 @@ async def _create_all_development() -> None:
         "Creating tables with SQLAlchemy metadata because "
         "DATABASE_MIGRATION_MODE=create_all. Prefer Alembic migrations."
     )
+    _register_orm_models()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 

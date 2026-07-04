@@ -27,7 +27,6 @@ slowapi==0.1.9
 
 # HTTP clients
 httpx==0.27.0
-aiohttp==3.14.1
 websockets==12.0
 
 # Templates

@@ -12,6 +12,7 @@ volume, which keeps us comfortably under small (e.g. 256 MB) Redis plans.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from typing import Any
@@ -155,8 +156,6 @@ async def clear_stream_stop_signal(call_id: str) -> None:
 
 async def revoke_token(token: str, ttl_seconds: int) -> None:
     """Denylist a JWT until it expires (logout / forced sign-out)."""
-    import hashlib
-
     r = get_redis()
     if r is None or not token:
         return
@@ -169,8 +168,6 @@ async def revoke_token(token: str, ttl_seconds: int) -> None:
 
 async def is_token_revoked(token: str) -> bool:
     """True when the token was explicitly revoked before expiry."""
-    import hashlib
-
     r = get_redis()
     if r is None or not token:
         return False

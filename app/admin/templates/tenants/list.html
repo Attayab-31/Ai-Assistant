@@ -61,9 +61,9 @@
       {% if user and user.can_edit %}
       <td style="text-align:right;">
         {% if not tenant.reviewed_by_admin %}
-        <button type="button" class="btn btn-primary btn-sm" onclick="withBtnLoading(this, () => markTenantReviewed('{{ tenant.id }}', true, this), 'Saving\u2026')">Mark reviewed</button>
+        <button type="button" class="btn btn-primary btn-sm" onclick="withBtnLoading(this, () => markTenantReviewed('{{ tenant.id }}', true), 'Saving\u2026')">Mark reviewed</button>
         {% else %}
-        <button type="button" class="btn btn-secondary btn-sm" onclick="withBtnLoading(this, () => markTenantReviewed('{{ tenant.id }}', false, this), 'Saving\u2026')">Mark unreviewed</button>
+        <button type="button" class="btn btn-secondary btn-sm" onclick="withBtnLoading(this, () => markTenantReviewed('{{ tenant.id }}', false), 'Saving\u2026')">Mark unreviewed</button>
         {% endif %}
       </td>
       {% endif %}
@@ -77,15 +77,5 @@
 {{ list_pagination('/admin/tenants', page, total_pages, filters, total, 'applicant' if total == 1 else 'applicants') }}
 {% endblock %}
 {% block scripts %}
-<script src="/static/js/admin.js"></script>
 <script src="/static/js/reviewer.js"></script>
-<script>
-  function toggleAllTenants(on) {
-    document.querySelectorAll('.tenant-select').forEach(cb => { cb.checked = on; });
-  }
-  function bulkMarkSelected() {
-    const ids = Array.from(document.querySelectorAll('.tenant-select:checked')).map(cb => cb.value);
-    withBtnLoading(document.getElementById('bulkReviewBtn'), () => bulkMarkReviewed(ids), 'Saving\u2026');
-  }
-</script>
 {% endblock %}

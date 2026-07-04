@@ -10,7 +10,12 @@ from collections.abc import AsyncIterator
 
 from groq import AsyncGroq
 
-from app.providers.base import BaseLLMProvider, usage_from_response
+from app.providers.base import (
+    BaseLLMProvider,
+    complete_openai_chat,
+    openai_chat_kwargs,
+    stream_openai_chat,
+)
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -54,36 +59,16 @@ class GroqLLMProvider(BaseLLMProvider):
         temperature: float = 0.3,
         max_tokens: int = 500,
     ) -> str:
-        """
-        Get a response from Groq API.
-
-        Args:
-            system_prompt: Injected as the system message
-            messages: Conversation history
-            json_mode: If True, enforces JSON output
-            temperature: Sampling temperature
-            max_tokens: Maximum completion tokens
-
-        Returns:
-            Response text string
-        """
-        all_messages = [{"role": "system", "content": system_prompt}] + messages
-
-        kwargs = {
-            "model": self.model,
-            "messages": all_messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        }
-
-        if json_mode:
-            kwargs["response_format"] = {"type": "json_object"}
-
-        self.last_usage = None
+        kwargs = openai_chat_kwargs(
+            model=self.model,
+            system_prompt=system_prompt,
+            messages=messages,
+            json_mode=json_mode,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
         try:
-            response = await self.client.chat.completions.create(**kwargs)
-            content = response.choices[0].message.content
-            self.last_usage = usage_from_response(response)
+            content = await complete_openai_chat(self, self.client, kwargs)
             logger.debug(f"Groq response ({len(content)} chars): {content[:100]}...")
             return content
         except Exception as e:
@@ -99,24 +84,14 @@ class GroqLLMProvider(BaseLLMProvider):
         max_tokens: int = 500,
     ) -> AsyncIterator[str]:
         """Yield text deltas from a streaming Groq completion."""
-        all_messages = [{"role": "system", "content": system_prompt}] + messages
-        kwargs = {
-            "model": self.model,
-            "messages": all_messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            "stream": True,
-        }
-        if json_mode:
-            kwargs["response_format"] = {"type": "json_object"}
-
-        self.last_usage = None
-        stream = await self.client.chat.completions.create(**kwargs)
-        async for chunk in stream:
-            if getattr(chunk, "usage", None):
-                self.last_usage = usage_from_response(chunk)
-            if not chunk.choices:
-                continue
-            delta = chunk.choices[0].delta.content
-            if delta:
-                yield delta
+        kwargs = openai_chat_kwargs(
+            model=self.model,
+            system_prompt=system_prompt,
+            messages=messages,
+            json_mode=json_mode,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stream=True,
+        )
+        async for delta in stream_openai_chat(self, self.client, kwargs):
+            yield delta

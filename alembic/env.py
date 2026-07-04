@@ -5,15 +5,14 @@ from logging.config import fileConfig
 from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
+# Register all ORM models with Alembic (import modules for side effects only).
+import app.models.audit_log  # noqa: F401
+import app.models.call  # noqa: F401
+import app.models.settings  # noqa: F401
+import app.models.tenant  # noqa: F401
+import app.models.user  # noqa: F401
 from alembic import context
 from app.db.database import Base, connect_args, database_url
-
-# Import models so Alembic can see all mapped tables.
-from app.models.audit_log import AuditLog  # noqa: F401
-from app.models.call import Call  # noqa: F401
-from app.models.settings import SystemSetting  # noqa: F401
-from app.models.tenant import Tenant  # noqa: F401
-from app.models.user import AdminUser  # noqa: F401
 
 config = context.config
 

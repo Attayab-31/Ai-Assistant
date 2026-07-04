@@ -130,6 +130,11 @@ def _is_loopback(client_host: str | None) -> bool:
     return bool(client_host) and client_host in _LOOPBACK_HOSTS
 
 
+def _dev_loopback_exempt(client_host: str | None) -> bool:
+    """Allow unauthenticated local QA on loopback in non-production."""
+    return not settings.is_production and _is_loopback(client_host)
+
+
 async def require_test_console_access(
     request: Request,
     db: AsyncSession = Depends(get_db),
@@ -141,7 +146,7 @@ async def require_test_console_access(
     driven anonymously; only same-machine localhost QA is allowed without login.
     """
     client_host = request.client.host if request.client else None
-    if not settings.is_production and _is_loopback(client_host):
+    if _dev_loopback_exempt(client_host):
         return
     user = await get_current_user(request, db)
     if not user.can("settings"):
@@ -164,7 +169,7 @@ async def _verify_ws_auth(websocket: WebSocket) -> bool:
     valid admin token with Settings edit permission.
     """
     client_host = websocket.client.host if websocket.client else None
-    if not settings.is_production and _is_loopback(client_host):
+    if _dev_loopback_exempt(client_host):
         return True
 
     from app.utils.security import decode_access_token

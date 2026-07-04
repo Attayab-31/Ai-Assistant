@@ -39,7 +39,8 @@ DEFAULT_VOICE_LATENCY_PROFILE = "balanced"
 DEEPGRAM_UTTERANCE_END_MIN_MS = 1000
 
 
-def _clamp_utterance_end_ms(ms: int) -> int:
+def clamp_utterance_end_ms(ms: int) -> int:
+    """Clamp Deepgram utterance_end_ms to the API minimum (1000)."""
     try:
         value = int(ms)
     except (TypeError, ValueError):
@@ -55,7 +56,7 @@ def resolve_voice_latency(values: dict[str, Any] | None) -> dict[str, Any]:
         profile = DEFAULT_VOICE_LATENCY_PROFILE
     cfg = dict(LATENCY_PROFILES[profile])
     cfg["voice_latency_profile"] = profile
-    cfg["deepgram_utterance_end_ms"] = _clamp_utterance_end_ms(
+    cfg["deepgram_utterance_end_ms"] = clamp_utterance_end_ms(
         cfg.get("deepgram_utterance_end_ms", DEEPGRAM_UTTERANCE_END_MIN_MS)
     )
     raw_stream = values.get("llm_streaming_enabled", "true")

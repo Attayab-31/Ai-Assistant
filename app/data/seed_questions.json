@@ -198,7 +198,8 @@
     "field_labels": {
       "pet_type": "pet type",
       "pet_breed": "breed",
-      "pet_weight": "approximate weight"
+      "pet_weight": "approximate weight",
+      "pets_raw": "pet description"
     },
     "validation": "pet type, breed, and weight",
     "retry_prompt": "Could you give me the pet type, breed, and weight?",

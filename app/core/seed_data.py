@@ -33,25 +33,20 @@ def _read_json(name: str) -> list[dict[str, Any]]:
 @lru_cache(maxsize=1)
 def load_seed_questions() -> list[dict[str, Any]]:
     """Default screening questions for DB seed / admin reset only."""
-    from app.core.question_flow import normalize_questions
+    from app.core.question_flow import validate_questions_for_save
 
     raw = _read_json("seed_questions.json")
-    return normalize_questions(raw) if raw else []
+    if not raw:
+        return []
+    return validate_questions_for_save(raw)
 
 
 @lru_cache(maxsize=1)
 def load_seed_faqs() -> list[dict[str, Any]]:
     """Default FAQ entries for DB seed / admin reset only."""
+    from app.core.screening_flow import validate_faqs_for_save
+
     raw = _read_json("seed_faqs.json")
     if not raw:
         return []
-    normalized: list[dict[str, Any]] = []
-    for entry in raw:
-        item = dict(entry)
-        item.setdefault("active", True)
-        item.setdefault("order", len(normalized) + 1)
-        normalized.append(item)
-    normalized.sort(key=lambda x: int(x.get("order") or 0))
-    for idx, item in enumerate(normalized, start=1):
-        item["order"] = idx
-    return normalized
+    return validate_faqs_for_save(raw)

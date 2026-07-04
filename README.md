@@ -113,7 +113,9 @@ cp .env.example .env        # fill in real values
 docker compose up --build
 ```
 
-The web container runs `alembic upgrade head` automatically on start.
+The web container starts uvicorn; schema init runs in app lifespan via
+`DATABASE_MIGRATION_MODE` (`upgrade` in development, `check` in production).
+Run `alembic upgrade head` before deploying to production.
 
 ---
 
@@ -132,7 +134,7 @@ list and inline guidance). Key variables:
 | `DATABASE_URL` | Postgres/Supabase connection string (URL-encode the password). |
 | `DATABASE_MIGRATION_MODE` | Prod defaults to `check` (run `alembic upgrade head` first). |
 | `REDIS_URL`, `CELERY_BROKER_URL`, `CELERY_RESULT_BACKEND` | Redis DBs `/0`, `/1`, `/2`. |
-| `TELNYX_API_KEY`, `TELNYX_PUBLIC_KEY`, `TELNYX_PHONE_NUMBER` | `TELNYX_PUBLIC_KEY` is **required in prod** to verify webhooks. |
+| `TELNYX_API_KEY`, `TELNYX_PUBLIC_KEY` | `TELNYX_PUBLIC_KEY` is **required in prod** to verify webhooks. Assign your screening number in the Telnyx portal (not an app env var). |
 
 ### Generating secrets
 
@@ -176,9 +178,9 @@ The body also reports Redis and provider status.
 
 ## Telnyx setup
 
-1. Buy/assign a number and point its **Voice webhook** to
+1. Buy/assign a number in Telnyx and point its **Voice webhook** to
    `https://your-domain.com/telnyx/webhook` (HTTPS required).
-2. Set `TELNYX_API_KEY`, `TELNYX_PHONE_NUMBER`, and `TELNYX_PUBLIC_KEY`
+2. Set `TELNYX_API_KEY` and `TELNYX_PUBLIC_KEY` in your environment
    (the public key verifies webhook signatures).
 3. Ensure `APP_URL` is your public HTTPS URL — the media stream WebSocket URL
    is derived from it.
@@ -207,6 +209,7 @@ Before the first real call:
 main.py                  FastAPI app, middleware, /health, startup guard
 config.py                Typed settings + production validation
 alembic/                 Migrations
+scripts/                 reset_database.py, benchmark_latency.py (see docs/)
 app/
   api/                   Routers: auth, admin, webhook, settings, test_console
   core/                  Call pipeline, conversation flow, Celery app, logging
@@ -222,5 +225,4 @@ app/
 ## Notes & known limitations
 
 - Live call sessions are in-memory (single web worker — see above).
-- Tests: `pytest` is included in `requirements.txt` but the suite is not yet
-  populated.
+- Tests: install dev tooling with `pip install -r requirements-dev.txt`, then run `pytest`.

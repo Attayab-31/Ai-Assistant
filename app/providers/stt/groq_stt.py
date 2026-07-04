@@ -7,12 +7,10 @@ Used when Deepgram streaming is unavailable.
 
 import io
 import logging
-import time
 
-import httpx
 from groq import AsyncGroq
 
-from app.providers.base import BaseSTTProvider
+from app.providers.base import BaseSTTProvider, http_api_ping
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -64,15 +62,7 @@ class GroqSTTProvider(BaseSTTProvider):
         """Verify the Groq API key and Whisper endpoint are reachable."""
         if not settings.groq_api_key:
             return False, 0.0
-        start = time.time()
-        try:
-            async with httpx.AsyncClient(timeout=6.0) as client:
-                resp = await client.get(
-                    "https://api.groq.com/openai/v1/models",
-                    headers={"Authorization": f"Bearer {settings.groq_api_key}"},
-                )
-            latency_ms = (time.time() - start) * 1000
-            return resp.status_code == 200, round(latency_ms, 1)
-        except Exception as e:
-            logger.debug("Groq STT ping failed: %s", e)
-            return False, 0.0
+        return await http_api_ping(
+            "https://api.groq.com/openai/v1/models",
+            {"Authorization": f"Bearer {settings.groq_api_key}"},
+        )

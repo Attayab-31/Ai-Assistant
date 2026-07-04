@@ -8,7 +8,6 @@ admin changes apply to NEW calls only — never mid-call.
 from __future__ import annotations
 
 import json
-import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -20,8 +19,6 @@ from app.core.screening_flow import normalize_faqs
 from app.core.voice_latency import resolve_voice_latency
 from config import DEFAULT_FAQS, DEFAULT_QUESTIONS
 from config import settings as env_settings
-
-logger = logging.getLogger(__name__)
 
 CALL_SETTINGS_KEYS = (
     "active_llm_provider",

@@ -32,6 +32,7 @@ from app.core.conversation import (
     plan_turn_timeout_recovery,
     reset_turn_streaming,
     should_suppress_silence_nudge,
+    turn_budget_seconds,
     unsynthesized_speech_remainder,
 )
 from app.core.streaming_stt import DeepgramStreamingSession
@@ -72,14 +73,6 @@ FORCE_FLUSH_BYTES = 16000 * 2
 MAX_BUFFER_BYTES = 16000 * 10  # ~10 s safety cap
 TURN_PAUSE_SECONDS = 0.18  # natural pause between ack and next question
 
-
-def _turn_budget_seconds(session: ConversationSession) -> float:
-    from app.core.conversation import turn_budget_seconds
-
-    return turn_budget_seconds(session)
-
-# Interruption/barge-in support
-BARGE_IN_ENABLED = True
 # Require this many consecutive non-silent chunks while the AI is speaking
 # before treating it as a real barge-in (filters out line noise / clicks).
 BARGE_IN_MIN_SPEECH_CHUNKS = 3
@@ -525,12 +518,6 @@ async def run_bidirectional_audio_stream(
         except Exception as e:
             logger.debug("[%s] debug emit failed: %s", call_id, e)
 
-    def _should_feed_stt() -> bool:
-        # Keep feeding live STT during LLM think time so transcript-gated
-        # barge-in can fire as soon as the caller speaks. Stale finalized
-        # transcripts are dropped in stt_bridge / drained at turn start.
-        return True
-
     async def _on_speech_started(text: str) -> None:
         """Transcript-gated barge-in: Deepgram heard real words from the caller.
 
@@ -540,7 +527,7 @@ async def run_bidirectional_audio_stream(
         produced on noisy / hands-free setups.
         """
         nonlocal barge_in_cooldown_until
-        if not BARGE_IN_ENABLED or not ai_speaking.is_set():
+        if not ai_speaking.is_set():
             return
         if time.monotonic() < barge_in_cooldown_until:
             return
@@ -602,11 +589,7 @@ async def run_bidirectional_audio_stream(
                     # streaming STT is active (the normal case) barge-in is
                     # transcript-gated in _on_speech_started instead, which does
                     # not false-trigger on noise / echo / silence.
-                    if (
-                        BARGE_IN_ENABLED
-                        and not streaming_stt_enabled
-                        and ai_speaking.is_set()
-                    ):
+                    if not streaming_stt_enabled and ai_speaking.is_set():
                         if chunk_is_silence:
                             barge_in_speech_chunks = max(0, barge_in_speech_chunks - 1)
                             continue
@@ -623,14 +606,13 @@ async def run_bidirectional_audio_stream(
                         barge_in_speech_chunks = 0
 
                     if streaming_stt_enabled:
-                        if _should_feed_stt():
-                            try:
-                                audio_feed_queue.put_nowait(chunk)
-                            except asyncio.QueueFull:
-                                logger.debug(
-                                    "[%s] audio feed queue full, dropping chunk",
-                                    call_id,
-                                )
+                        try:
+                            audio_feed_queue.put_nowait(chunk)
+                        except asyncio.QueueFull:
+                            logger.debug(
+                                "[%s] audio feed queue full, dropping chunk",
+                                call_id,
+                            )
                         continue
 
                     audio_buffer.extend(chunk)
@@ -976,7 +958,7 @@ async def run_bidirectional_audio_stream(
                     call_id=call_id,
                     phase=Phase.TURN_START,
                     service="turn",
-                    budget_s=round(_turn_budget_seconds(session), 1),
+                    budget_s=round(turn_budget_seconds(session), 1),
                 )
 
                 # Drop a duplicate STT result only when it repeats an answer we
@@ -1079,7 +1061,7 @@ async def run_bidirectional_audio_stream(
 
                 # Internal budget marker used by call_handler to avoid spending
                 # the entire 15s outer guard on deep fallback chains.
-                turn_budget = _turn_budget_seconds(session)
+                turn_budget = turn_budget_seconds(session)
                 session.turn_deadline_monotonic = t1 + turn_budget
                 turn_in_progress.set()
                 _drain_pending_input()

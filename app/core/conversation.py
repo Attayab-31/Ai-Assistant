@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import json
-import logging
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import Enum
@@ -13,6 +13,7 @@ from typing import Any
 from app.core.question_flow import (
     build_field_maps,
     build_question_slot_config,
+    confirm_field_for_question,
     count_active_questions,
     count_answered_questions,
     field_answer_types_from_questions,
@@ -31,8 +32,6 @@ from app.core.screening_flow import (
     normalize_extracted_fields,
     normalize_faqs,
 )
-
-logger = logging.getLogger(__name__)
 
 # Meta states only — screening question states are dynamic strings from admin config.
 META_STATES = frozenset({"IDLE", "GREETING", "WRAP_UP", "ENDED"})
@@ -641,10 +640,7 @@ def plan_turn_timeout_recovery(
     session: ConversationSession, transcript: str
 ) -> str:
     """Pick recovery speech after timeout; resume read-back when data was already captured."""
-    from app.core.question_flow import (
-        build_confirm_field_map,
-        readback_prompt_for_state,
-    )
+    from app.core.question_flow import readback_prompt_for_state
 
     prefix = (session.streamed_speakable_prefix or "").strip()
     if prefix:
@@ -652,8 +648,8 @@ def plan_turn_timeout_recovery(
 
     state = session.current_state
     heard = (transcript or "").strip()
-    confirm_map = build_confirm_field_map(session.questions)
-    field = confirm_map.get(state)
+    q = questions_index(session.questions).get(state)
+    field = confirm_field_for_question(q) if q else None
     if (
         field
         and field in session.extracted_data
@@ -715,15 +711,11 @@ def streamed_audio_complete(session: ConversationSession, intended: str) -> bool
 
 
 def mark_recovery_played(session: ConversationSession) -> None:
-    import time
-
     session.last_recovery_at_monotonic = time.monotonic()
 
 
 def should_suppress_silence_nudge(session: ConversationSession, *, now: float | None = None) -> bool:
     """Avoid stacking a silence prompt right after timeout/TTS recovery."""
-    import time
-
     last = float(getattr(session, "last_recovery_at_monotonic", 0.0) or 0.0)
     if last <= 0:
         return False
@@ -1107,6 +1099,23 @@ def _faq_topic_index(active_faqs: list[dict[str, Any]]) -> str:
     return "\n".join(line for line in lines if line) or "None configured."
 
 
+def match_faqs_by_pattern(
+    text: str, active_faqs: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Return FAQ entries whose regex pattern matches *text*."""
+    matched: list[dict[str, Any]] = []
+    for entry in active_faqs:
+        pattern = str(entry.get("pattern") or "").strip()
+        if not pattern:
+            continue
+        try:
+            if re.search(pattern, text, re.I):
+                matched.append(entry)
+        except re.error:
+            continue
+    return matched
+
+
 def _select_faq_block(
     active_faqs: list[dict[str, Any]], transcript: str
 ) -> tuple[str, bool]:
@@ -1126,16 +1135,7 @@ def _select_faq_block(
         return "None configured.", False
 
     text = (transcript or "").strip()
-    matched: list[dict[str, Any]] = []
-    for entry in active_faqs:
-        pattern = str(entry.get("pattern") or "").strip()
-        if not pattern:
-            continue
-        try:
-            if re.search(pattern, text, re.I):
-                matched.append(entry)
-        except re.error:
-            continue
+    matched = match_faqs_by_pattern(text, active_faqs)
 
     def _full(entries: list[dict[str, Any]]) -> str:
         return (

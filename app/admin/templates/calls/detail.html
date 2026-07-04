@@ -229,7 +229,9 @@
     </details>
   </section>
 </div>
+{% endblock %}
 
+{% block scripts %}
 <script src="/static/js/reviewer.js"></script>
 <script>initReviewerWorkflow("{{ call.id }}");</script>
 {% endblock %}

@@ -8,17 +8,15 @@ via WebSocket connection.
 
 import io
 import logging
-import time
 import wave
 
-import httpx
 from deepgram import (
     DeepgramClient,
     FileSource,
     PrerecordedOptions,
 )
 
-from app.providers.base import BaseSTTProvider
+from app.providers.base import BaseSTTProvider, http_api_ping
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -47,6 +45,26 @@ class DeepgramSTTProvider(BaseSTTProvider):
             self._client = DeepgramClient(settings.deepgram_api_key)
         return self._client
 
+    async def _transcribe_prerecorded(
+        self,
+        buffer: bytes,
+        *,
+        encoding: str,
+        sample_rate: int,
+    ) -> str:
+        source: FileSource = {"buffer": buffer}
+        options = PrerecordedOptions(
+            model=self.model,
+            language=self.language,
+            punctuate=True,
+            encoding=encoding,
+            sample_rate=sample_rate,
+        )
+        response = await self.client.listen.asyncprerecorded.v("1").transcribe_file(
+            source, options
+        )
+        return response.results.channels[0].alternatives[0].transcript.strip()
+
     async def transcribe_chunk(self, audio_bytes: bytes) -> str:
         """
         Transcribe mulaw 8kHz audio using Deepgram pre-recorded API.
@@ -56,20 +74,13 @@ class DeepgramSTTProvider(BaseSTTProvider):
             return ""
 
         try:
-            source: FileSource = {"buffer": audio_bytes}
-            options = PrerecordedOptions(
-                model=self.model,
-                language=self.language,
-                punctuate=True,
+            transcript = await self._transcribe_prerecorded(
+                audio_bytes,
                 encoding="mulaw",
                 sample_rate=8000,
             )
-            response = await self.client.listen.asyncprerecorded.v("1").transcribe_file(
-                source, options
-            )
-            transcript = response.results.channels[0].alternatives[0].transcript
-            if transcript.strip():
-                return transcript.strip()
+            if transcript:
+                return transcript
         except Exception as e:
             logger.debug(f"Deepgram mulaw STT failed, trying WAV: {e}")
 
@@ -84,19 +95,11 @@ class DeepgramSTTProvider(BaseSTTProvider):
         try:
             with wave.open(io.BytesIO(wav_bytes), "rb") as wav:
                 sample_rate = wav.getframerate()
-            source: FileSource = {"buffer": wav_bytes}
-            options = PrerecordedOptions(
-                model=self.model,
-                language=self.language,
-                punctuate=True,
+            return await self._transcribe_prerecorded(
+                wav_bytes,
                 encoding="linear16",
                 sample_rate=sample_rate,
             )
-            response = await self.client.listen.asyncprerecorded.v("1").transcribe_file(
-                source, options
-            )
-            transcript = response.results.channels[0].alternatives[0].transcript
-            return transcript.strip()
         except Exception as e:
             logger.error(f"Deepgram WAV transcription error: {e}")
             return ""
@@ -105,15 +108,7 @@ class DeepgramSTTProvider(BaseSTTProvider):
         """Verify the Deepgram API key and STT service are reachable."""
         if not settings.deepgram_api_key:
             return False, 0.0
-        start = time.time()
-        try:
-            async with httpx.AsyncClient(timeout=6.0) as client:
-                resp = await client.get(
-                    "https://api.deepgram.com/v1/projects",
-                    headers={"Authorization": f"Token {settings.deepgram_api_key}"},
-                )
-            latency_ms = (time.time() - start) * 1000
-            return resp.status_code == 200, round(latency_ms, 1)
-        except Exception as e:
-            logger.debug("Deepgram STT ping failed: %s", e)
-            return False, 0.0
+        return await http_api_ping(
+            "https://api.deepgram.com/v1/projects",
+            {"Authorization": f"Token {settings.deepgram_api_key}"},
+        )
