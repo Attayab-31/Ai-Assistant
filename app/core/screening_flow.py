@@ -417,6 +417,25 @@ def normalize_extracted_fields(
             if coerced is not None:
                 out[key] = coerced
 
+    # *_raw columns store verbatim caller wording (VARCHAR). Drop bool copies of
+    # yes/no flags; coerce numeric duplicates to plain strings.
+    for key in list(out.keys()):
+        if not str(key).endswith("_raw"):
+            continue
+        val = out.get(key)
+        if val in (None, ""):
+            continue
+        if isinstance(val, bool):
+            out.pop(key, None)
+        elif isinstance(val, (int, float, Decimal)):
+            out[key] = str(val)
+        elif not isinstance(val, str):
+            text = str(val).strip()
+            if text:
+                out[key] = text
+            else:
+                out.pop(key, None)
+
     for count_field in (
         "occupants_count",
         "adults_count",

@@ -22,9 +22,8 @@ from app.core.question_flow import (
     inactive_flow_states,
     next_unanswered_state,
     normalize_questions,
-    prompt_confirmation_fields,
     prompt_fields_catalog,
-    prompt_required_questions_summary,
+    prompt_flow_stats,
     prompt_screening_flow_outline,
     questions_index,
     retry_prompt_for_count,
@@ -1208,8 +1207,6 @@ def build_system_prompt(
     session: ConversationSession,
     *,
     transcript: str = "",
-    local_hints: dict[str, Any] | None = None,
-    faq_context: str | None = None,
     confirmation: dict[str, Any] | None = None,
 ) -> str:
     question = session.get_current_question()
@@ -1258,33 +1255,21 @@ def build_system_prompt(
             + faq_text
         )
 
-    retry_line = ""
-    if session.retry_count > 0 and question:
-        retry_line = (
-            f"\n- Retry #{session.retry_count} of {session.max_retries} on this "
-            f"question. If you must re-ask, vary the wording; you may use: "
-            f'"{retry_prompt}".'
-        )
-
     extracted_json = _compact_extracted_for_prompt(session.extracted_data)
-    hints_json = json.dumps(local_hints or {}, default=str)
     caller_line = transcript.strip()
-    faq_block = faq_context.strip() if faq_context else "None"
     slots_block = _render_question_slots(
         state_value, session.extracted_data, session.questions
     )
-    follow_up_note = ""
-    if session.retry_count > 0:
-        follow_up_note = (
-            f"\n- Follow-up #{session.retry_count} of {session.max_retries} on this "
-            "question. Ask ONLY for the still-missing slot(s) above — do not re-read "
-            "the whole question verbatim."
+    retry_note = ""
+    if session.retry_count > 0 and question:
+        retry_note = (
+            f"\n- Retry #{session.retry_count}/{session.max_retries}: ask only "
+            f"still-missing slot(s); vary wording (e.g. \"{retry_prompt}\")."
         )
 
     fields_catalog = prompt_fields_catalog(session.questions)
     flow_outline = prompt_screening_flow_outline(session.questions)
-    confirm_fields = prompt_confirmation_fields(session.questions)
-    required_summary = prompt_required_questions_summary(session.questions)
+    flow_stats = prompt_flow_stats(session.questions)
     slot_examples = slot_fill_examples_for_question(question)
     yes_no_fields = [
         field
@@ -1292,7 +1277,7 @@ def build_system_prompt(
         if answer_type == "yes_no"
     ]
     yes_no_hint = (
-        f" For yes/no questions, set the matching field ({', '.join(yes_no_fields)}) to true or false."
+        f" Set {', '.join(yes_no_fields)} as true/false."
         if yes_no_fields
         else ""
     )
@@ -1390,69 +1375,49 @@ Respond with ONE JSON object only — no markdown, no code fences. response_text
 }}"""
 
     return f"""# ROLE
-You are the conversational intelligence for "{business}", an AI voice agent screening tenants on a live call. Understand the caller like an experienced human leasing agent — they may answer casually, partially, with corrections, rambling, or mixed with a question. Extract their info into JSON and reply warmly and briefly.
+You are the conversational intelligence for "{business}", screening tenants on a live call. Understand casual, partial, or mixed answers; extract JSON; reply warmly in under 20 words.
 
 # CONTEXT
-- Property: {business}
-- Active screening flow (admin-configured order):
+- Property: {business} | {flow_stats}
+- Flow order (states; full wording is on CURRENT):
 {flow_outline}
-- {required_summary}
-- Read-back confirmation fields before advancing: {confirm_fields}
-- Current question: {state_value} — "{question_text}"
-- Understanding guide: {question_guide}
-- Completeness expectation: {validation_hint or "capture a complete answer for the current question"}
-- CURRENT QUESTION SLOTS (your memory for this question only):
+- Current: {state_value} — "{question_text}"
+- Guide: {question_guide}
+- Expect: {validation_hint or "complete answer for current question"}
+- Slots this question:
 {slots_block}
-- All data captured so far (incl. future questions they volunteered): {extracted_json}
-- Relevant FAQ data this turn: {faq_block}
-- Local fallback hints (verify/override): {hints_json}
-- Caller just said: "{caller_line}"{retry_line}{follow_up_note}
+- Captured so far: {extracted_json}
+- Caller: "{caller_line}"{retry_note}
 
-# SLOT-FILLING (sound like a real human agent)
-- Build on what you already have (SLOTS + data above); never re-ask for something already given. Ask ONLY for still-missing slot(s); don't re-read a whole multi-part question.
-- question_complete=true ONLY when the CURRENT question has a complete, good answer (all required slots). Set it false while a sub-detail is missing OR whenever your response_text is itself a question to the caller.
-- PRECISION: for vague/relative values ("Sunday", "next month", "a while ago"), keep question_complete=false and ask ONCE for the specific detail; if they truly can't be more precise, accept it and set true — don't badger.
-- SPELLING: if they offer to spell, warmly invite them, keep question_complete=false, then assemble letters/digits across turns, confirming once complete.
-- If they volunteer info for LATER questions, extract it and acknowledge naturally — those questions get skipped later.
+# BEHAVIOR
+- Use SLOTS + captured data; never re-ask filled fields. question_complete=true only when CURRENT question is fully answered; false while you are asking a follow-up.
+- Vague dates/amounts: ask once for precision; accept if they cannot be more specific.
+- Cross-fill: if they volunteer later-step info, extract it, acknowledge briefly, stay on CURRENT.
 {slot_examples}
 
 {faq_section}
 
-# VOICE UX
-- BREVITY: keep response_text under 20 words; long replies sound robotic.
-- NO MARKDOWN: write exactly what is spoken — no asterisks, bullets, or dashes.
-- VARIETY: don't start every reply with "Thank you"/"Got it"; react to specifics and vary wording.
-- WELCOMING: if they interrupt with a question/comment/worry, answer it warmly FIRST (blend in the FAQ data if provided), then pick up exactly where you left off. Never sound annoyed.
-- MEMORY & CORRECTIONS: reference earlier details when it feels natural; if they correct an earlier field, update extracted_data immediately and acknowledge ("No problem, I've updated that").
+# VOICE
+- Spoken text only — no markdown, bullets, or lists. Vary acknowledgments; answer interruptions warmly first, then resume CURRENT.
 
 # EXTRACTION
-- Extract ALL fields present, even for future questions. Keep the caller's exact wording in any matching *_raw field; use ISO YYYY-MM-DD for clear dates. Don't pre-format phone/email/money — store their value; the system normalizes after you.
-- Never overwrite an already-confirmed field unless the caller corrects it this turn.
-- understood=true if they gave ANY valid info for the CURRENT question (even partial); false only when they didn't answer it (off-topic, unintelligible, only asked their own question, declined, or asked for human/callback/stop).
-- One question at a time. Review sensitive disclosures individually; credit alone isn't disqualifying; Section 8 / vouchers accepted.
-Extract ONLY these configured fields (field: label (type)):
+- Extract only configured fields below, including future volunteered fields. *_raw = caller's exact words as a string (never true/false or bare numbers). Dates: ISO YYYY-MM-DD when clear. Phone/email/money: raw value; system normalizes.
+- Do not overwrite confirmed fields unless corrected this turn. understood=true if they answered CURRENT (even partial); false if off-topic, gibberish, only asked us, declined, or human/callback/stop.
+Fields:
 {fields_catalog}
 
-# INTENT — classify the caller's latest message as exactly ONE:
-- "answer": answered the current question (incl. a yes/no — fill the matching boolean field).{yes_no_hint}
-- "question": asked US something. If it matches an approved FAQ topic, set faq_topic and answer from ONLY that approved text in response_text, then warmly re-ask the current question; if no approved answer, say a leasing specialist will confirm, then re-ask. Never invent policy.
-- "refusal": declined the current question.
-- "human": wants a real person. "callback": wants a callback / now isn't a good time. "stop": wants to stop, cancel, or hang up now.
-- "echo": just our own words echoed back / empty filler with no content.
-- "nothing": optional final-notes questions only — caller confirms nothing to add.{nothing_intent_hint}
-Valid faq_topic keys: {faq_topic_keys}. Use null otherwise. A caller can answer AND ask in one breath — prefer "answer" and still set faq_topic + blend the FAQ answer in.
+# INTENT (exactly one)
+- answer: answered CURRENT.{yes_no_hint}
+- question: they asked us — use approved FAQ text (faq_topic), then re-ask CURRENT. Never invent policy.
+- refusal | human | callback | stop | echo | nothing (optional notes only).{nothing_intent_hint}
+faq_topic keys: {faq_topic_keys} or null. Answer+question in one breath → prefer answer, still set faq_topic.
 
-# EDGE-CASE SIGNALS (set all four every turn; you have the full conversation + data)
-- "relevance": "on_topic" (answered/corrected/asked a relevant question) | "off_topic" (unrelated chit-chat — extract NOTHING, warmly steer back) | "unclear" (gibberish/garbled/single stray word — gently ask to repeat).
-- "corrected_fields": list of EARLIER field names the caller is changing this turn; also put the new value in extracted_data. [] if nothing earlier changed; don't list current-question fields.
-- "consistency_issue": short phrase if this answer CONTRADICTS existing data (e.g. occupants_count=2 but now "my three kids") and make response_text a friendly reconciling question; else null.
-- "plausibility_issue": short phrase if a value is implausible (income too low for a monthly figure, impossible occupant count, past move-in date, absurd pet weight) and make response_text a friendly clarifying question; else null.
-Raise at most ONE of consistency/plausibility per turn, only when genuinely unsure — never nag about clearly-fine answers.
+# SIGNALS
+relevance: on_topic|off_topic|unclear. corrected_fields: earlier fields they changed ([] if none). consistency_issue/plausibility_issue: short phrase + clarifying response_text, or null (at most one, only when genuinely unsure).
 
-# OUTPUT FORMAT
-Respond with ONE JSON object only — no markdown, no code fences. response_text MUST be the first key so it streams instantly. Do NOT include next_state; the state machine controls which question comes next.
+# OUTPUT — one JSON object, response_text first, no fences
 {{
-  "response_text": "short, conversational, completely unformatted spoken reply",
+  "response_text": "short spoken reply",
   "intent": "answer",
   "faq_topic": null,
   "understood": true,
@@ -1461,7 +1426,7 @@ Respond with ONE JSON object only — no markdown, no code fences. response_text
   "corrected_fields": [],
   "consistency_issue": null,
   "plausibility_issue": null,
-  "extracted_data": {{"field_name": "extracted raw value"}},
+  "extracted_data": {{}},
   "call_complete": false
 }}"""
 

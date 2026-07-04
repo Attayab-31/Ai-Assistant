@@ -307,9 +307,11 @@ def migrate_questions_to_v2(questions: list[dict[str, Any]] | None) -> list[dict
 
 def default_questions_v2() -> list[dict[str, Any]]:
     """Install-time default questions (seed JSON). Not a live-call fallback."""
+    import copy
+
     from app.core.seed_data import load_seed_questions
 
-    return load_seed_questions()
+    return copy.deepcopy(load_seed_questions())
 
 
 def is_v2_question(q: dict[str, Any]) -> bool:
@@ -1327,7 +1329,12 @@ def field_answer_types_from_questions(
     for q in normalize_questions(questions):
         answer_type = str(q.get("answer_type") or "text")
         for field in q.get("extract_fields") or []:
-            out.setdefault(str(field), answer_type)
+            field = str(field)
+            # Verbatim caller wording — never inherit currency/yes_no from parent Q.
+            if field.endswith("_raw"):
+                out.setdefault(field, "text")
+            else:
+                out.setdefault(field, answer_type)
     return out
 
 
@@ -1363,38 +1370,54 @@ def prompt_fields_catalog(questions: list[dict[str, Any]] | None) -> str:
             answer_type = types.get(field, "text")
             owner = meta_by_field.get(field) or q
             tags: list[str] = []
+            if field.endswith("_raw"):
+                tags.append("verbatim text")
             if owner.get("required", True) is False:
-                tags.append("optional question")
+                tags.append("opt")
             if confirm_field_for_question(owner) == field:
-                tags.append("read-back confirm")
-            hint = validation_hint_for_question(owner)
-            if hint:
-                tags.append(f"expect: {hint}")
-            suffix = f" [{'; '.join(tags)}]" if tags else ""
+                tags.append("confirm")
+            suffix = f" [{', '.join(tags)}]" if tags else ""
             lines.append(f"- {field}: {label} ({answer_type}){suffix}")
     return "\n".join(lines) if lines else "- (no active extract fields configured)"
 
 
 def prompt_screening_flow_outline(questions: list[dict[str, Any]] | None) -> str:
-    """Ordered list of active admin questions for the LLM flow context."""
+    """Compact ordered flow — states + skip/confirm flags (full wording is on CURRENT)."""
     lines: list[str] = []
     for q in normalize_questions(questions):
         if not q.get("active", True):
             continue
-        parts = [f'{q.get("state")}: "{q.get("question", "")}"']
+        tags: list[str] = []
         cond = q.get("conditional")
         if cond:
             ref = cond.get("field", "")
             op = cond.get("operator", "")
             val = cond.get("value", "")
             val_bit = f" {val!r}" if val not in (None, "") else ""
-            parts.append(f"(only when {ref} {op}{val_bit})")
+            tags.append(f"if {ref}{op}{val_bit}")
         if q.get("required", True) is False:
-            parts.append("(optional)")
+            tags.append("opt")
         if q.get("requires_confirmation"):
-            parts.append("(confirm read-back)")
-        lines.append("  " + " ".join(parts))
+            tags.append("confirm")
+        tag_str = f" [{', '.join(tags)}]" if tags else ""
+        lines.append(f"  {q.get('state')}{tag_str}")
     return "\n".join(lines) if lines else "  (no active questions configured)"
+
+
+def prompt_flow_stats(questions: list[dict[str, Any]] | None) -> str:
+    """One-line active question counts (replaces repeating full question text)."""
+    required = optional = 0
+    for q in normalize_questions(questions):
+        if not q.get("active", True):
+            continue
+        if q.get("required", True):
+            required += 1
+        else:
+            optional += 1
+    total = required + optional
+    if not total:
+        return "No active questions configured."
+    return f"{total} active steps ({required} required, {optional} optional)"
 
 
 def prompt_confirmation_fields(questions: list[dict[str, Any]] | None) -> str:
@@ -1447,7 +1470,11 @@ def prompt_extraction_rules(
     if any(str(f).endswith("_raw") for f in active_fields):
         lines.append("- Preserve raw caller wording in *_raw fields.")
 
-    currency_fields = [f for f in active_fields if types.get(f) == "currency"]
+    currency_fields = [
+        f
+        for f in active_fields
+        if types.get(f) == "currency" and not str(f).endswith("_raw")
+    ]
     if "monthly_income" in active_fields or currency_fields:
         income_fields = sorted({"monthly_income", *currency_fields})
         lines.append(
@@ -1455,7 +1482,7 @@ def prompt_extraction_rules(
             f"({', '.join(income_fields)}): respect the period the caller states. "
             "If monthly or no period is given, store as monthly. "
             "Divide by 12 only when clearly yearly. "
-            "Preserve exact income wording in income_raw or matching *_raw fields."
+            "Put caller wording in matching *_raw fields as text, not numbers."
         )
 
     if "has_eviction" in active_fields or "eviction_raw" in active_fields:
@@ -1507,12 +1534,9 @@ def primary_name_field(questions: list[dict[str, Any]] | None) -> str | None:
 
 
 def slot_fill_examples_for_question(q: dict[str, Any] | None) -> str:
-    """Short, question-aware slot-filling examples for the live LLM prompt."""
+    """Short, question-aware slot-filling hint for the live LLM prompt."""
     if not q:
-        return (
-            "- Cross-fill: caller gives info for a later question → extract it, "
-            "acknowledge briefly, stay on the current question."
-        )
+        return "- Stay on CURRENT; extract volunteered later-step fields."
     answer_type = str(q.get("answer_type") or "text")
     fields = list(q.get("extract_fields") or [])
     primary = str(fields[0]) if fields else "value"
@@ -1522,31 +1546,22 @@ def slot_fill_examples_for_question(q: dict[str, Any] | None) -> str:
     if answer_type == "yes_no" and len(fields) > 1:
         secondary = ", ".join(str(f) for f in fields[1:])
         return (
-            f'- Yes/no with detail: caller says "yes" to {label} → set {primary}=true '
-            f"and question_complete=false until {secondary} are captured.\n"
-            "- Cross-fill: caller gives info for a later question → extract it, "
-            "acknowledge briefly, stay on the current question."
+            f'- Yes/no + detail: "yes" → {primary}=true, question_complete=false '
+            f"until {secondary} captured."
         )
     if answer_type == "date":
         raw_field = next((str(f) for f in fields if str(f).endswith("_raw")), f"{primary}_raw")
         return (
-            f'- Vague date: "next Sunday" → {raw_field}="next Sunday", '
-            "question_complete=false, ask once for the exact calendar date.\n"
-            "- Cross-fill: caller gives info for a later question → extract it, "
-            "acknowledge briefly, stay on the current question."
+            f'- Vague date → {raw_field}=their words, question_complete=false, '
+            "ask once for exact calendar date."
         )
     if answer_type == "number" and len(fields) > 1:
         return (
-            f"- Multi-part count: capture each listed field ({', '.join(str(f) for f in fields)}) "
-            "before question_complete=true.\n"
-            "- Cross-fill: caller gives info for a later question → extract it, "
-            "acknowledge briefly, stay on the current question."
+            f"- Multi-part: fill {', '.join(str(f) for f in fields)} before "
+            "question_complete=true."
         )
     return (
-        f"- Partial answer: capture what you have for {label} ({primary}), "
-        "question_complete=false until required slots are complete.\n"
-        "- Cross-fill: caller gives info for a later question → extract it, "
-        "acknowledge briefly, stay on the current question."
+        f"- Partial {label}: fill {primary}, question_complete=false until done."
     )
 
 

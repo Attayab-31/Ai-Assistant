@@ -585,7 +585,7 @@ def test_build_system_prompt_lists_admin_fields_not_hardcoded_only():
     )
     prompt = build_system_prompt(session, transcript="Yes I do")
     assert field in prompt
-    assert "Extract ONLY these configured fields" in prompt
+    assert "Fields:" in prompt
     assert "has_pets" not in prompt or field in prompt
 
 
@@ -642,12 +642,13 @@ def test_build_system_prompt_includes_admin_flow_outline():
         current_state=custom["state"],
     )
     prompt = build_system_prompt(session, transcript="No")
-    assert "Active screening flow" in prompt
+    assert "Flow order" in prompt
+    assert custom["state"] in prompt
     assert "Do you smoke?" in prompt
-    assert "Read-back confirmation fields" in prompt
+    assert "[confirm]" in prompt
     field = custom["extract_fields"][0]
     assert field in prompt
-    assert "read-back confirm" in prompt
+    assert "[confirm]" in prompt
 
 
 def test_merge_extracted_data_rejects_unknown_fields():
@@ -704,6 +705,7 @@ def test_filter_extracted_to_allowed_fields_at_finalize():
     assert filtered == {"full_name": "Dawn Smith"}
 
 
+def test_retry_prompt_for_count_uses_admin_escalation():
     from app.core.question_flow import retry_prompt_for_count
 
     q = {
@@ -715,6 +717,56 @@ def test_filter_extracted_to_allowed_fields_at_finalize():
     assert retry_prompt_for_count(q, 0) == "Base?"
     assert retry_prompt_for_count(q, 1) == "Retry 2"
     assert retry_prompt_for_count(q, 2) == "Retry 3"
+
+
+def test_raw_field_types_always_text():
+    from app.core.question_flow import default_questions_v2, field_answer_types_from_questions
+
+    types = field_answer_types_from_questions(default_questions_v2())
+    assert types["income_raw"] == "text"
+    assert types["eviction_raw"] == "text"
+    assert types["monthly_income"] == "currency"
+
+
+def test_normalize_extracted_fields_sanitizes_raw_fields():
+    from decimal import Decimal
+
+    from app.core.screening_flow import normalize_extracted_fields
+
+    out = normalize_extracted_fields(
+        {
+            "has_eviction": True,
+            "eviction_raw": True,
+            "monthly_income": 50000,
+            "income_raw": Decimal("50000.00"),
+        }
+    )
+    assert out["has_eviction"] is True
+    assert "eviction_raw" not in out
+    assert out["income_raw"] == "50000.00"
+
+
+def test_build_system_prompt_token_budget():
+    from app.core.conversation import ConversationSession, build_system_prompt
+    from app.core.question_flow import default_questions_v2
+
+    session = ConversationSession(
+        call_id="t",
+        phone_number="+15550000000",
+        questions=default_questions_v2(),
+        property_name="Ready Rentals",
+    )
+    session.extracted_data = {
+        "full_name": "Dawn Smith",
+        "contact_phone": "+13174026038",
+        "email": "test@gmail.com",
+    }
+    prompt = build_system_prompt(session, transcript="Three people.")
+    assert len(prompt) < 8500
+    assert "Relevant FAQ data this turn" not in prompt
+    assert "Local fallback hints" not in prompt
+    assert "income_raw" in prompt
+    assert "(text)" in prompt
 
 
 def test_prompt_extraction_rules_follow_active_questions_only():
