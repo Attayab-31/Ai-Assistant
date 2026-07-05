@@ -46,6 +46,17 @@ SCORING_RULE_TYPES = frozenset(
 
 CONDITIONAL_OPERATORS = frozenset({"eq", "ne", "truthy", "falsy"})
 
+SPEECH_MODES = frozenset(
+    {
+        "default",
+        "spoken_name",
+        "pet_bundle",
+        "employer",
+        "optional_notes",
+        "occupants",
+    }
+)
+
 # Built-in state metadata for v1→v2 migration, default parsers, and the
 # DEFAULT per-question scoring. There is no separate "bucket" weighting system:
 # the default questions carry their own scoring (summing to 100), exactly like
@@ -55,6 +66,7 @@ _LEGACY_STATE_META: dict[str, dict[str, Any]] = {
         "answer_type": "text",
         "extract_fields": ("full_name",),
         "requires_confirmation": True,
+        "speech_mode": "spoken_name",
         "field_labels": {"full_name": "full legal name (first and last)"},
         "understanding_guide": (
             "Listen for full legal name even if given casually. "
@@ -92,6 +104,7 @@ _LEGACY_STATE_META: dict[str, dict[str, Any]] = {
     "Q5_OCCUPANTS": {
         "answer_type": "number",
         "extract_fields": ("occupants_count", "adults_count", "children_count"),
+        "speech_mode": "occupants",
         "field_labels": {
             "occupants_count": "total occupants",
             "adults_count": "adults",
@@ -112,6 +125,7 @@ _LEGACY_STATE_META: dict[str, dict[str, Any]] = {
         "extract_fields": ("pet_type", "pet_breed", "pet_weight", "pets_raw"),
         "conditional": {"field": "has_pets", "operator": "eq", "value": True},
         "require_all_extract_fields": True,
+        "speech_mode": "pet_bundle",
         "field_labels": {
             "pet_type": "pet type",
             "pet_breed": "breed",
@@ -173,6 +187,7 @@ _LEGACY_STATE_META: dict[str, dict[str, Any]] = {
     "Q13_EMPLOYER": {
         "answer_type": "text",
         "extract_fields": ("employer",),
+        "speech_mode": "employer",
         "field_labels": {"employer": "employer or income source"},
     },
     "Q14_EMPLOYMENT_DURATION": {
@@ -184,6 +199,7 @@ _LEGACY_STATE_META: dict[str, dict[str, Any]] = {
         "answer_type": "long_text",
         "extract_fields": ("general_notes",),
         "required": False,
+        "speech_mode": "optional_notes",
         "field_labels": {"general_notes": "final notes or 'None disclosed'"},
     },
 }
@@ -197,8 +213,9 @@ def _infer_answer_type(q: dict[str, Any]) -> str:
     if q.get("answer_type") in ANSWER_TYPES:
         return str(q["answer_type"])
     state = str(q.get("state") or "")
-    if state in _LEGACY_STATE_META:
-        return str(_LEGACY_STATE_META[state]["answer_type"])
+    meta = _LEGACY_STATE_META.get(state, {})
+    if meta.get("answer_type"):
+        return str(meta["answer_type"])
     fields = q.get("extract_fields") or []
     if fields:
         name = str(fields[0]).lower()
@@ -226,6 +243,25 @@ def _infer_answer_type(q: dict[str, Any]) -> str:
     if "number" in validation or "occupant" in validation:
         return "number"
     return "text"
+
+
+def _normalize_speech_mode(
+    explicit: Any,
+    meta_default: Any,
+    state: str,
+) -> str:
+    for candidate in (explicit, meta_default):
+        mode = str(candidate or "").strip().lower()
+        if mode in SPEECH_MODES:
+            return mode
+    return "default"
+
+
+def speech_mode_for_question(q: dict[str, Any] | None) -> str:
+    if not q:
+        return "default"
+    mode = str(q.get("speech_mode") or "default").strip().lower()
+    return mode if mode in SPEECH_MODES else "default"
 
 
 def migrate_question_to_v2(q: dict[str, Any]) -> dict[str, Any]:
@@ -302,6 +338,9 @@ def migrate_question_to_v2(q: dict[str, Any]) -> dict[str, Any]:
                 "require_all_extract_fields",
                 meta.get("require_all_extract_fields", False),
             )
+        ),
+        "speech_mode": _normalize_speech_mode(
+            q.get("speech_mode"), meta.get("speech_mode"), state
         ),
     }
 
@@ -733,10 +772,8 @@ def extract_fields_from_speech(
         ):
             out[primary] = stripped
     elif answer_type == "number":
-        if any(
-            token in primary
-            for token in ("occupant", "adult", "children", "child")
-        ):
+        mode = speech_mode_for_question(question)
+        if mode == "occupants" or len([f for f in fields if not str(f).endswith("_raw")]) > 1:
             natural = extract_occupants(stripped)
             for key, value in natural.items():
                 if key in fields:
@@ -746,17 +783,18 @@ def extract_fields_from_speech(
             if count is not None:
                 out[primary] = count
     elif answer_type in ("text", "long_text"):
-        if "name" in primary.lower():
+        mode = speech_mode_for_question(question)
+        if mode == "spoken_name":
             name = parse_spoken_name(stripped)
             parts = name.split()
             if len(parts) >= 2 or (len(parts) == 1 and len(parts[0]) >= 3):
                 out[primary] = name
-        elif any("pet" in str(f).lower() for f in fields):
+        elif mode == "pet_bundle":
             if not _is_bare_ack(stripped) and not _is_refusal_text(stripped):
                 out.update(extract_pet_fields(stripped))
                 if stripped:
                     out.setdefault(raw_field or "pets_raw", stripped)
-        elif primary == "employer" or "employer" in primary:
+        elif mode == "employer":
             employer = re.sub(
                 r"\b(i work at|i work for|work at|work for|employer is)\b",
                 "",
@@ -766,7 +804,7 @@ def extract_fields_from_speech(
             cleaned = employer.strip(" .") or stripped
             if cleaned and not _is_bare_ack(stripped):
                 out[primary] = cleaned
-        elif "notes" in primary.lower():
+        elif mode == "optional_notes":
             yn = (
                 intent.yes_no
                 if intent is not None and getattr(intent, "yes_no", None) is not None
@@ -1167,6 +1205,9 @@ def validate_questions_for_save(
     for q in normalized:
         if str(q.get("answer_type") or "") not in ANSWER_TYPES:
             raise ValueError(f"Invalid answer_type on {q.get('id')}")
+        mode = str(q.get("speech_mode") or "default")
+        if mode not in SPEECH_MODES:
+            raise ValueError(f"Invalid speech_mode on {q.get('id')}")
         fields = q.get("extract_fields") or []
         if not fields:
             raise ValueError(f"Question {q.get('id')} needs at least one extract field")
@@ -1217,7 +1258,37 @@ def validate_questions_for_save(
         scoring = q.get("scoring") or {}
         if scoring.get("enabled") and str(scoring.get("rule_type")) not in SCORING_RULE_TYPES:
             raise ValueError(f"Invalid scoring rule on {q.get('id')}")
+
+    if first_active_question_state(normalized) is None:
+        raise ValueError(
+            "No question can be asked at the start of a call — every active "
+            "question is conditional. Add at least one question that is always "
+            "asked (no “only when” rule), or turn off the condition on your "
+            "first question."
+        )
+
     return normalized
+
+
+def coerce_questions_for_runtime(
+    questions: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Validate admin questions at call start; fall back to defaults if corrupt."""
+    import logging
+
+    log = logging.getLogger(__name__)
+    if not questions:
+        return default_questions_v2()
+    try:
+        return validate_questions_for_save(
+            [dict(q) for q in questions if isinstance(q, dict)]
+        )
+    except ValueError as exc:
+        log.error(
+            "Invalid screening_questions in settings (%s) — using system defaults",
+            exc,
+        )
+        return default_questions_v2()
 
 
 def new_custom_question(
@@ -1264,11 +1335,48 @@ def active_extract_fields(questions: list[dict[str, Any]] | None) -> set[str]:
 def missing_contact_fields(questions: list[dict[str, Any]] | None) -> list[str]:
     """Contact fields not covered by any active question."""
     present = active_extract_fields(questions)
-    return [
-        label
-        for key, label in CONTACT_FIELD_LABELS.items()
-        if key not in present
-    ]
+    missing: list[str] = []
+    for key, label in CONTACT_FIELD_LABELS.items():
+        if key in present:
+            continue
+        if _contact_field_covered_by_questions(questions, key):
+            continue
+        missing.append(label)
+    return missing
+
+
+def _contact_field_covered_by_questions(
+    questions: list[dict[str, Any]] | None,
+    contact_key: str,
+) -> bool:
+    """True when an active question collects the same contact info another way."""
+    type_map = {
+        "full_name": "text",
+        "contact_phone": "phone",
+        "email": "email",
+    }
+    expected_type = type_map.get(contact_key)
+    if not expected_type:
+        return False
+    for q in normalize_questions(questions):
+        if not q.get("active", True):
+            continue
+        if str(q.get("answer_type") or "") != expected_type:
+            continue
+        fields = q.get("extract_fields") or []
+        if not fields:
+            continue
+        if contact_key == "full_name":
+            if speech_mode_for_question(q) == "spoken_name":
+                return True
+            primary = str(fields[0])
+            labels = q.get("field_labels") or {}
+            label = str(labels.get(primary, "")).lower()
+            if "name" in primary.lower() or "name" in label:
+                return True
+            continue
+        return True
+    return False
 
 
 def total_enabled_scoring_points(questions: list[dict[str, Any]] | None) -> int:
@@ -1557,7 +1665,9 @@ def prompt_extraction_rules(
 
     if any(types.get(f) == "date" for f in active_fields):
         lines.append(
-            "- For date fields: use ISO YYYY-MM-DD when clear; keep vague wording in *_raw fields."
+            "- For date fields: use ISO YYYY-MM-DD when clear; keep vague wording "
+            "in *_raw fields. Today's date is the reference — if a date is in the "
+            "past, ask whether they meant a future date before accepting it."
         )
 
     if any(types.get(f) in ("phone", "email") for f in active_fields):
@@ -1603,10 +1713,14 @@ def slot_fill_examples_for_question(q: dict[str, Any] | None) -> str:
             f"until {secondary} captured."
         )
     if answer_type == "date":
+        from datetime import date as _date
+
+        today = _date.today().isoformat()
         raw_field = next((str(f) for f in fields if str(f).endswith("_raw")), f"{primary}_raw")
         return (
-            f'- Vague date → {raw_field}=their words, question_complete=false, '
-            "ask once for exact calendar date."
+            f'- Today is {today}. Vague date → {raw_field}=their words, '
+            "question_complete=false, ask once for exact calendar date. "
+            "If they give a past year, clarify before accepting."
         )
     if answer_type == "number" and len(fields) > 1:
         return (
@@ -1686,6 +1800,179 @@ def build_applicant_summary_rows(
                     "value": _format_summary_display_value(
                         field, value, answer_type=types.get(field, answer_type)
                     ),
+                }
+            )
+    return rows
+
+
+def build_preview_sample_paths(
+    questions: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Labeled sample data paths for admin conversation preview."""
+    normalized = normalize_questions(questions)
+    gate_fields: dict[str, list[Any]] = {}
+    for q in normalized:
+        if not q.get("active", True):
+            continue
+        cond = q.get("conditional")
+        if not cond:
+            continue
+        field = str(cond.get("field") or "")
+        if not field:
+            continue
+        op = str(cond.get("operator") or "truthy")
+        expected = cond.get("value")
+        if op == "eq":
+            gate_fields.setdefault(field, []).append(expected)
+        elif op == "ne":
+            gate_fields.setdefault(field, []).append(not expected)
+        elif op == "truthy":
+            gate_fields.setdefault(field, []).append(True)
+        elif op == "falsy":
+            gate_fields.setdefault(field, []).append(False)
+
+    base: dict[str, Any] = {}
+    for field in gate_fields:
+        samples = gate_fields[field]
+        if False in samples:
+            base[field] = False
+        elif any(s is False for s in samples):
+            base[field] = False
+        else:
+            base[field] = False
+
+    paths: list[dict[str, Any]] = [
+        {
+            "id": "default",
+            "label": "Default (follow-ups hidden)",
+            "data": dict(base),
+        }
+    ]
+
+    for field, values in sorted(gate_fields.items()):
+        unique_vals: list[Any] = []
+        for val in values:
+            if val not in unique_vals:
+                unique_vals.append(val)
+        for val in unique_vals:
+            if val in (False, None, ""):
+                continue
+            data = dict(base)
+            data[field] = val
+            paths.append(
+                {
+                    "id": f"{field}__{val}".lower().replace(" ", "_"),
+                    "label": f"{field.replace('_', ' ')} = {val}",
+                    "data": data,
+                }
+            )
+
+    if len(gate_fields) >= 2:
+        combo = dict(base)
+        for field, values in gate_fields.items():
+            positive = next((v for v in values if v not in (False, None, "")), True)
+            combo[field] = positive
+        paths.append(
+            {
+                "id": "all_followups",
+                "label": "All follow-up questions shown",
+                "data": combo,
+            }
+        )
+
+    return paths
+
+
+def build_conversation_preview_flow(
+    questions: list[dict[str, Any]] | None,
+    sample_data: dict[str, Any],
+    *,
+    business: str,
+    greeting_message: str = "",
+    closing_message: str = "",
+) -> list[dict[str, str]]:
+    """Simulate assistant turns for one preview sample path."""
+    from app.core.screening_flow import build_greeting_intro
+
+    normalized = normalize_questions(questions)
+    if (greeting_message or "").strip():
+        intro = str(greeting_message).replace("{property_name}", business).strip()
+    else:
+        intro = build_greeting_intro(business)
+
+    first_state = first_active_question_state(normalized)
+    first_q = next(
+        (q for q in normalized if q.get("state") == first_state),
+        normalized[0] if normalized else None,
+    )
+    flow: list[dict[str, str]] = [
+        {
+            "speaker": "AI",
+            "text": f"{intro} {first_q['question']}" if first_q else intro,
+        }
+    ]
+
+    for q in ordered_active_questions(normalized, sample_data):
+        state = q.get("state", "")
+        if first_q and state == first_q.get("state"):
+            continue
+        if should_skip_question(q, sample_data):
+            flow.append(
+                {
+                    "speaker": "AI",
+                    "text": f"(skipped — {state} not applicable on this path)",
+                }
+            )
+            continue
+        flow.append({"speaker": "AI", "text": str(q.get("question") or "")})
+        flow.append({"speaker": "Tenant", "text": "(tenant responds here)"})
+
+    closing = (closing_message or "").strip()
+    if closing:
+        closing = closing.replace("{property_name}", business)
+    else:
+        closing = (
+            "Thank you. A leasing specialist will review your information "
+            "and follow up soon."
+        )
+    flow.append({"speaker": "AI", "text": closing})
+    return flow
+
+
+def build_tenant_edit_fields(
+    tenant: Any,
+    questions: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Editable applicant fields driven by the per-call question snapshot."""
+    custom_fields: dict[str, Any] = {}
+    nd = getattr(tenant, "normalized_data", None) if tenant is not None else None
+    if isinstance(nd, dict):
+        cf = nd.get("custom_fields")
+        if isinstance(cf, dict):
+            custom_fields = cf
+
+    labels = field_labels_from_questions(questions)
+    types = field_answer_types_from_questions(questions)
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    for q in normalize_questions(questions):
+        if not q.get("active", True):
+            continue
+        answer_type = str(q.get("answer_type") or "text")
+        for field in q.get("extract_fields") or []:
+            field = str(field)
+            if field.endswith("_raw") or field in seen:
+                continue
+            seen.add(field)
+            value = _tenant_field_value(tenant, field, custom_fields)
+            rows.append(
+                {
+                    "field": field,
+                    "label": labels.get(field, field.replace("_", " ")),
+                    "answer_type": types.get(field, answer_type),
+                    "value": value if value is not None else "",
+                    "is_custom": field.startswith("custom_"),
                 }
             )
     return rows

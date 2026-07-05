@@ -14,7 +14,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.question_flow import normalize_questions
+from app.core.question_flow import coerce_questions_for_runtime
 from app.core.screening_flow import normalize_faqs
 from app.core.voice_latency import resolve_voice_latency
 from config import DEFAULT_FAQS, DEFAULT_QUESTIONS
@@ -157,6 +157,16 @@ def _parse_setting(key: str, raw: Any, default: Any) -> Any:
     return raw
 
 
+def _load_runtime_questions(values: dict[str, Any]) -> list:
+    """Parse and validate screening questions for a new call."""
+    raw = _parse_setting(
+        "screening_questions",
+        values.get("screening_questions"),
+        DEFAULT_QUESTIONS,
+    )
+    return coerce_questions_for_runtime(raw if isinstance(raw, list) else DEFAULT_QUESTIONS)
+
+
 def snapshot_from_map(values: dict[str, Any]) -> CallSettingsSnapshot:
     """Build snapshot from a flat key→value map (DB batch or env defaults)."""
     llm = str(values.get("active_llm_provider") or env_settings.active_llm_provider)
@@ -199,13 +209,7 @@ def snapshot_from_map(values: dict[str, Any]) -> CallSettingsSnapshot:
         provider_failure_message=str(
             values.get("provider_failure_message") or ""
         ).strip(),
-        questions=normalize_questions(
-            _parse_setting(
-                "screening_questions",
-                values.get("screening_questions"),
-                DEFAULT_QUESTIONS,
-            )
-        ),
+        questions=_load_runtime_questions(values),
         faqs=normalize_faqs(
             _parse_setting(
                 "screening_faqs",

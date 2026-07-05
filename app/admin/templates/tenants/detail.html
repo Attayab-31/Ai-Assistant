@@ -64,6 +64,28 @@
     <div class="card-head"><h2>Edit applicant information</h2></div>
     <p class="text-muted" style="margin-top: 0;">Update answers or add admin notes. Saving recalculates the score unless the result was manually changed.</p>
     <form class="edit-form" onsubmit="withFormLoading(event, saveTenant, 'Saving\u2026')">
+      {% if edit_fields %}
+      {% for ef in edit_fields %}
+      <div class="form-group">
+        <label>{{ ef.label }}{% if ef.is_custom %} <span class="muted">(custom)</span>{% endif %}</label>
+        {% if ef.answer_type == 'yes_no' %}
+        <select data-edit-field="{{ ef.field }}" data-answer-type="yes_no">
+          <option value="" {% if ef.value is none or ef.value == '' %}selected{% endif %}>Unknown</option>
+          <option value="false" {% if ef.value is sameas false %}selected{% endif %}>No</option>
+          <option value="true" {% if ef.value is sameas true %}selected{% endif %}>Yes</option>
+        </select>
+        {% elif ef.answer_type == 'long_text' %}
+        <textarea data-edit-field="{{ ef.field }}" data-answer-type="long_text" rows="3">{{ ef.value }}</textarea>
+        {% elif ef.answer_type in ('number', 'currency') %}
+        <input type="number" data-edit-field="{{ ef.field }}" data-answer-type="{{ ef.answer_type }}" value="{{ ef.value }}" step="{% if ef.answer_type == 'currency' %}0.01{% else %}1{% endif %}" />
+        {% elif ef.answer_type == 'email' %}
+        <input type="email" data-edit-field="{{ ef.field }}" data-answer-type="email" value="{{ ef.value }}" />
+        {% else %}
+        <input type="text" data-edit-field="{{ ef.field }}" data-answer-type="{{ ef.answer_type }}" value="{{ ef.value }}" />
+        {% endif %}
+      </div>
+      {% endfor %}
+      {% else %}
       <div class="form-group">
         <label>Full name</label>
         <input type="text" id="fullName" value="{{ tenant.full_name or '' }}" />
@@ -120,11 +142,13 @@
         <label>Background notes</label>
         <textarea id="generalNotes" rows="3">{{ tenant.general_notes or '' }}</textarea>
       </div>
+      {% endif %}
       <div class="form-group">
         <label>Admin notes</label>
         <textarea id="notes" rows="3" placeholder="Private notes for your team — not shared with the caller">{{ tenant.notes or '' }}</textarea>
         <button type="button" class="btn btn-secondary btn-sm" style="margin-top: 8px;" onclick="withBtnLoading(this, saveTenantNotesOnly, 'Saving\u2026')">Save notes only</button>
       </div>
+      {% if not edit_fields %}
       <div class="form-group">
         <label>Eviction history</label>
         <select id="hasEviction">
@@ -140,6 +164,7 @@
           <option value="true" {% if tenant.has_pets %}selected{% endif %}>Yes</option>
         </select>
       </div>
+      {% endif %}
       <div class="form-actions">
         <button type="submit" class="btn btn-primary">Save changes</button>
         <button type="button" class="btn btn-secondary" onclick="location.reload()">Cancel</button>

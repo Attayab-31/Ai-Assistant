@@ -497,15 +497,15 @@ async def reset_questions_to_defaults(
 async def preview_conversation_flow(
     db: AsyncSession = Depends(get_db),
     user: AdminUser = Depends(require_scope("settings")),
+    path: str | None = None,
 ):
     """Simulate the conversation flow through active questions for preview."""
     from app.core.question_flow import (
-        first_active_question_state,
+        build_conversation_preview_flow,
+        build_preview_sample_paths,
         normalize_questions,
         ordered_active_questions,
-        should_skip_question,
     )
-    from app.core.screening_flow import build_greeting_intro
 
     questions = normalize_questions(
         await crud.get_setting_value(db, "screening_questions", [])
@@ -517,52 +517,35 @@ async def preview_conversation_flow(
     closing_message = await crud.get_setting_value(db, "closing_message", "")
     business = (property_name or "").strip() or "Ready Rentals Online"
 
-    sample_data = {"has_pets": False, "has_eviction": False}
-    if (greeting_message or "").strip():
-        intro = str(greeting_message).replace("{property_name}", business).strip()
-    else:
-        intro = build_greeting_intro(business)
-    first_state = first_active_question_state(questions)
-    first_q = next(
-        (q for q in questions if q.get("state") == first_state),
-        questions[0] if questions else None,
+    paths = build_preview_sample_paths(questions)
+    selected = paths[0]
+    if path:
+        selected = next((p for p in paths if p["id"] == path), paths[0])
+    sample_data = dict(selected["data"])
+
+    flow = build_conversation_preview_flow(
+        questions,
+        sample_data,
+        business=business,
+        greeting_message=str(greeting_message or ""),
+        closing_message=str(closing_message or ""),
     )
-    flow = [
-        {
-            "speaker": "AI",
-            "text": f"{intro} {first_q['question']}" if first_q else intro,
-        }
-    ]
-
-    for q in ordered_active_questions(questions, sample_data):
-        state = q.get("state", "")
-        if first_q and state == first_q.get("state"):
-            continue
-        if should_skip_question(q, sample_data):
-            flow.append(
-                {
-                    "speaker": "AI",
-                    "text": f"(skipped — {state} not applicable on this path)",
-                }
-            )
-            continue
-        flow.append({"speaker": "AI", "text": q["question"]})
-        flow.append({"speaker": "Tenant", "text": "(tenant responds here)"})
-
-    closing = (closing_message or "").strip()
-    if closing:
-        closing = closing.replace("{property_name}", business)
-    else:
-        closing = (
-            "Thank you. A leasing specialist will review your information "
-            "and follow up soon."
-        )
-    flow.append({"speaker": "AI", "text": closing})
     active_list = ordered_active_questions(questions, sample_data)
     return {
         "flow": flow,
         "flow_state_count": len(questions),
         "active_question_count_sample": len(active_list),
+        "paths": [
+            {
+                "id": p["id"],
+                "label": p["label"],
+                "active_question_count": len(
+                    ordered_active_questions(questions, p["data"])
+                ),
+            }
+            for p in paths
+        ],
+        "selected_path": selected["id"],
     }
 
 

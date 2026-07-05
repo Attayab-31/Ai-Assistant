@@ -12,6 +12,20 @@
 {% if tenant %}{{ review_queue_nav(nav_prev_id, nav_next_id) }}{% endif %}
 <div class="stack">
   {{ review_status_strip(tenant, call, active_question_count) }}
+  {% if side_effect_alerts %}
+  <div class="side-effect-alerts" role="alert">
+    {% for alert in side_effect_alerts %}
+    <p class="banner banner-error" style="margin: 0{% if not loop.last %} 0 12px{% endif %};">
+      <strong>{{ alert.title }}.</strong> {{ alert.detail }}
+      {% if alert.kind == 'email' and tenant and user and user.can_edit %}
+      Use <strong>Resend result email</strong> below to try again, or check that Celery workers and Redis are running.
+      {% elif alert.kind == 'crm' %}
+      Check that Celery workers and Redis are running, then verify your CRM webhook URL in Settings.
+      {% endif %}
+    </p>
+    {% endfor %}
+  </div>
+  {% endif %}
   {{ reviewer_action_bar(call.id, tenant, user) }}
 
   <section class="card">

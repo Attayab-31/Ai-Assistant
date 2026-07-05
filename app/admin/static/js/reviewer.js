@@ -66,6 +66,7 @@ async function deleteCall() {
 async function saveQualification() {
   try {
     const sel = document.getElementById('qualOverride');
+    if (!sel || !window._reviewerCallId) return;
     const status = sel.value;
     const label = sel.options[sel.selectedIndex].text;
     const reasonEl = document.getElementById('qualOverrideReason');
@@ -168,27 +169,46 @@ async function saveTenant(e) {
   e.preventDefault();
   const tenantId = window._tenantDetailId;
   if (!tenantId) return;
-  const petsVal = document.getElementById('hasPets').value;
-  const data = {
-    full_name: document.getElementById('fullName').value.trim(),
-    contact_phone: document.getElementById('contactPhone').value.trim(),
-    email: document.getElementById('email').value.trim(),
-    monthly_income: parseInt(document.getElementById('income').value, 10) || 0,
-    adults_count: parseInt(document.getElementById('adults').value, 10) || 0,
-    children_count: parseInt(document.getElementById('children').value, 10) || 0,
-    move_in_raw: document.getElementById('moveDate').value,
-    move_timing: document.getElementById('moveTiming').value,
-    current_residence: document.getElementById('currentResidence').value,
-    residence_duration: document.getElementById('residenceDuration').value,
-    move_reason: document.getElementById('moveReason').value,
-    employer: document.getElementById('employer').value,
-    employment_duration: document.getElementById('employmentDuration').value,
-    general_notes: document.getElementById('generalNotes').value,
-    notes: document.getElementById('notes').value,
-    has_eviction: document.getElementById('hasEviction').value === 'true',
-  };
-  if (petsVal !== '') {
-    data.has_pets = petsVal === 'true';
+  const data = { notes: document.getElementById('notes').value };
+  const dynamicFields = document.querySelectorAll('[data-edit-field]');
+  if (dynamicFields.length) {
+    dynamicFields.forEach((el) => {
+      const field = el.dataset.editField;
+      const type = el.dataset.answerType || 'text';
+      let val = el.value;
+      if (type === 'yes_no') {
+        if (val === '') return;
+        data[field] = val === 'true';
+      } else if (type === 'number') {
+        data[field] = parseInt(val, 10) || 0;
+      } else if (type === 'currency') {
+        data[field] = parseFloat(val) || 0;
+      } else {
+        data[field] = (val || '').trim();
+      }
+    });
+  } else {
+    const petsVal = document.getElementById('hasPets').value;
+    Object.assign(data, {
+      full_name: document.getElementById('fullName').value.trim(),
+      contact_phone: document.getElementById('contactPhone').value.trim(),
+      email: document.getElementById('email').value.trim(),
+      monthly_income: parseInt(document.getElementById('income').value, 10) || 0,
+      adults_count: parseInt(document.getElementById('adults').value, 10) || 0,
+      children_count: parseInt(document.getElementById('children').value, 10) || 0,
+      move_in_raw: document.getElementById('moveDate').value,
+      move_timing: document.getElementById('moveTiming').value,
+      current_residence: document.getElementById('currentResidence').value,
+      residence_duration: document.getElementById('residenceDuration').value,
+      move_reason: document.getElementById('moveReason').value,
+      employer: document.getElementById('employer').value,
+      employment_duration: document.getElementById('employmentDuration').value,
+      general_notes: document.getElementById('generalNotes').value,
+      has_eviction: document.getElementById('hasEviction').value === 'true',
+    });
+    if (petsVal !== '') {
+      data.has_pets = petsVal === 'true';
+    }
   }
   try {
     await apiFetch('/admin/api/tenants/' + tenantId, {

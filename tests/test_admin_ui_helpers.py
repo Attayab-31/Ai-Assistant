@@ -7,6 +7,7 @@ from app.utils.helpers import (
     friendly_provider_name,
     list_filter_url,
     pagination_url,
+    side_effect_alerts_from_error_log,
     tenant_display_name,
 )
 
@@ -56,3 +57,17 @@ def test_tenant_display_name():
 
     assert tenant_display_name(T("Jordan Lee", "+15551234567")) == "Jordan Lee"
     assert "(" in tenant_display_name(T("", "+15551234567"))
+
+
+def test_side_effect_alerts_from_error_log():
+    alerts = side_effect_alerts_from_error_log(
+        {"email_queue": "Connection refused", "errors": []}
+    )
+    assert len(alerts) == 1
+    assert alerts[0]["kind"] == "email"
+    assert "Connection refused" in alerts[0]["detail"]
+
+    both = side_effect_alerts_from_error_log(
+        {"email_queue": "x", "crm_queue": "y"}
+    )
+    assert {a["kind"] for a in both} == {"email", "crm"}

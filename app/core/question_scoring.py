@@ -117,7 +117,13 @@ def evaluate_question_scoring(
     if rule_type == "date_within":
         parsed = _parse_date(value)
         if not parsed:
-            raw = tenant_data.get(f"{primary}_raw") or tenant_data.get("move_in_raw")
+            raw = tenant_data.get(f"{primary}_raw")
+            if not raw:
+                for field in fields:
+                    if str(field).endswith("_raw"):
+                        raw = tenant_data.get(field)
+                        if raw:
+                            break
             if raw:
                 return int(max_points * 0.6), [], False
             reasons.append(f"{q_label}: date not captured")

@@ -329,6 +329,58 @@ def _looks_iso_date(value: str) -> bool:
     return bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}", value.strip()))
 
 
+def roll_future_date(d: date | None, today: date | None = None) -> date | None:
+    """Roll a past screening date forward to the next sensible future occurrence.
+
+    Callers planning a move rarely intend a date in the past; small LLMs often
+    guess a wrong year. Applies to any admin ``answer_type: date`` field.
+    """
+    if d is None:
+        return None
+    today = today or date.today()
+    if d >= today:
+        return d
+    for year in (today.year, today.year + 1):
+        try:
+            candidate = d.replace(year=year)
+        except ValueError:
+            candidate = d.replace(year=year, month=2, day=28)
+        if candidate >= today:
+            return candidate
+    return d
+
+
+def _normalize_date_field_value(
+    field: str,
+    value: Any,
+    out: dict[str, Any],
+    *,
+    today: date | None = None,
+) -> None:
+    """Parse, store, and roll-forward a single date-type field."""
+    if value in (None, ""):
+        return
+    today = today or date.today()
+    if isinstance(value, str) and value.strip():
+        if not _looks_iso_date(value):
+            parsed, _raw = parse_relative_date(value)
+            if parsed is not None:
+                out[field] = roll_future_date(parsed, today).isoformat()
+                return
+        try:
+            parsed_iso = date.fromisoformat(str(value)[:10])
+        except ValueError:
+            out[field] = str(value).strip()
+            return
+        rolled = roll_future_date(parsed_iso, today)
+        if rolled is not None:
+            out[field] = rolled.isoformat()
+    elif isinstance(value, date) and not isinstance(value, datetime):
+        rolled = roll_future_date(value, today)
+        if rolled is not None:
+            out[field] = rolled.isoformat()
+
+
 def normalize_extracted_fields(
     data: dict[str, Any],
     questions: list[dict[str, Any]] | None = None,
@@ -375,36 +427,6 @@ def normalize_extracted_fields(
             if inferred is not None:
                 out["monthly_income"] = inferred
 
-    move_in = out.get("move_in_date")
-    if isinstance(move_in, str) and move_in.strip():
-        if not _looks_iso_date(move_in):
-            parsed, _raw = parse_relative_date(move_in)
-            if parsed is not None:
-                out["move_in_date"] = parsed.isoformat()
-        else:
-            # ISO date, but the LLM sometimes guesses a year in the past for a
-            # bare "July 24". Callers never plan a move-in in the past, so roll
-            # forward — preferring a re-parse of the caller's exact wording, then
-            # falling back to bumping the year to the next future occurrence.
-            try:
-                parsed_iso = date.fromisoformat(move_in)
-            except ValueError:
-                parsed_iso = None
-            if parsed_iso is not None and parsed_iso < date.today():
-                raw_hint = out.get("move_in_raw")
-                reparsed = parse_relative_date(raw_hint)[0] if raw_hint else None
-                if reparsed is not None and reparsed >= date.today():
-                    out["move_in_date"] = reparsed.isoformat()
-                else:
-                    while parsed_iso < date.today():
-                        try:
-                            parsed_iso = parsed_iso.replace(year=parsed_iso.year + 1)
-                        except ValueError:  # Feb 29 in a non-leap year
-                            parsed_iso = parsed_iso.replace(
-                                month=2, day=28, year=parsed_iso.year + 1
-                            )
-                    out["move_in_date"] = parsed_iso.isoformat()
-
     # Coerce known yes/no fields to real booleans. The LLM sometimes emits the
     # strings "yes"/"no"/"true" instead of a JSON boolean; left as strings they
     # break boolean checks ("no" is truthy in Python) used by skip/conditional
@@ -448,19 +470,45 @@ def normalize_extracted_fields(
             if coerced is not None:
                 out[count_field] = coerced
 
-    # Pet weight: standardize to pounds. The caller's exact wording in pets_raw is
-    # authoritative for the unit (the LLM tends to return the bare number and drop
-    # "kg"), so when pets_raw states an explicit weight we re-derive from it. This
-    # is idempotent — always computed from the immutable raw text, never from the
-    # current pet_weight — so repeated normalization can't double-convert.
-    pets_raw = out.get("pets_raw")
-    if isinstance(pets_raw, str) and pets_raw.strip():
-        pounds = parse_pet_weight_lbs(pets_raw)
-        if pounds is not None:
-            out["pet_weight"] = pounds
-
     if questions:
-        from app.core.question_flow import field_answer_types_from_questions
+        from app.core.question_flow import (
+            field_answer_types_from_questions,
+            normalize_questions,
+            speech_mode_for_question,
+        )
+
+        for q in normalize_questions(questions):
+            if speech_mode_for_question(q) != "pet_bundle":
+                continue
+            fields = [str(f) for f in (q.get("extract_fields") or [])]
+            raw_key = next((f for f in fields if f.endswith("_raw")), None)
+            weight_key = next(
+                (f for f in fields if "weight" in f.lower() and not f.endswith("_raw")),
+                None,
+            )
+            if not raw_key or not weight_key:
+                continue
+            raw_text = out.get(raw_key)
+            if isinstance(raw_text, str) and raw_text.strip():
+                pounds = parse_pet_weight_lbs(raw_text)
+                if pounds is not None:
+                    out[weight_key] = pounds
+
+        for q in normalize_questions(questions):
+            if str(q.get("answer_type") or "") != "currency":
+                continue
+            fields = [str(f) for f in (q.get("extract_fields") or [])]
+            primary = next((f for f in fields if not f.endswith("_raw")), None)
+            raw_key = next((f for f in fields if f.endswith("_raw")), None)
+            if not primary or not raw_key:
+                continue
+            if out.get(primary) not in (None, ""):
+                continue
+            raw_val = out.get(raw_key)
+            if isinstance(raw_val, str) and raw_val.strip():
+                inferred = infer_monthly_income_from_raw(raw_val)
+                if inferred is not None:
+                    out[primary] = inferred
 
         for field, answer_type in field_answer_types_from_questions(questions).items():
             if str(field).endswith("_raw"):
@@ -492,11 +540,12 @@ def normalize_extracted_fields(
                 coerced = _coerce_bool(value)
                 if coerced is not None:
                     out[field] = coerced
-            elif answer_type == "date" and isinstance(value, str) and value.strip():
-                if not _looks_iso_date(value):
-                    parsed, _raw = parse_relative_date(value)
-                    if parsed is not None:
-                        out[field] = parsed.isoformat()
+            elif answer_type == "date":
+                _normalize_date_field_value(field, value, out)
+    else:
+        for field in ("move_in_date", "move_timing"):
+            if field in out:
+                _normalize_date_field_value(field, out.get(field), out)
 
     return out
 

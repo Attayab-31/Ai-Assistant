@@ -378,11 +378,12 @@ async def call_detail_page(
             if isinstance(cf, dict):
                 custom_fields = cf
 
-    from app.utils.helpers import parse_transcript_lines
+    from app.utils.helpers import parse_transcript_lines, side_effect_alerts_from_error_log
 
     error_log = call.error_log if isinstance(call.error_log, dict) else {}
     turn_traces = error_log.get("turn_traces") or []
     trace_errors = error_log.get("errors") or []
+    side_effect_alerts = side_effect_alerts_from_error_log(error_log)
 
     nav_prev_id = nav_next_id = None
     if tenant:
@@ -410,6 +411,7 @@ async def call_detail_page(
         transcript_lines=parse_transcript_lines(call.full_transcript),
         turn_traces=turn_traces,
         trace_errors=trace_errors,
+        side_effect_alerts=side_effect_alerts,
         summary_rows=build_applicant_summary_rows(tenant, snapshot)
         if tenant
         else [],
@@ -503,6 +505,7 @@ async def tenant_detail_page(
         from app.core.question_flow import (
             build_applicant_summary_rows,
             build_flow_rows,
+            build_tenant_edit_fields,
             field_labels_from_questions,
             questions_snapshot_from_tenant,
         )
@@ -545,6 +548,7 @@ async def tenant_detail_page(
         summary_rows=build_applicant_summary_rows(tenant, snapshot)
         if snapshot
         else [],
+        edit_fields=build_tenant_edit_fields(tenant, snapshot) if snapshot else [],
         active_page="tenants",
         nav_prev_id=nav_prev_id,
         nav_next_id=nav_next_id,
@@ -1424,6 +1428,8 @@ async def api_export_analytics_csv(
 
 
 class TenantUpdateRequest(BaseModel):
+    model_config = {"extra": "allow"}
+
     full_name: str | None = None
     contact_phone: str | None = None
     email: str | None = None
@@ -1458,8 +1464,22 @@ async def api_update_tenant(
         raise HTTPException(status_code=404, detail="Tenant not found")
 
     update_data = {}
+    custom_updates: dict = {}
+    declared = set(TenantUpdateRequest.model_fields.keys())
     for field, value in payload.model_dump(exclude_unset=True).items():
-        update_data[field] = value
+        if str(field).startswith("custom_"):
+            custom_updates[field] = value
+        elif field in declared:
+            update_data[field] = value
+        else:
+            update_data[field] = value
+
+    if custom_updates:
+        nd = dict(tenant.normalized_data or {})
+        cf = dict(nd.get("custom_fields") or {})
+        cf.update(custom_updates)
+        nd["custom_fields"] = cf
+        update_data["normalized_data"] = nd
 
     rescore = {}
     if update_data:

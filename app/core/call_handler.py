@@ -16,7 +16,7 @@ import logging
 import random
 import re
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -379,14 +379,35 @@ async def finalize_after_stream_timeout(
 ) -> None:
     """Fallback finalize if hangup stopped the stream but on_complete never ran."""
     await asyncio.sleep(timeout)
-    if get_session(call_id) is None:
+    if get_session(call_id) is not None:
+        logger.warning(
+            "[%s] Stream did not finalize within %.0fs after hangup — forcing",
+            call_id,
+            timeout,
+        )
+        await finalize_active_session_background(call_id)
         return
-    logger.warning(
-        "[%s] Stream did not finalize within %.0fs after hangup — forcing",
-        call_id,
-        timeout,
-    )
-    await finalize_active_session_background(call_id)
+    from app.db.crud import get_call_by_call_id
+
+    from app.db.database import AsyncSessionLocal
+
+    async with AsyncSessionLocal() as db:
+        call = await get_call_by_call_id(db, call_id)
+        if call and call.status == "in_progress":
+            logger.warning(
+                "[%s] Hangup with no local session — marking abandoned after %.0fs",
+                call_id,
+                timeout,
+            )
+            from app.db.crud import update_call
+
+            await update_call(
+                db,
+                call_id,
+                status="abandoned",
+                ended_at=datetime.now(UTC),
+                error_log={"hangup_no_session": "No worker held session at finalize"},
+            )
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1766,7 +1787,7 @@ async def get_llm_response_with_fallback(
         Parsed LLM response dict
     """
     if voice_mode:
-        max_retries = 0
+        max_retries = 1
         llm_timeout = float(getattr(session, "llm_timeout_voice_seconds", 5.5) or 5.5)
         max_tokens = 200
     else:
@@ -2459,19 +2480,51 @@ _finalize_calls_lock = asyncio.Lock()
 
 
 def _has_sufficient_extraction(
-    data: dict, questions: list[dict] | None = None
+    data: dict,
+    questions: list[dict] | None = None,
+    *,
+    refused_states: Iterable[str] | None = None,
+    confirmed_fields: Iterable[str] | None = None,
 ) -> bool:
-    """True when in-call data covers enough active questions to skip EOC LLM parse."""
+    """True when in-call data is complete enough to skip end-of-call LLM parse.
+
+    Requires every *required* active question to be answered, every read-back
+    field to be confirmed, then at least 80% of active questions answered.
+    """
     from app.core.question_flow import (
+        confirm_field_for_question,
         is_question_answered_for_def,
+        is_question_required,
         ordered_active_questions,
     )
 
+    refused = set(refused_states or [])
+    confirmed = set(confirmed_fields or [])
     active = ordered_active_questions(questions or [], data)
     if not active:
         return True
+
+    for q in active:
+        if not is_question_required(q):
+            continue
+        if not is_question_answered_for_def(
+            q, data, refused, confirmed_fields=confirmed
+        ):
+            return False
+
+    for q in active:
+        if not q.get("requires_confirmation"):
+            continue
+        field = confirm_field_for_question(q)
+        if field and data.get(field) not in (None, "") and field not in confirmed:
+            return False
+
     answered = sum(
-        1 for q in active if is_question_answered_for_def(q, data, set())
+        1
+        for q in active
+        if is_question_answered_for_def(
+            q, data, refused, confirmed_fields=confirmed
+        )
     )
     return answered >= max(1, int(len(active) * 0.8))
 
@@ -2522,7 +2575,12 @@ async def _finalize_call_impl(session: ConversationSession, db) -> dict:
     # worth its tokens when the live data is sparse (e.g. a very short or failed
     # call). Skip it when we already captured the core scoring fields — this
     # saves ~2.5-3.5k tokens on every normal call with no loss of data.
-    if _has_sufficient_extraction(session.extracted_data, session.questions):
+    if _has_sufficient_extraction(
+        session.extracted_data,
+        session.questions,
+        refused_states=session.refused_states,
+        confirmed_fields=session.confirmed_fields,
+    ):
         logger.info(
             "[%s] Skipping end-of-call extraction — in-call data is complete",
             session.call_id,
@@ -2766,12 +2824,20 @@ async def _finalize_call_impl(session: ConversationSession, db) -> dict:
         else:
             await db.commit()
 
-        # Side effects (email + CRM) fire exactly once. Beyond the per-worker
-        # DB check above, take a short cross-worker Redis lock so two workers
-        # finalizing simultaneously can't both send the email / fire the CRM
-        # webhook. Fails open (single-worker correctness preserved) if Redis is
-        # down — the DB already_finalized check is the backstop.
-        send_side_effects = not already_finalized
+        tenant_row = existing_tenant
+        if tenant_row is None:
+            tenant_row = await get_tenant_by_call(db, call.id)
+
+        # Side effects (email + CRM) fire exactly once, only when an applicant
+        # profile was saved. Beyond the per-worker DB check above, take a short
+        # cross-worker Redis lock so two workers finalizing simultaneously can't
+        # both send the email / fire the CRM webhook.
+        send_side_effects = not already_finalized and tenant_row is not None
+        if not already_finalized and tenant_row is None:
+            logger.warning(
+                "[%s] Skipping email/CRM — no tenant profile saved for this call",
+                session.call_id,
+            )
         if send_side_effects:
             from app.core.redis_client import acquire_once
 
@@ -2843,6 +2909,7 @@ def _trigger_email_notification(call_id: str, phone_number: str, **kwargs) -> No
         )
     except Exception as e:
         logger.error("Failed to queue email task: %s", e)
+        _record_side_effect_failure_sync(call_id, "email_queue", str(e))
 
 
 def _trigger_crm_webhook(crm_url: str, **kwargs) -> None:
@@ -2853,3 +2920,41 @@ def _trigger_crm_webhook(crm_url: str, **kwargs) -> None:
         fire_crm_webhook_task.delay(webhook_url=crm_url, **kwargs)
     except Exception as e:
         logger.error("Failed to queue CRM webhook task: %s", e)
+        call_id = str(kwargs.get("call_id") or "")
+        if call_id:
+            _record_side_effect_failure_sync(call_id, "crm_queue", str(e))
+
+
+def _record_side_effect_failure_sync(call_id: str, kind: str, detail: str) -> None:
+    """Persist queue failures on the call row for admin visibility."""
+    import asyncio
+    import uuid as uuid_module
+
+    from app.db.crud import get_call_by_call_id, get_call_by_uuid, update_call
+    from app.db.database import AsyncSessionLocal
+
+    async def _write() -> None:
+        async with AsyncSessionLocal() as db:
+            call = None
+            try:
+                call = await get_call_by_uuid(db, uuid_module.UUID(call_id))
+            except (TypeError, ValueError):
+                pass
+            if call is None:
+                call = await get_call_by_call_id(db, call_id)
+            if not call:
+                return
+            log = dict(call.error_log or {})
+            log[kind] = detail
+            await update_call(db, call.call_id, error_log=log)
+
+    try:
+        asyncio.run(_write())
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(_write())
+        finally:
+            loop.close()
+    except Exception as exc:
+        logger.debug("Could not persist side-effect failure for %s: %s", call_id, exc)

@@ -666,7 +666,11 @@ def _get_email_settings_sync() -> dict:
     try:
         raw = asyncio.run(_fetch())
     except RuntimeError:
-        raw = {}
+        loop = asyncio.new_event_loop()
+        try:
+            raw = loop.run_until_complete(_fetch())
+        finally:
+            loop.close()
 
     return {
         "landlord_email": raw.get("landlord_email") or settings.default_landlord_email,

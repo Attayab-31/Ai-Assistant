@@ -817,3 +817,105 @@ def test_prompt_extraction_rules_follow_active_questions_only():
     rules_income = prompt_extraction_rules([income_q])
     assert "money fields" in rules_income
 
+
+def test_normalize_rolls_future_for_any_date_field():
+    from datetime import date
+
+    from app.core.question_flow import new_custom_question
+    from app.core.screening_flow import normalize_extracted_fields
+
+    custom = new_custom_question(
+        question="When do you need parking?",
+        answer_type="date",
+        order=99,
+    )
+    custom["extract_fields"] = ["custom_parking_date"]
+    out = normalize_extracted_fields(
+        {"custom_parking_date": "2020-09-01"},
+        questions=[custom],
+    )
+    parsed = date.fromisoformat(out["custom_parking_date"])
+    assert parsed >= date.today()
+
+
+def test_build_preview_sample_paths_includes_followups():
+    from app.core.question_flow import build_preview_sample_paths, default_questions_v2
+
+    paths = build_preview_sample_paths(default_questions_v2())
+    ids = {p["id"] for p in paths}
+    assert "default" in ids
+    assert "has_pets__true" in ids
+    assert "has_eviction__true" in ids
+    assert "all_followups" in ids
+
+
+def test_speech_mode_pet_bundle_extraction():
+    from app.core.question_flow import default_questions_v2, extract_fields_from_speech
+
+    pet_q = next(q for q in default_questions_v2() if q["state"] == "Q6A_PET_DETAILS")
+    out = extract_fields_from_speech("German shepherd about 70 pounds", pet_q)
+    assert out.get("pet_weight") == 70
+    assert out.get("pets_raw")
+
+
+def test_build_system_prompt_includes_today():
+    from datetime import date
+
+    from app.core.conversation import ConversationSession, build_system_prompt
+    from app.core.question_flow import default_questions_v2
+
+    session = ConversationSession(
+        call_id="t",
+        phone_number="+15550000000",
+        questions=default_questions_v2(),
+    )
+    prompt = build_system_prompt(session, transcript="July 24")
+    assert date.today().isoformat() in prompt
+    assert "past" in prompt.lower()
+
+
+def test_validate_blocks_all_conditional_flow():
+    from app.core.question_flow import new_custom_question, validate_questions_for_save
+
+    gate = new_custom_question(question="Gate?", answer_type="yes_no", order=1)
+    gate["extract_fields"] = ["custom_gate_flag"]
+    gate["active"] = False
+    follow = new_custom_question(question="Follow?", answer_type="text", order=2)
+    follow["extract_fields"] = ["custom_follow_note"]
+    follow["conditional"] = {"field": "custom_gate_flag", "operator": "eq", "value": True}
+    with pytest.raises(ValueError, match="start of a call"):
+        validate_questions_for_save([gate, follow])
+
+
+def test_coerce_questions_for_runtime_falls_back_on_corrupt():
+    from app.core.question_flow import coerce_questions_for_runtime, default_questions_v2
+
+    fixed = coerce_questions_for_runtime([])
+    assert len(fixed) == len(default_questions_v2())
+
+
+def test_has_sufficient_extraction_requires_required_and_confirmed():
+    from app.core.call_handler import _has_sufficient_extraction
+    from app.core.question_flow import default_questions_v2
+
+    questions = default_questions_v2()
+    data = {"full_name": "Jane Doe", "has_pets": False, "has_eviction": False}
+    assert not _has_sufficient_extraction(data, questions)
+
+    data["contact_phone"] = "+15551234567"
+    data["email"] = "j@test.com"
+    still_sparse = dict(data)
+    still_sparse.update(
+        {
+            "move_in_date": "2026-08-01",
+            "occupants_count": 2,
+            "monthly_income": 5000,
+            "employer": "Acme",
+        }
+    )
+    assert not _has_sufficient_extraction(
+        still_sparse,
+        questions,
+        confirmed_fields={"full_name", "contact_phone", "email"},
+    )
+

@@ -22,6 +22,7 @@ from app.core.screening_flow import (
     normalize_money,
     normalize_phone,
     parse_relative_date,
+    roll_future_date,
 )
 
 logger = logging.getLogger(__name__)
@@ -134,33 +135,8 @@ def _parse_date(value: Any) -> date | None:
 
 
 def _roll_future_date(d: date | None, today: date | None = None) -> date | None:
-    """Roll a past move-in date forward to its next sensible future occurrence.
-
-    Screening move-in dates are always upcoming, but small LLMs frequently emit
-    a plausible-looking but PAST year (e.g. the caller says "July 26" and the
-    model returns 2024-07-26 when today is 2026). A past date here is almost
-    always a wrong year, and it actively corrupts scoring (the qualifier treats
-    a past move-in date as a negative signal). When the date lands in the past,
-    keep the same month/day and advance to this year, then next year. Dates that
-    are already today-or-future are returned untouched.
-
-    This is keyed off the *value*, not any specific question — if an admin
-    removes the move-in question there's simply no date to adjust.
-    """
-    if d is None:
-        return None
-    today = today or date.today()
-    if d >= today:
-        return d
-    for year in (today.year, today.year + 1):
-        try:
-            candidate = d.replace(year=year)
-        except ValueError:
-            # Feb 29 on a non-leap year — fall back to Feb 28.
-            candidate = d.replace(year=year, month=2, day=28)
-        if candidate >= today:
-            return candidate
-    return d
+    """Backward-compatible alias — see ``screening_flow.roll_future_date``."""
+    return roll_future_date(d, today)
 
 
 def _normalize_pet_weight_lbs(weight: int | None, *context: Any) -> int | None:
@@ -315,5 +291,4 @@ def extract_from_transcript_heuristic(
             fields = extract_fields_from_speech(utterance, question, extracted)
             if fields:
                 extracted.update(fields)
-                break
     return coerce_extracted_data(extracted)

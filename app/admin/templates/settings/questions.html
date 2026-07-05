@@ -60,6 +60,9 @@
   <div id="previewContainer" style="display: none; margin-top: 20px;">
     <div class="form-section">
       <h3 style="margin-top: 0;">Sample conversation path</h3>
+      <label style="display:block;margin-bottom:8px;font-weight:600;">Preview scenario
+        <select id="previewPathSelect" style="display:block;margin-top:4px;max-width:420px;"></select>
+      </label>
       <p id="previewMeta" class="text-muted"></p>
       <div id="previewContent" class="conversation-preview"></div>
     </div>
@@ -74,6 +77,15 @@
     full_name: 'full name',
     contact_phone: 'contact phone',
     email: 'email address',
+  };
+
+  const SPEECH_MODES = {
+    default: 'Default',
+    spoken_name: 'Spoken name',
+    pet_bundle: 'Pet details (type, breed, weight)',
+    employer: 'Employer / workplace',
+    optional_notes: 'Optional notes',
+    occupants: 'Occupant counts',
   };
 
   const ANSWER_TYPE_LABELS = {
@@ -110,6 +122,12 @@
 
   function answerTypeLabel(t) {
     return ANSWER_TYPE_LABELS[t] || t;
+  }
+
+  function speechModeOptions(selected) {
+    return Object.entries(SPEECH_MODES).map(([id, label]) =>
+      `<option value="${id}" ${id === (selected || 'default') ? 'selected' : ''}>${esc(label)}</option>`
+    ).join('');
   }
 
   function answerTypeOptions(selected) {
@@ -457,6 +475,10 @@
           <label style="display:flex;align-items:center;gap:8px;font-weight:600;">
             <input type="checkbox" class="edit-require-all-fields" ${q.require_all_extract_fields ? 'checked' : ''} style="width:auto;max-width:none;"> Require every saved field before moving on
           </label>
+          <label>Speech parser (fallback extraction)
+            <select class="edit-speech-mode">${speechModeOptions(q.speech_mode || 'default')}</select>
+          </label>
+          <p class="text-muted" style="margin:0;font-size:12px;">Used when AI extraction fails — pick a parser that matches this question.</p>
           <label>Retry prompt (2nd) <textarea class="edit-retry2" rows="2">${esc(q.retry_prompt_2 || '')}</textarea></label>
           <label>Retry prompt (3rd) <textarea class="edit-retry3" rows="2">${esc(q.retry_prompt_3 || '')}</textarea></label>
           ${advancedCondPanelHtml(cond)}
@@ -844,6 +866,7 @@
       required: card.querySelector('.edit-required')?.checked ?? true,
       requires_confirmation: card.querySelector('.edit-confirm').checked,
       require_all_extract_fields: card.querySelector('.edit-require-all-fields')?.checked ?? false,
+      speech_mode: card.querySelector('.edit-speech-mode')?.value || 'default',
       understanding_guide: card.querySelector('.edit-understanding-guide')?.value.trim() || '',
       conditional: buildConditionalFromSimple(card),
       scoring,
@@ -939,11 +962,22 @@
 
   async function previewFlow() {
     try {
-      const r = await fetch('/api/settings/questions/preview');
+      const pathSel = document.getElementById('previewPathSelect');
+      const path = pathSel?.value || '';
+      const url = '/api/settings/questions/preview' + (path ? '?path=' + encodeURIComponent(path) : '');
+      const r = await fetch(url);
       const data = await r.json();
       document.getElementById('previewContainer').style.display = 'block';
+      if (pathSel && data.paths) {
+        pathSel.innerHTML = data.paths.map(p =>
+          `<option value="${esc(p.id)}" ${p.id === data.selected_path ? 'selected' : ''}>${esc(p.label)} (${p.active_question_count} questions)</option>`
+        ).join('');
+        pathSel.onchange = () => withBtnLoading(pathSel, previewFlow, 'Loading\u2026');
+      }
+      const selected = (data.paths || []).find(p => p.id === data.selected_path);
       document.getElementById('previewMeta').textContent =
-        `${data.active_question_count_sample} questions on a sample path (no pets / no eviction)`;
+        `${data.active_question_count_sample} questions on this path` +
+        (selected ? ` — ${selected.label}` : '');
       document.getElementById('previewContent').innerHTML = (data.flow || []).map((turn, i) => {
         const cls = (turn.speaker || '').toLowerCase().includes('ai') ? 'assistant' : 'caller';
         const label = cls === 'assistant' ? 'Assistant' : 'Caller';

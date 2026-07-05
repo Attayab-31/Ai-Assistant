@@ -16,6 +16,8 @@ from app.core.celery_app import celery_app
 logger = logging.getLogger(__name__)
 
 RECORDING_BATCH_SIZE = 200
+MIN_RETENTION_CALLS_DAYS = 30
+MIN_RETENTION_AUDIT_DAYS = 90
 
 
 def _to_int(value, default: int = 0) -> int:
@@ -63,6 +65,21 @@ async def _run_retention() -> dict:
         calls_days = _to_int(settings_map.get("retention_calls_days"), 365)
         audit_days = _to_int(settings_map.get("retention_audit_days"), 365)
         stale_hours = _to_int(settings_map.get("retention_stale_call_hours"), 24)
+
+        if 0 < calls_days < MIN_RETENTION_CALLS_DAYS:
+            logger.warning(
+                "retention_calls_days=%s below minimum %s — using floor",
+                calls_days,
+                MIN_RETENTION_CALLS_DAYS,
+            )
+            calls_days = MIN_RETENTION_CALLS_DAYS
+        if 0 < audit_days < MIN_RETENTION_AUDIT_DAYS:
+            logger.warning(
+                "retention_audit_days=%s below minimum %s — using floor",
+                audit_days,
+                MIN_RETENTION_AUDIT_DAYS,
+            )
+            audit_days = MIN_RETENTION_AUDIT_DAYS
 
         if stale_hours > 0:
             summary["stale_calls_closed"] = await crud.close_stale_calls(

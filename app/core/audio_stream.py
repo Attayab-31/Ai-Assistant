@@ -361,7 +361,7 @@ async def run_bidirectional_audio_stream(
     streaming_stt_enabled = _use_streaming_stt(session)
     utterance_queue: asyncio.Queue[UtteranceItem] = asyncio.Queue(maxsize=8)
     transcript_queue: asyncio.Queue[TranscriptItem | None] = asyncio.Queue(maxsize=8)
-    audio_feed_queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=256)
+    audio_feed_queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=512)
     outbound_queue: asyncio.Queue[OutboundItem | bytes] = asyncio.Queue()
     ai_speaking = asyncio.Event()
     tenant_may_speak = asyncio.Event()
@@ -609,7 +609,7 @@ async def run_bidirectional_audio_stream(
                         try:
                             audio_feed_queue.put_nowait(chunk)
                         except asyncio.QueueFull:
-                            logger.debug(
+                            logger.warning(
                                 "[%s] audio feed queue full, dropping chunk",
                                 call_id,
                             )
@@ -739,17 +739,28 @@ async def run_bidirectional_audio_stream(
             on_interim=_on_interim if emit_debug_events else None,
             on_speech_started=_on_speech_started,
         )
-        await streaming_stt.start()
-        session.stt_provider = _providers.stt_name
-        vinfo(
-            logger,
-            f"Streaming STT active ({_stt_encoding})",
-            session=session,
-            call_id=call_id,
-            phase=Phase.STT_STREAM,
-            service="stt",
-            provider=_providers.stt_name,
-        )
+        try:
+            await streaming_stt.start()
+        except Exception as e:
+            logger.warning(
+                "[%s] Deepgram streaming STT failed — falling back to batch: %s",
+                call_id,
+                e,
+            )
+            session.add_error("stt_stream_fallback", str(e))
+            streaming_stt_enabled = False
+            streaming_stt = None
+        else:
+            session.stt_provider = _providers.stt_name
+            vinfo(
+                logger,
+                f"Streaming STT active ({_stt_encoding})",
+                session=session,
+                call_id=call_id,
+                phase=Phase.STT_STREAM,
+                service="stt",
+                provider=_providers.stt_name,
+            )
 
     async def worker() -> None:
         try:

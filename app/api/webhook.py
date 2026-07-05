@@ -302,15 +302,18 @@ async def handle_call_hangup(db: AsyncSession, call_payload: dict) -> None:
         return
     else:
         # Session may live on another worker — signal stream stop via Redis and
-        # avoid marking an in-progress call abandoned while audio is still live.
+        # schedule a safety-net finalize if nothing completes the call.
         await call_handler.request_stream_stop(call_control_id)
+        asyncio.create_task(
+            call_handler.finalize_after_stream_timeout(call_control_id)
+        )
         from app.db.crud import get_call_by_call_id, update_call
 
         existing = await get_call_by_call_id(db, call_control_id)
         if existing and existing.status == "in_progress":
             logger.info(
                 "Hangup for in_progress call %s — stream stop signaled "
-                "(session on another worker)",
+                "(session on another worker); finalize timeout scheduled",
                 call_control_id,
             )
             return

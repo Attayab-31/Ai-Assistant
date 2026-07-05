@@ -6,7 +6,7 @@ import json
 import re
 import time
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from enum import Enum
 from typing import Any
 
@@ -340,6 +340,8 @@ class ConversationSession:
             state=self.current_state,
         )
         self.transcript.append(entry)
+        if len(self.transcript) > _MAX_TRANSCRIPT_ENTRIES:
+            self.transcript = self.transcript[-_MAX_TRANSCRIPT_ENTRIES:]
 
     def append_streaming_ai_transcript(self, sentence: str) -> str:
         """Update transcript as LLM streams speakable sentences to TTS."""
@@ -386,10 +388,13 @@ class ConversationSession:
             self.messages = self.messages[-12:]
 
     def get_full_transcript(self) -> str:
-        return "\n".join(
+        text = "\n".join(
             f"[{entry.timestamp}] {entry.speaker}: {entry.text}"
             for entry in self.transcript
         )
+        if len(text) > _MAX_TRANSCRIPT_CHARS:
+            return text[-_MAX_TRANSCRIPT_CHARS:]
+        return text
 
     def add_error(self, error_type: str, message: str) -> None:
         self.errors.append(
@@ -1089,7 +1094,9 @@ def _render_question_slots(
     return "\n".join(lines)
 
 
-_PROMPT_EXTRACTED_BUDGET = 2000
+_PROMPT_EXTRACTED_BUDGET = 3500
+_MAX_TRANSCRIPT_ENTRIES = 400
+_MAX_TRANSCRIPT_CHARS = 120_000
 
 # Interrogative markers used to decide if a caller turn is likely a question and
 # therefore needs the FULL approved FAQ answers in the prompt as a safety net.
@@ -1378,6 +1385,7 @@ Respond with ONE JSON object only — no markdown, no code fences. response_text
 You are the conversational intelligence for "{business}", screening tenants on a live call. Understand casual, partial, or mixed answers; extract JSON; reply warmly in under 20 words.
 
 # CONTEXT
+- Today: {date.today().isoformat()} (use for all date questions — clarify past dates)
 - Property: {business} | {flow_stats}
 - Flow order (states; full wording is on CURRENT):
 {flow_outline}
@@ -1391,7 +1399,7 @@ You are the conversational intelligence for "{business}", screening tenants on a
 
 # BEHAVIOR
 - Use SLOTS + captured data; never re-ask filled fields. question_complete=true only when CURRENT question is fully answered; false while you are asking a follow-up.
-- Vague dates/amounts: ask once for precision; accept if they cannot be more specific.
+- Vague dates/amounts: ask once for precision; accept if they cannot be more specific. For dates: if the year is before today, ask whether they meant a future date before accepting.
 - Cross-fill: if they volunteer later-step info, extract it, acknowledge briefly, stay on CURRENT.
 {slot_examples}
 

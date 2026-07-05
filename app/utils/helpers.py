@@ -583,3 +583,28 @@ def verify_stream_token(
         secret.encode(), f"{call_id}:{ts_str}".encode(), hashlib.sha256
     ).hexdigest()
     return hmac.compare_digest(expected, sig)
+
+
+def side_effect_alerts_from_error_log(error_log: dict | None) -> list[dict[str, str]]:
+    """Build admin banner rows for failed post-call email/CRM queue attempts."""
+    log = error_log if isinstance(error_log, dict) else {}
+    alerts: list[dict[str, str]] = []
+    email_err = log.get("email_queue")
+    if email_err not in (None, ""):
+        alerts.append(
+            {
+                "kind": "email",
+                "title": "Result email was not queued",
+                "detail": str(email_err),
+            }
+        )
+    crm_err = log.get("crm_queue")
+    if crm_err not in (None, ""):
+        alerts.append(
+            {
+                "kind": "crm",
+                "title": "CRM webhook was not queued",
+                "detail": str(crm_err),
+            }
+        )
+    return alerts
