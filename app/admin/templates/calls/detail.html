@@ -239,7 +239,12 @@
         <h3 style="margin-top: 16px; font-size: 14px;">Voice pipeline errors</h3>
         <ul class="muted" style="margin: 6px 0; padding-left: 18px; font-size: 13px;">
           {% for err in trace_errors %}
-          <li>{{ err.get('type', 'error') }}: {{ err.get('message', err) }}</li>
+          <li>
+            {{ err.get('message', err) }}
+            {% if err.get('provider') and not err.get('message') %}
+              <span class="muted">({{ err.provider|friendly_provider(err.get('service', 'llm')) }})</span>
+            {% endif %}
+          </li>
           {% endfor %}
         </ul>
         {% endif %}

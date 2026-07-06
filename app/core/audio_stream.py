@@ -746,7 +746,14 @@ async def run_bidirectional_audio_stream(
                 call_id,
                 e,
             )
-            session.add_error("stt_stream_fallback", str(e))
+            session.add_provider_event(
+                service="stt",
+                provider=_providers.stt_name,
+                role="primary",
+                outcome="failed",
+                exc=e,
+                detail="Falling back to batch transcription",
+            )
             streaming_stt_enabled = False
             streaming_stt = None
         else:

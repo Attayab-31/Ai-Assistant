@@ -453,6 +453,9 @@ async def create_session(
             stt_provider=providers.stt_name,
             llm_provider=providers.llm_name,
             tts_provider=providers.tts_name,
+            primary_stt_provider=providers.stt_name,
+            primary_llm_provider=providers.llm_name,
+            primary_tts_provider=providers.tts_name,
             call_providers=providers,
             silence_timeout_seconds=snapshot.silence_timeout_seconds,
             max_call_duration_seconds=snapshot.max_call_duration_seconds,
@@ -1840,7 +1843,14 @@ async def get_llm_response_with_fallback(
     except (TypeError, ValueError):
         temperature = 0.3
 
-    async def try_provider(provider, provider_name: str) -> dict | None:
+    llm_attempt_log: list[dict[str, Any]] = []
+
+    async def try_provider(
+        provider,
+        provider_name: str,
+        *,
+        role: str,
+    ) -> dict | None:
         """Attempt to get a valid response from a provider."""
         for attempt in range(max_retries + 1):
             remaining = _remaining_turn_budget_s(session)
@@ -1860,6 +1870,15 @@ async def get_llm_response_with_fallback(
                         reason="budget_exhausted",
                         budget_s=remaining,
                     )
+                    info = session.add_provider_event(
+                        service="llm",
+                        provider=provider_name,
+                        role=role,
+                        outcome="skipped",
+                        reason="budget_exhausted",
+                        detail=f"{remaining:.2f}s left",
+                    )
+                    llm_attempt_log.append(info)
                     return None
                 attempt_timeout = min(llm_timeout, remaining)
             try:
@@ -1912,20 +1931,36 @@ async def get_llm_response_with_fallback(
                     hint = _llm_health_hints.setdefault(provider_name, {})
                     hint["ok"] = hint.get("ok", 0.0) + 1.0
                     hint["latency_ms"] = latency
+                    if role == "fallback":
+                        session.add_provider_event(
+                            service="llm",
+                            provider=provider_name,
+                            role=role,
+                            outcome="succeeded",
+                        )
                     return data
-                else:
-                    vwarn(
-                        logger,
-                        f"Invalid LLM response from {provider_name} (attempt {attempt + 1}): {error}",
-                        session=session,
-                        phase=Phase.LLM_FAIL,
+                vwarn(
+                    logger,
+                    f"Invalid LLM response from {provider_name} (attempt {attempt + 1}): {error}",
+                    session=session,
+                    phase=Phase.LLM_FAIL,
+                    service="llm",
+                    provider=provider_name,
+                    reason="invalid_response",
+                    attempt=attempt + 1,
+                )
+                if attempt >= max_retries:
+                    info = session.add_provider_event(
                         service="llm",
                         provider=provider_name,
+                        role=role,
+                        outcome="failed",
                         reason="invalid_response",
-                        attempt=attempt + 1,
+                        detail=str(error or "invalid response"),
                     )
+                    llm_attempt_log.append(info)
 
-            except TimeoutError:
+            except TimeoutError as e:
                 vwarn(
                     logger,
                     f"{provider_name} timed out after {attempt_timeout:.2f}s",
@@ -1936,7 +1971,14 @@ async def get_llm_response_with_fallback(
                     reason="timeout",
                     timeout_s=attempt_timeout,
                 )
-                session.add_error("llm_timeout", f"{provider_name} timed out")
+                info = session.add_provider_event(
+                    service="llm",
+                    provider=provider_name,
+                    role=role,
+                    outcome="failed",
+                    exc=e,
+                )
+                llm_attempt_log.append(info)
                 hint = _llm_health_hints.setdefault(provider_name, {})
                 hint["fail"] = hint.get("fail", 0.0) + 1.0
             except json.JSONDecodeError as e:
@@ -1949,6 +1991,16 @@ async def get_llm_response_with_fallback(
                     provider=provider_name,
                     reason="json_parse",
                 )
+                if attempt >= max_retries:
+                    info = session.add_provider_event(
+                        service="llm",
+                        provider=provider_name,
+                        role=role,
+                        outcome="failed",
+                        reason="invalid_response",
+                        detail=str(e),
+                    )
+                    llm_attempt_log.append(info)
             except Exception as e:
                 verror(
                     logger,
@@ -1959,7 +2011,14 @@ async def get_llm_response_with_fallback(
                     provider=provider_name,
                     reason="error",
                 )
-                session.add_error("llm_error", str(e))
+                info = session.add_provider_event(
+                    service="llm",
+                    provider=provider_name,
+                    role=role,
+                    outcome="failed",
+                    exc=e,
+                )
+                llm_attempt_log.append(info)
                 hint = _llm_health_hints.setdefault(provider_name, {})
                 hint["fail"] = hint.get("fail", 0.0) + 1.0
                 break  # Don't retry on auth/config errors
@@ -1990,7 +2049,7 @@ async def get_llm_response_with_fallback(
         provider=providers.llm_name,
         timeout_s=llm_timeout,
     )
-    result = await try_provider(primary, providers.llm_name)
+    result = await try_provider(primary, providers.llm_name, role="primary")
     if result:
         return result
 
@@ -2066,6 +2125,14 @@ async def get_llm_response_with_fallback(
                     provider=name,
                     reason="unhealthy",
                 )
+                info = session.add_provider_event(
+                    service="llm",
+                    provider=name,
+                    role="fallback",
+                    outcome="skipped",
+                    reason="unhealthy",
+                )
+                llm_attempt_log.append(info)
                 continue
             remaining = _remaining_turn_budget_s(session)
             if remaining is not None and remaining < (LLM_MIN_ATTEMPT_BUDGET_SECONDS + VOICE_TURN_INTERNAL_BUFFER_SECONDS):
@@ -2078,6 +2145,15 @@ async def get_llm_response_with_fallback(
                     reason="budget_exhausted",
                     budget_s=remaining,
                 )
+                info = session.add_provider_event(
+                    service="llm",
+                    provider=name,
+                    role="fallback",
+                    outcome="skipped",
+                    reason="budget_exhausted",
+                    detail=f"{remaining:.2f}s left",
+                )
+                llm_attempt_log.append(info)
                 break
             vinfo(
                 logger,
@@ -2087,11 +2163,16 @@ async def get_llm_response_with_fallback(
                 service="llm",
                 provider=name,
             )
-            result = await try_provider(_resolve_llm_provider(providers, name), name)
+            result = await try_provider(
+                _resolve_llm_provider(providers, name), name, role="fallback"
+            )
             if result:
                 return result
 
     # Last resort: graceful shutdown (no hardcoded re-ask loop)
+    from app.core.provider_errors import summarize_provider_attempts
+
+    summary = summarize_provider_attempts(llm_attempt_log)
     verror(
         logger,
         "All LLM providers failed — ending call for human review",
@@ -2100,7 +2181,12 @@ async def get_llm_response_with_fallback(
         service="llm",
         reason="all_providers_failed",
     )
-    session.add_error("all_providers_failed", "All LLM providers failed")
+    session.add_error(
+        "all_providers_failed",
+        summary,
+        service="llm",
+        attempts=llm_attempt_log,
+    )
     return {
         "provider_shutdown": True,
         "provider_service": "llm",
@@ -2373,7 +2459,13 @@ async def synthesize_with_fallback(
             provider=providers.tts_name,
             reason="timeout",
         )
-        session.add_error("tts_timeout", message)
+        session.add_provider_event(
+            service="tts",
+            provider=providers.tts_name,
+            role="primary",
+            outcome="failed",
+            exc=e,
+        )
     except Exception as e:
         verror(
             logger,
@@ -2384,7 +2476,13 @@ async def synthesize_with_fallback(
             provider=providers.tts_name,
             reason="error",
         )
-        session.add_error("tts_error", str(e))
+        session.add_provider_event(
+            service="tts",
+            provider=providers.tts_name,
+            role="primary",
+            outcome="failed",
+            exc=e,
+        )
 
     # Fallback TTS (when auto-fallback enabled)
     if not providers.auto_fallback_enabled:
@@ -2398,6 +2496,7 @@ async def synthesize_with_fallback(
         )
         return b""
 
+    fallback_name = "unknown"
     try:
         from app.providers.tts.deepgram_tts import DeepgramTTSProvider
         from app.providers.tts.google_tts import GoogleTTSProvider
@@ -2427,6 +2526,7 @@ async def synthesize_with_fallback(
             fallback = None
 
         if fallback:
+            fallback_name = fallback.provider_name
             vinfo(
                 logger,
                 f"Falling back to TTS {fallback.provider_name}",
@@ -2449,6 +2549,14 @@ async def synthesize_with_fallback(
                         reason="budget_exhausted",
                         budget_s=remaining,
                     )
+                    session.add_provider_event(
+                        service="tts",
+                        provider=fallback.provider_name,
+                        role="fallback",
+                        outcome="skipped",
+                        reason="budget_exhausted",
+                        detail=f"{remaining:.2f}s left",
+                    )
                     return b""
             audio = await _synthesize_provider_with_retries(
                 fallback,
@@ -2461,6 +2569,12 @@ async def synthesize_with_fallback(
             session.tts_provider = fallback.provider_name
             elapsed_ms = int((time.monotonic() - t0) * 1000)
             session.record_tts_latency(elapsed_ms)
+            session.add_provider_event(
+                service="tts",
+                provider=fallback.provider_name,
+                role="fallback",
+                outcome="succeeded",
+            )
             vinfo(
                 logger,
                 f"{fallback.provider_name} TTS fallback OK ({len(audio)} bytes)",
@@ -2482,7 +2596,13 @@ async def synthesize_with_fallback(
             service="tts",
             reason="timeout",
         )
-        session.add_error("tts_timeout", message)
+        session.add_provider_event(
+            service="tts",
+            provider=fallback_name,
+            role="fallback",
+            outcome="failed",
+            exc=e,
+        )
     except Exception as e:
         verror(
             logger,
@@ -2492,7 +2612,13 @@ async def synthesize_with_fallback(
             service="tts",
             reason="error",
         )
-        session.add_error("tts_error", str(e))
+        session.add_provider_event(
+            service="tts",
+            provider=fallback_name,
+            role="fallback",
+            outcome="failed",
+            exc=e,
+        )
 
     verror(
         logger,

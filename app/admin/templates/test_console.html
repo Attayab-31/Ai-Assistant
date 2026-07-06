@@ -583,7 +583,14 @@
             $("iQuestions").textContent = (s.questions_answered ?? 0) + " / " + total;
             $("iDuration").textContent = (s.duration_seconds ?? 0) + "s";
             const prov = s.providers || {};
-            $("iLLM").textContent = friendlyProvider("llm", prov.llm || s.llm_provider);
+            const activeLlm = prov.llm || s.llm_provider;
+            const primaryLlm = prov.primary_llm || s.primary_llm_provider || activeLlm;
+            if (primaryLlm && activeLlm && primaryLlm !== activeLlm) {
+                $("iLLM").textContent = friendlyProvider("llm", activeLlm)
+                    + " (configured: " + friendlyProvider("llm", primaryLlm) + ")";
+            } else {
+                $("iLLM").textContent = friendlyProvider("llm", activeLlm);
+            }
             $("iSTT").textContent = friendlyProvider("stt", prov.stt || s.stt_provider);
             $("iTTS").textContent = friendlyProvider("tts", prov.tts || s.tts_provider);
             $("extractedData").textContent = JSON.stringify(s.extracted_data || {}, null, 2);

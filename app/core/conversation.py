@@ -150,6 +150,10 @@ class ConversationSession:
     stt_provider: str = ""
     llm_provider: str = ""
     tts_provider: str = ""
+    # Frozen at call start — never overwritten when fallback succeeds mid-call.
+    primary_stt_provider: str = ""
+    primary_llm_provider: str = ""
+    primary_tts_provider: str = ""
 
     call_providers: Any = None
     silence_timeout_seconds: int = 12
@@ -396,19 +400,82 @@ class ConversationSession:
             return text[-_MAX_TRANSCRIPT_CHARS:]
         return text
 
-    def add_error(self, error_type: str, message: str) -> None:
-        self.errors.append(
-            {
-                "type": error_type,
-                "message": message,
-                "timestamp": datetime.now(UTC).isoformat(),
-                "state": self.current_state,
-            }
-        )
+    def add_error(self, error_type: str, message: str, **extra: Any) -> None:
+        entry: dict[str, Any] = {
+            "type": error_type,
+            "message": message,
+            "timestamp": datetime.now(UTC).isoformat(),
+            "state": self.current_state,
+        }
+        if extra:
+            entry.update(extra)
+        self.errors.append(entry)
         # Bound growth on a pathological call (e.g. a provider failing every turn)
         # so a single long call can't accumulate unbounded error entries.
         if len(self.errors) > 50:
             self.errors = self.errors[-50:]
+
+    def add_provider_event(
+        self,
+        *,
+        service: str,
+        provider: str,
+        role: str = "primary",
+        outcome: str,
+        exc: BaseException | None = None,
+        reason: str | None = None,
+        detail: str | None = None,
+        http_status: int | None = None,
+        provider_message: str | None = None,
+        provider_code: str | None = None,
+    ) -> dict[str, Any]:
+        """Record a structured provider attempt (failure, success, or skip)."""
+        from app.core.provider_errors import (
+            build_provider_message,
+            classify_provider_failure,
+            legacy_error_type,
+        )
+
+        info: dict[str, Any] = {
+            "service": (service or "").lower(),
+            "provider": (provider or "").lower(),
+            "role": (role or "primary").lower(),
+            "outcome": outcome,
+        }
+        if outcome == "failed" and exc is not None:
+            classified = classify_provider_failure(exc, service=service, provider=provider)
+            info.update(classified)
+        elif reason:
+            info["reason"] = reason
+        if http_status is not None:
+            info["http_status"] = http_status
+        if provider_message:
+            info["provider_message"] = provider_message
+        if provider_code:
+            info["provider_code"] = provider_code
+        if detail:
+            info["detail"] = detail
+
+        message = build_provider_message(
+            service=info["service"],
+            provider=info["provider"],
+            role=info["role"],
+            outcome=outcome,
+            reason=info.get("reason"),
+            http_status=info.get("http_status"),
+            provider_message=info.get("provider_message"),
+            detail=detail,
+        )
+
+        if outcome == "failed":
+            error_type = legacy_error_type(info["service"], info.get("reason"))
+        elif outcome == "succeeded":
+            error_type = "provider_ok"
+        else:
+            error_type = "provider_skipped"
+
+        self.add_error(error_type, message, **info)
+        return info
 
     def record_llm_usage(self, usage: dict | None) -> None:
         """Add one LLM call's token usage to the running totals.
