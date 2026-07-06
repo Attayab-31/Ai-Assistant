@@ -1138,6 +1138,39 @@ def match_faqs_by_pattern(
     return matched
 
 
+_FAQ_UNMATCHED_TOP_K = 3
+
+
+def _faq_relevance_score(text: str, entry: dict[str, Any]) -> int:
+    """Rough keyword overlap between caller text and an FAQ entry."""
+    from app.core.screening_flow import normalize_text
+
+    norm = normalize_text(text)
+    words = {w for w in re.findall(r"[a-z0-9]+", norm) if len(w) >= 3}
+    if not words:
+        return 0
+    score = 0
+    for field, weight in (("topic", 3), ("title", 3), ("pattern", 1), ("answer", 1)):
+        blob = normalize_text(str(entry.get(field) or ""))
+        for word in words:
+            if word in blob:
+                score += weight
+    return score
+
+
+def _top_faqs_for_unmatched_question(
+    text: str, active_faqs: list[dict[str, Any]], *, limit: int = _FAQ_UNMATCHED_TOP_K
+) -> list[dict[str, Any]]:
+    """Pick the most relevant admin FAQ entries when no regex pattern matched."""
+    ranked = sorted(
+        ((_faq_relevance_score(text, entry), entry) for entry in active_faqs),
+        key=lambda pair: pair[0],
+        reverse=True,
+    )
+    top = [entry for score, entry in ranked if score > 0][:limit]
+    return top or active_faqs[:limit]
+
+
 def _select_faq_block(
     active_faqs: list[dict[str, Any]], transcript: str
 ) -> tuple[str, bool]:
@@ -1147,8 +1180,8 @@ def _select_faq_block(
     full approved answers are embedded ONLY when the caller's turn actually
     needs them:
       - their words match one or more FAQ patterns → embed just those answers;
-      - their words look like a question but match nothing → embed ALL answers
-        (rare, but preserves answer quality so we never go blank on a real Q);
+      - their words look like a question but match nothing → embed the top few
+        relevant admin FAQ answers (not the entire list);
       - otherwise (a normal screening answer) → embed only the compact topic
         index, which is a fraction of the size.
     The model can still set faq_topic from the always-present topic index.
@@ -1171,9 +1204,8 @@ def _select_faq_block(
     if matched:
         return _full(matched), True
     if _QUESTION_MARKERS_RE.search(text):
-        # Looks like a question we couldn't pattern-match — include everything
-        # so the model can still answer from approved text rather than guess.
-        return _full(active_faqs), True
+        relevant = _top_faqs_for_unmatched_question(text, active_faqs)
+        return _full(relevant), True
     # Normal answer turn: just the cheap topic index.
     return _faq_topic_index(active_faqs), False
 
@@ -1275,7 +1307,9 @@ def build_system_prompt(
         )
 
     fields_catalog = prompt_fields_catalog(session.questions)
-    flow_outline = prompt_screening_flow_outline(session.questions)
+    flow_outline = prompt_screening_flow_outline(
+        session.questions, current_state=state_value
+    )
     flow_stats = prompt_flow_stats(session.questions)
     slot_examples = slot_fill_examples_for_question(question)
     yes_no_fields = [
@@ -1384,31 +1418,11 @@ Respond with ONE JSON object only — no markdown, no code fences. response_text
     return f"""# ROLE
 You are the conversational intelligence for "{business}", screening tenants on a live call. Understand casual, partial, or mixed answers; extract JSON; reply warmly in under 20 words.
 
-# CONTEXT
-- Today: {date.today().isoformat()} (use for all date questions — clarify past dates)
-- Property: {business} | {flow_stats}
-- Flow order (states; full wording is on CURRENT):
-{flow_outline}
-- Current: {state_value} — "{question_text}"
-- Guide: {question_guide}
-- Expect: {validation_hint or "complete answer for current question"}
-- Slots this question:
-{slots_block}
-- Captured so far: {extracted_json}
-- Caller: "{caller_line}"{retry_note}
-
-# BEHAVIOR
+# RULES (stable — same for every turn on this call)
 - Use SLOTS + captured data; never re-ask filled fields. question_complete=true only when CURRENT question is fully answered; false while you are asking a follow-up.
 - Vague dates/amounts: ask once for precision; accept if they cannot be more specific. For dates: if the year is before today, ask whether they meant a future date before accepting.
 - Cross-fill: if they volunteer later-step info, extract it, acknowledge briefly, stay on CURRENT.
-{slot_examples}
-
-{faq_section}
-
-# VOICE
 - Spoken text only — no markdown, bullets, or lists. Vary acknowledgments; answer interruptions warmly first, then resume CURRENT.
-
-# EXTRACTION
 - Extract only configured fields below, including future volunteered fields. *_raw = caller's exact words as a string (never true/false or bare numbers). Dates: ISO YYYY-MM-DD when clear. Phone/email/money: raw value; system normalizes.
 - Do not overwrite confirmed fields unless corrected this turn. understood=true if they answered CURRENT (even partial); false if off-topic, gibberish, only asked us, declined, or human/callback/stop.
 Fields:
@@ -1436,7 +1450,23 @@ relevance: on_topic|off_topic|unclear. corrected_fields: earlier fields they cha
   "plausibility_issue": null,
   "extracted_data": {{}},
   "call_complete": false
-}}"""
+}}
+
+# CALL CONTEXT (changes each turn)
+- Today: {date.today().isoformat()} (use for all date questions — clarify past dates)
+- Property: {business} | {flow_stats}
+- Flow order (states; full wording is on CURRENT):
+{flow_outline}
+- Current: {state_value} — "{question_text}"
+- Guide: {question_guide}
+- Expect: {validation_hint or "complete answer for current question"}
+- Slots this question:
+{slots_block}
+- Captured so far: {extracted_json}
+- Caller: "{caller_line}"{retry_note}
+{slot_examples}
+
+{faq_section}"""
 
 
 def validate_llm_response(response_data: dict) -> tuple[bool, str]:

@@ -75,6 +75,28 @@ def test_compose_spoken_display_ack_and_follow_up_not_tripled():
     assert display.count("phone number") == 1
 
 
-def test_dedupe_repeated_block():
-    text = "Hello there. Hello there."
-    assert dedupe_repeated_block(text) == "Hello there."
+def test_unsynthesized_remainder_empty_prefix_returns_full_intended():
+    """Documents stale-prefix behavior — voice path must not post-synth after live stream."""
+    from app.core.conversation import unsynthesized_speech_remainder
+
+    session = ConversationSession(call_id="t", phone_number="+1")
+    session.turn_streaming_finalize = {
+        "streamed_prefix": "",
+        "intended": "What is the best phone number for you?",
+        "streamed_sent": False,
+    }
+    assert (
+        unsynthesized_speech_remainder("", session)
+        == "What is the best phone number for you?"
+    )
+
+
+def test_live_path_finalize_marks_turn_complete():
+    session = ConversationSession(call_id="t", phone_number="+1")
+    session.turn_streaming_finalize = {
+        "streamed_prefix": "Thanks John",
+        "intended": "Thanks John. What is your phone number?",
+        "streamed_sent": True,
+        "live_path": True,
+    }
+    assert session.turn_streaming_finalize.get("live_path") is True

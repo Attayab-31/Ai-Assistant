@@ -66,12 +66,28 @@ def test_faq_pattern_match_includes_only_matched_answer():
     assert "fifty dollars" not in block
 
 
-def test_faq_unmatched_question_includes_all_answers():
-    # Looks like a question but matches no pattern → embed everything (safety).
+def test_faq_unmatched_question_includes_relevant_subset():
+    # Looks like a question but matches no pattern → top relevant FAQs, not all.
     block, is_full = _select_faq_block(_FAQS, "What is your policy on something?")
     assert is_full is True
-    assert "pet friendly" in block
-    assert "fifty dollars" in block
+    assert "pet friendly" in block or "fifty dollars" in block
+    assert block.count('topic "') <= 3
+
+
+def test_faq_unmatched_question_many_entries_caps_at_top_k():
+    many = _FAQS + [
+        {
+            "topic": f"topic_{i}",
+            "title": f"Title {i}",
+            "pattern": rf"\\bunique{i}\\b",
+            "answer": f"Answer number {i} about housing.",
+            "active": True,
+        }
+        for i in range(8)
+    ]
+    block, is_full = _select_faq_block(many, "What about parking and fees?")
+    assert is_full is True
+    assert block.count('topic "') <= 3
 
 
 def test_faq_topic_index_compact():

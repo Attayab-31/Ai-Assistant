@@ -603,7 +603,7 @@ async def handle_call_answered(session: ConversationSession) -> list[bytes]:
 
     session.add_transcript("AI", full_greeting)
 
-    parts = await synthesize_speech_parts(intro, question, session)
+    parts = await synthesize_speech_parts(intro, question, session, combine=True)
     if not parts:
         _, shutdown_parts, _ = await end_call_for_provider_failure(
             session, "tts", "Greeting speech synthesis failed"
@@ -815,6 +815,13 @@ async def process_tenant_speech(
                 session.streamed_speakable_prefix = ""
                 session.streamed_audio_sent_during_turn = False
                 session.streaming_ai_open = False
+                fin = session.turn_streaming_finalize or {}
+                session.turn_streaming_finalize = {
+                    **fin,
+                    "streamed_prefix": intended,
+                    "streamed_sent": True,
+                    "live_path": True,
+                }
                 return display or intended, [], complete
             if not ack and not follow_up and intended:
                 ack = _strip_streamed_speech(intended, session) or intended
@@ -850,11 +857,16 @@ async def process_tenant_speech(
                     f"prefix={streamed_prefix[:60]!r} combine={combine_audio}"
                 ),
             )
+            use_combine = combine_audio
+            if not use_combine and ack and follow_up:
+                streaming_on = getattr(session, "llm_streaming_enabled", True)
+                if not streaming_on and not session.streamed_audio_sent_during_turn:
+                    use_combine = True
             audio_parts = await synthesize_speech_parts(
                 ack if ack is not None else spoken,
                 follow_up,
                 session,
-                combine=combine_audio,
+                combine=use_combine,
                 on_part_ready=on_audio_part,
             )
             if (
@@ -866,6 +878,18 @@ async def process_tenant_speech(
                 return await end_call_for_provider_failure(
                     session, "tts", "All TTS providers failed"
                 )
+            # Voice WebSocket path: audio was already enqueued live via on_audio_part
+            # during LLM streaming and/or finish_turn synthesis — never return bytes
+            # for a second post-turn enqueue (that caused duplicated questions).
+            if on_audio_part and audio_parts:
+                fin = session.turn_streaming_finalize or {}
+                session.turn_streaming_finalize = {
+                    **fin,
+                    "streamed_prefix": intended,
+                    "streamed_sent": True,
+                    "live_path": True,
+                }
+                audio_parts = []
             session.llm_streamed_during_turn = False
             session.streamed_speakable_prefix = ""
             session.streamed_audio_sent_during_turn = False
@@ -1528,6 +1552,16 @@ async def process_tenant_speech(
             )
 
     if done:
+        if needs_readback_confirmation(
+            prior_state,
+            session.extracted_data,
+            session.questions,
+            session.confirmed_fields,
+        ):
+            confirm_turn = await _maybe_request_confirmation(prior_state)
+            if confirm_turn is not None:
+                return confirm_turn
+
         if (
             prior_q
             and is_question_required(prior_q)
@@ -1580,8 +1614,7 @@ async def process_tenant_speech(
             questions=session.questions,
             confirmed_fields=session.confirmed_fields,
         )
-        if made_progress and slots_satisfied:
-            session.retry_count = 0
+        if made_progress:
             if needs_readback_confirmation(
                 prior_state,
                 session.extracted_data,
@@ -1591,6 +1624,8 @@ async def process_tenant_speech(
                 confirm_turn = await _maybe_request_confirmation(prior_state)
                 if confirm_turn is not None:
                     return confirm_turn
+            if slots_satisfied:
+                session.retry_count = 0
         elif not made_progress:
             session.retry_count += 1
         if session.retry_count > session.max_retries:
@@ -1789,7 +1824,7 @@ async def get_llm_response_with_fallback(
     if voice_mode:
         max_retries = 1
         llm_timeout = float(getattr(session, "llm_timeout_voice_seconds", 5.5) or 5.5)
-        max_tokens = 200
+        max_tokens = 120
     else:
         llm_timeout = 5.0
         max_tokens = 300

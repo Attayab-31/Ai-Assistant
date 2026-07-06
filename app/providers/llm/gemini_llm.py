@@ -37,6 +37,7 @@ AVAILABLE_MODELS = [
 # budget truncates the JSON mid-string. Generous here is cheap because thinking
 # is disabled (see reasoning_effort below).
 _JSON_MIN_MAX_TOKENS = 768
+_VOICE_JSON_MIN_MAX_TOKENS = 256
 
 
 def extract_json_from_llm_text(text: str) -> str:
@@ -87,7 +88,15 @@ class GeminiLLMProvider(BaseLLMProvider):
     def _gemini_request_extra(
         self, *, json_mode: bool, max_tokens: int
     ) -> tuple[int, dict]:
-        effective_max = max(max_tokens, _JSON_MIN_MAX_TOKENS) if json_mode else max_tokens
+        if json_mode:
+            floor = (
+                _VOICE_JSON_MIN_MAX_TOKENS
+                if max_tokens <= 200
+                else _JSON_MIN_MAX_TOKENS
+            )
+            effective_max = max(max_tokens, floor)
+        else:
+            effective_max = max_tokens
         extra: dict = {}
         # Disable Gemini 2.5 "thinking" so reasoning tokens don't eat the budget.
         if self.model.startswith("gemini-2.5"):

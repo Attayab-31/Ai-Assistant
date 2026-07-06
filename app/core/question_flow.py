@@ -1542,27 +1542,61 @@ def prompt_fields_catalog(questions: list[dict[str, Any]] | None) -> str:
     return "\n".join(lines) if lines else "- (no active extract fields configured)"
 
 
-def prompt_screening_flow_outline(questions: list[dict[str, Any]] | None) -> str:
-    """Compact ordered flow — states + skip/confirm flags (full wording is on CURRENT)."""
+def _flow_outline_line(q: dict[str, Any], *, current_state: str | None = None) -> str:
+    tags: list[str] = []
+    cond = q.get("conditional")
+    if cond:
+        ref = cond.get("field", "")
+        op = cond.get("operator", "")
+        val = cond.get("value", "")
+        val_bit = f" {val!r}" if val not in (None, "") else ""
+        tags.append(f"if {ref}{op}{val_bit}")
+    if q.get("required", True) is False:
+        tags.append("opt")
+    if q.get("requires_confirmation"):
+        tags.append("confirm")
+    tag_str = f" [{', '.join(tags)}]" if tags else ""
+    state = str(q.get("state") or "")
+    marker = " ← CURRENT" if current_state and state == current_state else ""
+    return f"  {state}{tag_str}{marker}"
+
+
+def prompt_screening_flow_outline(
+    questions: list[dict[str, Any]] | None,
+    *,
+    current_state: str | None = None,
+    window_after: int = 3,
+) -> str:
+    """Compact ordered flow — states + skip/confirm flags (full wording is on CURRENT).
+
+    Short flows (≤8 active steps) list every state. Longer admin flows send only a
+    small window around *current_state* so per-turn LLM input stays bounded while
+    the full question list remains the admin source of truth at call start.
+    """
+    active = [q for q in normalize_questions(questions) if q.get("active", True)]
+    if not active:
+        return "  (no active questions configured)"
+    if len(active) <= 8 or not current_state:
+        return "\n".join(
+            _flow_outline_line(q, current_state=current_state) for q in active
+        )
+
+    states = [str(q.get("state") or "") for q in active]
+    try:
+        idx = states.index(current_state)
+    except ValueError:
+        idx = 0
+
+    start = max(0, idx - 1)
+    end = min(len(active), idx + window_after + 1)
     lines: list[str] = []
-    for q in normalize_questions(questions):
-        if not q.get("active", True):
-            continue
-        tags: list[str] = []
-        cond = q.get("conditional")
-        if cond:
-            ref = cond.get("field", "")
-            op = cond.get("operator", "")
-            val = cond.get("value", "")
-            val_bit = f" {val!r}" if val not in (None, "") else ""
-            tags.append(f"if {ref}{op}{val_bit}")
-        if q.get("required", True) is False:
-            tags.append("opt")
-        if q.get("requires_confirmation"):
-            tags.append("confirm")
-        tag_str = f" [{', '.join(tags)}]" if tags else ""
-        lines.append(f"  {q.get('state')}{tag_str}")
-    return "\n".join(lines) if lines else "  (no active questions configured)"
+    if start > 0:
+        lines.append(f"  ... ({start} earlier step(s))")
+    for q in active[start:end]:
+        lines.append(_flow_outline_line(q, current_state=current_state))
+    if end < len(active):
+        lines.append(f"  ... ({len(active) - end} more step(s))")
+    return "\n".join(lines)
 
 
 def prompt_flow_stats(questions: list[dict[str, Any]] | None) -> str:

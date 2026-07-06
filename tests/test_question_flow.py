@@ -177,6 +177,19 @@ def test_normalize_coerces_has_flags_to_bool():
     assert out["has_eviction"] is True
 
 
+def test_normalize_date_object_does_not_raise_name_error():
+    """Regression: date values used isinstance(..., datetime) without importing datetime."""
+    from datetime import date
+
+    from app.core.screening_flow import normalize_extracted_fields
+
+    out = normalize_extracted_fields(
+        {"move_in_date": date(2026, 7, 24)},
+        questions=[{"extract_fields": ["move_in_date"], "field_types": {"move_in_date": "date"}}],
+    )
+    assert out["move_in_date"] == "2026-07-24"
+
+
 def test_normalize_keeps_eviction_raw_as_caller_text():
     from app.core.screening_flow import normalize_extracted_fields
     from app.core.seed_data import load_seed_questions
@@ -684,6 +697,18 @@ def test_build_system_prompt_includes_admin_flow_outline():
     field = custom["extract_fields"][0]
     assert field in prompt
     assert "[confirm]" in prompt
+
+
+def test_prompt_flow_outline_windows_long_admin_flow():
+    from app.core.question_flow import default_questions_v2, prompt_screening_flow_outline
+
+    questions = default_questions_v2()
+    mid_state = questions[8]["state"]
+    outline = prompt_screening_flow_outline(questions, current_state=mid_state)
+    assert "← CURRENT" in outline
+    assert mid_state in outline
+    assert "earlier step(s)" in outline or "more step(s)" in outline
+    assert outline.count("\n") < len(questions)
 
 
 def test_merge_extracted_data_rejects_unknown_fields():

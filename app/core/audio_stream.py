@@ -33,7 +33,6 @@ from app.core.conversation import (
     reset_turn_streaming,
     should_suppress_silence_nudge,
     turn_budget_seconds,
-    unsynthesized_speech_remainder,
 )
 from app.core.streaming_stt import DeepgramStreamingSession
 from app.utils.audio import (
@@ -1272,53 +1271,22 @@ async def run_bidirectional_audio_stream(
                     break
 
                 if audio_streamed:
+                    # Low-latency path: all TTS for this turn was enqueued live via
+                    # on_audio_part during process_tenant_speech. Do not run post-turn
+                    # remainder/batch synthesis — that duplicated questions/read-backs.
                     fin = getattr(session, "turn_streaming_finalize", None) or {}
-                    if stream_turn_end_sent:
-                        vinfo(
-                            logger,
-                            "Skipping remainder TTS — batch audio already ended turn",
-                            session=session,
-                            call_id=call_id,
-                            phase=Phase.TTS_DEDUP_SKIP,
-                            detail=f"intended={(fin.get('intended') or response_text or '')[:80]!r}",
-                        )
-                    else:
-                        remainder = unsynthesized_speech_remainder(
-                            response_text, session
-                        )
-                        vinfo(
-                            logger,
-                            f"Post-stream audio path remainder={remainder[:60]!r}"
-                            if remainder
-                            else "Post-stream audio path (no remainder)",
-                            session=session,
-                            call_id=call_id,
-                            phase=Phase.TTS_REMAINDER if remainder else Phase.TTS_DEDUP_SKIP,
-                            detail=(
-                                f"streamed_prefix={fin.get('streamed_prefix', '')[:60]!r} "
-                                f"intended={fin.get('intended', '')[:60]!r} "
-                                f"streamed_sent={fin.get('streamed_sent')}"
-                            ),
-                        )
-                        if remainder:
-                            retry_audio = await call_handler.synthesize_with_fallback(
-                                remainder, session
-                            )
-                            if retry_audio:
-                                vinfo(
-                                    logger,
-                                    f"Remainder TTS synthesized ({len(retry_audio)} bytes)",
-                                    session=session,
-                                    call_id=call_id,
-                                    phase=Phase.TTS_REMAINDER,
-                                    bytes=len(retry_audio),
-                                    detail=f"text={remainder[:80]!r}",
-                                )
-                                await enqueue_audio([retry_audio], turn_end=True)
-                            else:
-                                await enqueue_audio([], turn_end=True)
-                        else:
-                            await enqueue_audio([], turn_end=True)
+                    vinfo(
+                        logger,
+                        "Low-latency turn audio complete — no post-turn TTS",
+                        session=session,
+                        call_id=call_id,
+                        phase=Phase.TTS_DEDUP_SKIP,
+                        detail=(
+                            f"intended={(fin.get('intended') or response_text or '')[:80]!r} "
+                            f"stream_turn_end_sent={stream_turn_end_sent}"
+                        ),
+                    )
+                    await enqueue_audio([], turn_end=True)
                     session.turn_streaming_finalize = None
                 elif audio_parts:
                     vinfo(
