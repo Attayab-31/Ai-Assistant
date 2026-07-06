@@ -944,3 +944,56 @@ def test_has_sufficient_extraction_requires_required_and_confirmed():
         confirmed_fields={"full_name", "contact_phone", "email"},
     )
 
+
+def test_new_language_question_has_options_and_field():
+    from app.core.question_flow import new_language_question
+
+    q = new_language_question(order=1)
+    assert q["answer_type"] == "language_choice"
+    assert q["extract_fields"] == ["preferred_language"]
+    assert len(q["language_options"]) >= 2
+    assert q["requires_confirmation"] is False
+    assert q["scoring"]["enabled"] is False
+
+
+def test_resolve_language_choice_uses_admin_aliases():
+    from app.core.question_flow import new_language_question, resolve_language_choice
+
+    q = new_language_question()
+    assert resolve_language_choice("I'd like español please", q) == "es"
+    assert resolve_language_choice("English please", q) == "en"
+    assert resolve_language_choice("French", q) is None
+
+
+def test_extract_fields_from_speech_language_choice():
+    from app.core.question_flow import extract_fields_from_speech, new_language_question
+
+    q = new_language_question()
+    out = extract_fields_from_speech("Spanish", q)
+    assert out["preferred_language"] == "es"
+
+
+def test_validate_language_choice_rejects_scoring():
+    from app.core.question_flow import new_language_question, validate_questions_for_save
+
+    q = new_language_question()
+    q["scoring"] = {
+        "enabled": True,
+        "max_points": 5,
+        "rule_type": "any_answer",
+        "pass_config": {},
+    }
+    with pytest.raises(ValueError, match="cannot affect score"):
+        validate_questions_for_save([q])
+
+
+def test_validate_only_one_active_language_choice():
+    from app.core.question_flow import new_language_question, validate_questions_for_save
+
+    q1 = new_language_question(order=1)
+    q2 = dict(q1)
+    q2["id"] = "Q0_LANGUAGE_OTHER"
+    q2["state"] = "Q0_LANGUAGE_OTHER"
+    with pytest.raises(ValueError, match="Only one language choice"):
+        validate_questions_for_save([q1, q2])
+

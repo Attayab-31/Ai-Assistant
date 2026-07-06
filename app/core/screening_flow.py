@@ -20,9 +20,14 @@ logger = logging.getLogger(__name__)
 BUSINESS_NAME = "Ready Rentals Online"
 
 
-def build_greeting_intro(business: str = BUSINESS_NAME) -> str:
+def build_greeting_intro(business: str = BUSINESS_NAME, *, language_code: str = "en") -> str:
     """Short default opening when admin has not set a custom greeting."""
     name = (business or "").strip() or BUSINESS_NAME
+    if str(language_code).lower().startswith("es"):
+        return (
+            f"Hola y gracias por llamar a {name}. "
+            "Soy su asistente virtual. Empecemos."
+        )
     return (
         f"Hello and thank you for calling {name}! "
         "I'm your virtual assistant. Let's get started!"

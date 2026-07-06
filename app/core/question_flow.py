@@ -31,8 +31,91 @@ ANSWER_TYPES = frozenset(
         "date",
         "phone",
         "email",
+        "language_choice",
     }
 )
+
+DEFAULT_LANGUAGE_OPTIONS: tuple[dict[str, Any], ...] = (
+    {
+        "value": "en",
+        "label": "English",
+        "aliases": ["english", "inglés", "ingles", "en"],
+    },
+    {
+        "value": "es",
+        "label": "Español",
+        "aliases": ["spanish", "español", "espanol", "es"],
+    },
+)
+
+
+def default_language_options() -> list[dict[str, Any]]:
+    return [dict(o) for o in DEFAULT_LANGUAGE_OPTIONS]
+
+
+def canonical_language_code(value: Any) -> str | None:
+    """Normalize admin / caller language tokens to ``en`` or ``es``."""
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return None
+    cleaned = re.sub(r"[^a-z-]", "", raw)
+    if cleaned.startswith("es") or cleaned in {"spanish", "espanol", "español", "spa"}:
+        return "es"
+    if cleaned.startswith("en") or cleaned in {"english", "ingles"}:
+        return "en"
+    return None
+
+
+def normalize_language_options(raw: Any) -> list[dict[str, Any]]:
+    """Return at least two unique language options for a language_choice question."""
+    if not isinstance(raw, list) or not raw:
+        return default_language_options()
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        code = canonical_language_code(item.get("value")) or str(
+            item.get("value") or ""
+        ).strip().lower()
+        if not code or code in seen:
+            continue
+        seen.add(code)
+        aliases = [
+            str(alias).strip()
+            for alias in (item.get("aliases") or [])
+            if str(alias).strip()
+        ]
+        label = str(item.get("label") or code).strip() or code
+        out.append({"value": code, "label": label, "aliases": aliases})
+    return out if len(out) >= 2 else default_language_options()
+
+
+def resolve_language_choice(
+    transcript: str,
+    question: dict[str, Any] | None = None,
+) -> str | None:
+    """Match caller speech to a configured language code (``en`` / ``es``)."""
+    from app.core.screening_flow import normalize_text
+
+    text = normalize_text(transcript or "")
+    if not text:
+        return None
+    if question and str(question.get("answer_type")) == "language_choice":
+        for opt in normalize_language_options(question.get("language_options")):
+            code = canonical_language_code(opt.get("value"))
+            if not code:
+                continue
+            candidates = {code, normalize_text(opt.get("label") or "")}
+            for alias in opt.get("aliases") or []:
+                candidates.add(normalize_text(str(alias)))
+            for cand in candidates:
+                if not cand:
+                    continue
+                if cand == text or re.search(rf"\b{re.escape(cand)}\b", text):
+                    return code
+        return None
+    return canonical_language_code(transcript)
 
 SCORING_RULE_TYPES = frozenset(
     {
@@ -310,12 +393,13 @@ def migrate_question_to_v2(q: dict[str, Any]) -> dict[str, Any]:
     if conditional is None and meta.get("conditional"):
         conditional = dict(meta["conditional"])
 
-    return {
+    answer_type = _infer_answer_type(q)
+    result = {
         "schema_version": SCHEMA_VERSION,
         "id": str(q.get("id") or f"Q_{state}"),
         "state": state or f"CUSTOM_{uuid.uuid4().hex[:8].upper()}",
         "question": str(q.get("question") or "Please answer this question."),
-        "answer_type": _infer_answer_type(q),
+        "answer_type": answer_type,
         "extract_fields": extract_fields or [f"field_{q.get('id', 'custom')}"],
         "field_labels": field_labels,
         "validation": q.get("validation"),
@@ -343,6 +427,28 @@ def migrate_question_to_v2(q: dict[str, Any]) -> dict[str, Any]:
             q.get("speech_mode"), meta.get("speech_mode"), state
         ),
     }
+    if answer_type == "language_choice":
+        result["extract_fields"] = ["preferred_language"]
+        result["field_labels"] = dict(
+            q.get("field_labels") or {"preferred_language": "preferred language"}
+        )
+        result["requires_confirmation"] = False
+        result["language_options"] = normalize_language_options(q.get("language_options"))
+        if not str(result.get("understanding_guide") or "").strip():
+            labels = ", ".join(o["label"] for o in result["language_options"])
+            codes = ", ".join(o["value"] for o in result["language_options"])
+            result["understanding_guide"] = (
+                f"Extract preferred_language as one of: {codes}. "
+                f"Caller may say: {labels}."
+            )
+        lang_scoring = result.get("scoring") or {}
+        if lang_scoring.get("enabled"):
+            result["scoring"] = {
+                **lang_scoring,
+                "enabled": False,
+                "max_points": 0,
+            }
+    return result
 
 
 def migrate_questions_to_v2(questions: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
@@ -591,6 +697,8 @@ def _extract_fields_satisfied(
         return _is_valid_phone(data.get(primary))
     if answer_type == "email":
         return _is_valid_email(data.get(primary))
+    if answer_type == "language_choice":
+        return canonical_language_code(data.get(primary)) is not None
     if answer_type in ("text", "long_text"):
         if _has_value(data, primary):
             return True
@@ -623,43 +731,77 @@ def is_question_answered_for_def(
     return _extract_fields_satisfied(q, data, answer_type=answer_type)
 
 
-def readback_prompt_for_question(q: dict[str, Any], value: str) -> str:
+def _is_spanish_language(language_code: str | None) -> bool:
+    code = str(language_code or "").strip().lower()
+    return code.startswith("es")
+
+
+def readback_prompt_for_question(
+    q: dict[str, Any], value: str, *, language_code: str = "en"
+) -> str:
     """Spoken read-back for any admin-configured question with confirmation."""
     answer_type = str(q.get("answer_type") or "text")
     primary = _primary_field(q)
     labels = q.get("field_labels") or {}
     label = str(labels.get(primary) or primary.replace("_", " ")).strip()
 
+    is_es = _is_spanish_language(language_code)
+
     if answer_type == "phone":
         from app.core.screening_flow import _digits_spaced
 
+        if is_es:
+            return (
+                "Permiteme repetirlo para asegurarme de tenerlo bien: "
+                f"{_digits_spaced(str(value))}. Es correcto?"
+            )
         return (
             "Let me read that back to make sure I have it right — "
             f"{_digits_spaced(str(value))}. Is that correct?"
         )
     if answer_type == "email":
+        if is_es:
+            return f"Tengo su {label} como {value}. Esta bien?"
         return f"I have your {label} as {value}. Is that right?"
     if "name" in primary.lower() or "name" in label.lower():
+        if is_es:
+            return f"Solo para confirmar, tengo su {label} como {value}. Es correcto?"
         return f"Just to confirm, I have your {label} as {value}. Did I get that right?"
+    if is_es:
+        return f"Solo para confirmar, tengo {label} como {value}. Es correcto?"
     return f"Just to confirm, I have {label} as {value}. Is that correct?"
 
 
-def repair_prompt_for_question(q: dict[str, Any]) -> str:
+def repair_prompt_for_question(q: dict[str, Any], *, language_code: str = "en") -> str:
     """Re-ask prompt after the caller rejects a read-back."""
     answer_type = str(q.get("answer_type") or "text")
     primary = _primary_field(q)
     question_text = str(q.get("question") or "").strip()
+    is_es = _is_spanish_language(language_code)
     if answer_type == "phone":
+        if is_es:
+            return "No hay problema. Diga su numero de telefono otra vez, digito por digito."
         return "No problem — please say your phone number again, one digit at a time."
     if answer_type == "email":
+        if is_es:
+            return (
+                "No hay problema. Podria decir su correo otra vez despacio? "
+                "Puede deletrearlo."
+            )
         return (
             "No problem — could you say your email again slowly? "
             "Feel free to spell it."
         )
     if "name" in primary.lower():
+        if is_es:
+            return "No hay problema. Podria decir su nombre completo otra vez, claramente?"
         return "No problem — could you say your full name again, nice and clearly?"
     if question_text:
+        if is_es:
+            return f"No hay problema. {question_text}"
         return f"No problem — {question_text}"
+    if is_es:
+        return "No hay problema. Podria repetirlo?"
     return "No problem — could you say that again?"
 
 
@@ -667,20 +809,28 @@ def readback_prompt_for_state(
     state_value: str,
     value: str,
     questions: list[dict[str, Any]] | None = None,
+    *,
+    language_code: str = "en",
 ) -> str:
     q = questions_index(questions).get(str(state_value))
     if q:
-        return readback_prompt_for_question(q, value)
+        return readback_prompt_for_question(q, value, language_code=language_code)
+    if _is_spanish_language(language_code):
+        return f"Solo para confirmar, tengo {value}. Es correcto?"
     return f"Just to confirm, I have {value}. Is that correct?"
 
 
 def repair_prompt_for_state(
     state_value: str,
     questions: list[dict[str, Any]] | None = None,
+    *,
+    language_code: str = "en",
 ) -> str:
     q = questions_index(questions).get(str(state_value))
     if q:
-        return repair_prompt_for_question(q)
+        return repair_prompt_for_question(q, language_code=language_code)
+    if _is_spanish_language(language_code):
+        return "No hay problema. Podria repetirlo?"
     return "No problem — could you say that again?"
 
 
@@ -782,6 +932,10 @@ def extract_fields_from_speech(
             count = _word_or_digit_count(stripped)
             if count is not None:
                 out[primary] = count
+    elif answer_type == "language_choice":
+        resolved = resolve_language_choice(stripped, question)
+        if resolved:
+            out[primary] = resolved
     elif answer_type in ("text", "long_text"):
         mode = speech_mode_for_question(question)
         if mode == "spoken_name":
@@ -998,6 +1152,7 @@ def validation_hint_for_question(q: dict[str, Any]) -> str:
         "currency": "money amount; preserve exact wording in any *_raw field",
         "long_text": f"complete answer for {label}",
         "text": f"clear answer for {label}",
+        "language_choice": "one of the configured language options",
     }
     return defaults.get(answer_type, defaults["text"])
 
@@ -1070,6 +1225,10 @@ def understanding_guide_for_question(q: dict[str, Any]) -> str:
         "email": f"Extract and normalize an email for {label}.",
         "long_text": f"Capture a complete answer for {label}.",
         "text": f"Extract {label} from the caller's reply.",
+        "language_choice": (
+            "Map the caller's reply to preferred_language using only the "
+            "configured language options (codes en/es)."
+        ),
     }
     return hints.get(answer_type, hints["text"])
 
@@ -1186,6 +1345,15 @@ def validate_questions_for_save(
     if not questions:
         raise ValueError("At least one question is required")
 
+    for raw_q in questions:
+        if not isinstance(raw_q, dict):
+            continue
+        if str(raw_q.get("answer_type")) == "language_choice":
+            if (raw_q.get("scoring") or {}).get("enabled"):
+                raise ValueError(
+                    f"Language choice question {raw_q.get('id')} cannot affect score"
+                )
+
     normalized = [migrate_question_to_v2(dict(q)) for q in questions]
     ids = [str(q["id"]) for q in normalized]
     states = [str(q["state"]) for q in normalized]
@@ -1200,6 +1368,7 @@ def validate_questions_for_save(
 
     normalized.sort(key=lambda x: int(x.get("order") or 0))
 
+    active_language_choice = 0
     known_fields: set[str] = set()
     primary_fields: set[str] = set()
     for q in normalized:
@@ -1226,6 +1395,31 @@ def validate_questions_for_save(
         # and scoring. Secondary/raw fields (e.g. pets_raw, eviction_raw) may be
         # shared between a question and its conditional follow-up.
         primary = str(fields[0])
+
+        if str(q.get("answer_type")) == "language_choice":
+            if "preferred_language" in primary_fields:
+                raise ValueError("Only one language choice question is allowed")
+            if primary != "preferred_language":
+                raise ValueError(
+                    f"Language choice question {q.get('id')} must use "
+                    "preferred_language as its primary field"
+                )
+            opts = normalize_language_options(q.get("language_options"))
+            codes = [canonical_language_code(o["value"]) for o in opts]
+            if len(opts) < 2 or any(c is None for c in codes):
+                raise ValueError(
+                    f"Language choice question {q.get('id')} needs at least "
+                    "two valid language options"
+                )
+            if len(set(codes)) != len(codes):
+                raise ValueError(
+                    f"Duplicate language codes on {q.get('id')}"
+                )
+            q["language_options"] = opts
+            q["requires_confirmation"] = False
+            if q.get("active", True):
+                active_language_choice += 1
+
         locked_primary = locked_primary_field_for_state(str(q.get("state") or ""))
         if locked_primary is not None and primary != locked_primary:
             raise ValueError(
@@ -1251,6 +1445,9 @@ def validate_questions_for_save(
 
         for field in fields:
             known_fields.add(str(field))
+
+    if active_language_choice > 1:
+        raise ValueError("Only one active language choice question is allowed")
 
     for idx, q in enumerate(normalized, start=1):
         q["order"] = idx
@@ -1289,6 +1486,32 @@ def coerce_questions_for_runtime(
             exc,
         )
         return default_questions_v2()
+
+
+def new_language_question(
+    *,
+    question: str = (
+        "Which language would you like to use for this call — English or Spanish?"
+    ),
+    order: int = 1,
+    active: bool = True,
+) -> dict[str, Any]:
+    """Admin helper: first-call language picker (order 1, before screening)."""
+    uid = uuid.uuid4().hex[:8]
+    return migrate_question_to_v2(
+        {
+            "id": f"Q0_LANGUAGE_{uid.upper()}",
+            "state": f"Q0_LANGUAGE_{uid.upper()}",
+            "question": question,
+            "answer_type": "language_choice",
+            "extract_fields": ["preferred_language"],
+            "field_labels": {"preferred_language": "preferred language"},
+            "retry_prompt": "You can say English or Spanish.",
+            "language_options": default_language_options(),
+            "order": order,
+            "active": active,
+        }
+    )
 
 
 def new_custom_question(

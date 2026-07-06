@@ -62,6 +62,7 @@ from app.core.data_extractor import extract_tenant_data
 from app.core.qualifier import calculate_qualification_score
 from app.core.question_flow import (
     build_confirm_field_map,
+    canonical_language_code,
     first_active_question_state,
     is_question_answered,
     is_question_required,
@@ -72,6 +73,7 @@ from app.core.question_flow import (
     questions_index,
     readback_prompt_for_state,
     repair_prompt_for_state,
+    resolve_language_choice,
     screening_complete,
 )
 from app.core.screening_flow import (
@@ -119,6 +121,29 @@ VOICE_TURN_INTERNAL_BUFFER_SECONDS = 0.6
 _llm_health_hints: dict[str, dict[str, float]] = {}
 
 
+def _is_spanish(session: ConversationSession) -> bool:
+    return str(getattr(session, "call_language", "en")).strip().lower().startswith("es")
+
+
+def _localize(session: ConversationSession, en: str, es: str) -> str:
+    return es if _is_spanish(session) else en
+
+
+def _apply_session_language(session: ConversationSession, lang: str | None) -> None:
+    resolved = canonical_language_code(lang)
+    if not resolved or resolved == session.call_language:
+        return
+    session.call_language = resolved
+    providers = get_call_providers(session)
+    stt_obj = getattr(providers, "stt", None)
+    if stt_obj is not None and hasattr(stt_obj, "language"):
+        setattr(stt_obj, "language", "es" if resolved == "es" else "en-US")
+    tts_obj = getattr(providers, "tts", None)
+    if tts_obj is not None and hasattr(tts_obj, "language_code"):
+        setattr(tts_obj, "language_code", "es-US" if resolved == "es" else "en-US")
+    logger.info("[%s] Session language set to %s", session.call_id, resolved)
+
+
 def _caller_first_name(session: ConversationSession) -> str:
     """Return the caller's first name if we captured a clean one, else ''."""
     name_field = primary_name_field(session.questions) or "full_name"
@@ -139,8 +164,26 @@ def human_ack(session: ConversationSession) -> str:
     question flow.
     """
     base = brief_transition(session.questions_answered)
+    if _is_spanish(session):
+        base = random.choice(
+            (
+                "Entendido.",
+                "Perfecto.",
+                "Gracias.",
+                "Muy bien.",
+                "Excelente.",
+            )
+        )
     first = _caller_first_name(session)
     if first and random.random() < 0.45:
+        if _is_spanish(session):
+            return random.choice(
+                (
+                    f"Gracias, {first}.",
+                    f"Perfecto, {first}.",
+                    f"Muy bien, {first}.",
+                )
+            )
         return random.choice(
             (f"Thanks, {first}.", f"Got it, {first}.", f"Perfect, {first}.")
         )
@@ -597,7 +640,7 @@ async def handle_call_answered(session: ConversationSession) -> list[bytes]:
     if session.greeting_message:
         intro = session.greeting_message.replace("{property_name}", business)
     else:
-        intro = build_greeting_intro(business)
+        intro = build_greeting_intro(business, language_code=session.call_language)
     first_state = first_active_question_state(session.questions)
     session.current_state = first_state or CallState.WRAP_UP.value
     q1 = session.get_current_question()
@@ -988,7 +1031,10 @@ async def process_tenant_speech(
             "attempts": 1,
         }
         read_back = readback_prompt_for_state(
-            state_value, str(value), session.questions
+            state_value,
+            str(value),
+            session.questions,
+            language_code=session.call_language,
         )
         logger.info("[%s] Read-back confirm %s=%r", session.call_id, field, value)
         return await finish_turn(
@@ -1004,7 +1050,11 @@ async def process_tenant_speech(
         session.extracted_data.pop(field, None)
         session.current_state = state_obj
         session.retry_count = 0
-        prompt = repair_prompt_for_state(state_obj, session.questions)
+        prompt = repair_prompt_for_state(
+            state_obj,
+            session.questions,
+            language_code=session.call_language,
+        )
         return await finish_turn(prompt, ack=prompt, follow_up="", require_speech=True)
 
     async def _reask_current(
@@ -1017,9 +1067,11 @@ async def process_tenant_speech(
         """
         question = session.get_current_question()
         follow_up = (question or {}).get("question", "") or (
-            "Where were we — go ahead whenever you're ready."
+            "Donde ibamos? Adelante cuando este listo."
+            if _is_spanish(session)
+            else "Where were we — go ahead whenever you're ready."
         )
-        ack = ack_text or "Perfect, thank you."
+        ack = ack_text or _localize(session, "Perfect, thank you.", "Perfecto, gracias.")
         response = " ".join(part for part in (ack, follow_up) if part).strip()
         reset_turn_streaming(session)
         return await finish_turn(response, ack=ack, follow_up=follow_up)
@@ -1094,6 +1146,18 @@ async def process_tenant_speech(
         if value not in (None, ""):
             clean_extracted[key] = value
     extracted = clean_extracted
+    question_cfg = session.get_current_question() or {}
+    q_fields = {str(f) for f in (question_cfg.get("extract_fields") or [])}
+    if (
+        not any(k in extracted for k in ("preferred_language", "language", "call_language"))
+        and q_fields.intersection({"preferred_language", "language", "call_language"})
+    ):
+        if str(question_cfg.get("answer_type")) == "language_choice":
+            guessed_lang = resolve_language_choice(transcript, question_cfg)
+        else:
+            guessed_lang = canonical_language_code(transcript)
+        if guessed_lang:
+            extracted["preferred_language"] = guessed_lang
 
     # Caller's words were just our own audio echoing back with nothing new.
     if intent_kind == "echo" and not extracted:
@@ -1144,7 +1208,7 @@ async def process_tenant_speech(
                     session.mark_field_confirmed(c["field"])
                 session.current_state = return_state
                 return await _reask_current()
-            rb = build_correction_readback(cfields)
+            rb = build_correction_readback(cfields, session=session)
             logger.info(
                 "[%s] Correction re-adjusted: %s", session.call_id, sorted(re_changed)
             )
@@ -1174,7 +1238,7 @@ async def process_tenant_speech(
                 session.pending_confirmation = None
                 session.current_state = return_state
                 return await _reask_current()
-            again = response_text or build_correction_readback(cfields)
+            again = response_text or build_correction_readback(cfields, session=session)
             return await finish_turn(again, ack=again, follow_up="", require_speech=True)
 
     # ── Pending read-back confirmation ──────────────────────────────────────
@@ -1199,7 +1263,10 @@ async def process_tenant_speech(
             if pending["attempts"] > confirmation_attempt_limit(session):
                 return await _repair_confirmation_field(state_obj, field)
             read_back = readback_prompt_for_state(
-                pending["state"], str(pending["value"]), session.questions
+                pending["state"],
+                str(pending["value"]),
+                session.questions,
+                language_code=session.call_language,
             )
             logger.info(
                 "[%s] Caller corrected %s -> %r", session.call_id, field, new_val
@@ -1229,7 +1296,9 @@ async def process_tenant_speech(
             session.current_state = state_obj
             session.retry_count = 0
             prompt = response_text or repair_prompt_for_state(
-                pending["state"], session.questions
+                pending["state"],
+                session.questions,
+                language_code=session.call_language,
             )
             return await finish_turn(
                 prompt, ack=prompt, follow_up="", require_speech=True
@@ -1241,9 +1310,16 @@ async def process_tenant_speech(
             if pending["attempts"] > confirmation_attempt_limit(session):
                 return await _repair_confirmation_field(state_obj, field)
             again = response_text or (
-                "Sorry, I just want to be sure. "
+                _localize(
+                    session,
+                    "Sorry, I just want to be sure. ",
+                    "Perdon, solo quiero asegurarme. ",
+                )
                 + readback_prompt_for_state(
-                    pending["state"], str(pending["value"]), session.questions
+                    pending["state"],
+                    str(pending["value"]),
+                    session.questions,
+                    language_code=session.call_language,
                 )
             )
             return await finish_turn(
@@ -1263,12 +1339,20 @@ async def process_tenant_speech(
             q_text = (question or {}).get("question", "")
             if q_text:
                 response_text = (
-                    "No problem — we can follow up later. " f"Before you go, {q_text}"
+                    _localize(
+                        session,
+                        "No problem — we can follow up later. ",
+                        "No hay problema, podemos dar seguimiento despues. ",
+                    )
+                    + f"{_localize(session, 'Before you go,', 'Antes de irse,')} {q_text}"
                 )
             else:
                 response_text = (
-                    "No problem — we can follow up later. "
-                    "Is there anything else you need right now?"
+                    _localize(
+                        session,
+                        "No problem — we can follow up later. Is there anything else you need right now?",
+                        "No hay problema, podemos dar seguimiento despues. Necesita algo mas ahora?",
+                    )
                 )
             logger.info(
                 "[%s] Callback redirect (soft) — staying on %s",
@@ -1294,16 +1378,27 @@ async def process_tenant_speech(
         )
         if control_intent == "human_requested":
             response_text = response_text or (
-                "Of course. If you'd like to speak with a team member, I can forward "
-                "your information and have someone reach out as soon as possible."
+                _localize(
+                    session,
+                    "Of course. If you'd like to speak with a team member, I can forward your information and have someone reach out as soon as possible.",
+                    "Claro. Si desea hablar con una persona del equipo, puedo enviar su informacion para que le contacten pronto.",
+                )
             )
         elif control_intent == "callback_requested":
             response_text = response_text or (
-                "No problem. I will note that you asked for a call back later."
+                _localize(
+                    session,
+                    "No problem. I will note that you asked for a call back later.",
+                    "No hay problema. Dejare anotado que prefiere que le devolvamos la llamada.",
+                )
             )
         else:
             response_text = response_text or (
-                "No problem. We will save what you shared so far."
+                _localize(
+                    session,
+                    "No problem. We will save what you shared so far.",
+                    "No hay problema. Guardaremos lo que compartio hasta ahora.",
+                )
             )
         return await finish_turn(response_text, complete=True)
 
@@ -1319,8 +1414,16 @@ async def process_tenant_speech(
             question = session.get_current_question()
             prompt = (question or {}).get(
                 "question"
-            ) or "Please go ahead when you're ready."
-            return await finish_turn(prompt, ack="Great, thanks.", follow_up=prompt)
+            ) or _localize(
+                session,
+                "Please go ahead when you're ready.",
+                "Adelante cuando este listo.",
+            )
+            return await finish_turn(
+                prompt,
+                ack=_localize(session, "Great, thanks.", "Perfecto, gracias."),
+                follow_up=prompt,
+            )
 
     # ── Relevance gate: off-topic or unintelligible replies ─────────────────
     # Two distinct cases, handled differently:
@@ -1379,6 +1482,10 @@ async def process_tenant_speech(
     # normalizes formats afterwards (see normalize_extracted_fields).
     if extracted:
         session.merge_extracted_data(extracted, raw_text=transcript)
+        for key in ("preferred_language", "language", "call_language"):
+            if key in session.extracted_data:
+                _apply_session_language(session, session.extracted_data.get(key))
+                break
         logger.info(
             "[%s] Extracted fields merged: %s", session.call_id, sorted(extracted)
         )
@@ -1672,10 +1779,15 @@ async def process_tenant_speech(
     return await finish_turn(response_text, ack=response_text, follow_up="")
 
 
-PROGRESSIVE_SILENCE_PROMPTS = (
+PROGRESSIVE_SILENCE_PROMPTS_EN = (
     "Are you still there?",
     "Take your time, I'm here when you're ready.",
     "I haven't heard anything. We can continue now or reconnect later.",
+)
+PROGRESSIVE_SILENCE_PROMPTS_ES = (
+    "Sigue ahi?",
+    "Tome su tiempo, aqui estoy cuando este listo.",
+    "No he escuchado respuesta. Podemos continuar ahora o reconectar mas tarde.",
 )
 
 
@@ -1734,17 +1846,19 @@ async def handle_silence(session: ConversationSession) -> tuple[str, list[bytes]
     session.silence_count += 1
     logger.warning("[%s] Silence count: %s", session.call_id, session.silence_count)
 
-    if session.silence_count > len(PROGRESSIVE_SILENCE_PROMPTS):
+    prompts = PROGRESSIVE_SILENCE_PROMPTS_ES if _is_spanish(session) else PROGRESSIVE_SILENCE_PROMPTS_EN
+    if session.silence_count > len(prompts):
         session.control_flags["ended_after_repeated_silence"] = True
-        farewell = (
-            "It seems we may have missed each other. We will save what you "
-            "shared so far and follow up if needed. Goodbye."
+        farewell = _localize(
+            session,
+            "It seems we may have missed each other. We will save what you shared so far and follow up if needed. Goodbye.",
+            "Parece que no logramos escucharnos bien. Guardaremos lo que compartio hasta ahora y daremos seguimiento si hace falta. Adios.",
         )
         session.add_transcript("AI", farewell)
         audio = await synthesize_with_fallback(farewell, session)
         return farewell, [audio] if audio else [], True
 
-    prompt = PROGRESSIVE_SILENCE_PROMPTS[session.silence_count - 1]
+    prompt = prompts[session.silence_count - 1]
     session.silence_nudge_active = True
     session.add_transcript("AI", prompt)
     audio = await synthesize_with_fallback(prompt, session)

@@ -55,12 +55,26 @@ class ScoringRule(BaseModel):
     pass_config: dict[str, Any] = Field(default_factory=dict)
 
 
+class LanguageOption(BaseModel):
+    value: str
+    label: str
+    aliases: list[str] = Field(default_factory=list)
+
+
 class ScreeningQuestion(BaseModel):
     id: str
     state: str
     question: str
     answer_type: Literal[
-        "text", "long_text", "yes_no", "number", "currency", "date", "phone", "email"
+        "text",
+        "long_text",
+        "yes_no",
+        "number",
+        "currency",
+        "date",
+        "phone",
+        "email",
+        "language_choice",
     ] = "text"
     extract_fields: list[str] = Field(default_factory=list)
     field_labels: dict[str, str] = Field(default_factory=dict)
@@ -76,6 +90,9 @@ class ScreeningQuestion(BaseModel):
     scoring: ScoringRule | None = None
     understanding_guide: str | None = None
     schema_version: int | None = None
+    speech_mode: str | None = None
+    require_all_extract_fields: bool = False
+    language_options: list[LanguageOption] | None = None
 
 
 class QuestionsUpdateRequest(BaseModel):

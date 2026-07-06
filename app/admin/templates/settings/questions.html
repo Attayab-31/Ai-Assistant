@@ -38,6 +38,7 @@
       <option value="number">Add: number</option>
       <option value="currency">Add: money amount</option>
       <option value="date">Add: date / timeframe</option>
+      <option value="language_choice">Add: language choice</option>
     </select>
     <button type="button" onclick="addQuestion()" class="btn btn-secondary settings-edit-only">Add question</button>
     <button type="button" onclick="withBtnLoading(this, resetQuestions, 'Resetting\u2026')" class="btn btn-secondary settings-edit-only">Reset to defaults</button>
@@ -97,6 +98,7 @@
     date: 'Date or timeframe',
     phone: 'Phone number',
     email: 'Email address',
+    language_choice: 'Language choice',
   };
 
   const SCORE_PRESETS = [
@@ -335,8 +337,127 @@
       </div>`).join('');
   }
 
+  function defaultLanguageOptions() {
+    return [
+      { value: 'en', label: 'English', aliases: ['english', 'ingles', 'inglés', 'en'] },
+      { value: 'es', label: 'Español', aliases: ['spanish', 'espanol', 'español', 'es'] },
+    ];
+  }
+
+  function languageOptionRowHtml(opt, idx) {
+    const aliases = (opt.aliases || []).join(', ');
+    const minRows = 2;
+    return `
+      <div class="language-option-row" style="display:grid;grid-template-columns:80px 1fr 1fr auto;gap:8px;margin-bottom:8px;align-items:end;">
+        <label>Code<input class="lang-opt-value" value="${esc(opt.value || '')}" placeholder="en"></label>
+        <label>Spoken label<input class="lang-opt-label" value="${esc(opt.label || '')}" placeholder="English"></label>
+        <label>Aliases (comma-separated)<input class="lang-opt-aliases" value="${esc(aliases)}" placeholder="english, ingles"></label>
+        <button type="button" class="btn btn-secondary btn-sm remove-lang-opt" ${idx < minRows ? 'disabled title="At least 2 languages"' : ''}>Remove</button>
+      </div>`;
+  }
+
+  function languageOptionsPanelHtml(q) {
+    const opts = (q.language_options && q.language_options.length >= 2)
+      ? q.language_options
+      : defaultLanguageOptions();
+    const rows = opts.map((o, i) => languageOptionRowHtml(o, i)).join('');
+    return `
+      <fieldset class="language-options-panel" style="border:1px solid var(--line);border-radius:8px;padding:10px;">
+        <legend style="font-size:13px;font-weight:600;">Language choices (caller says one option)</legend>
+        <p class="text-muted" style="margin:0 0 8px;font-size:12px;font-weight:normal;">Map spoken words to language codes. Codes <code>en</code> and <code>es</code> switch assistant voice and prompts.</p>
+        <div class="language-options-rows">${rows}</div>
+        <button type="button" class="btn btn-secondary btn-sm add-lang-opt-btn settings-edit-only">+ Add language</button>
+      </fieldset>`;
+  }
+
+  function readLanguageOptions(card) {
+    const rows = card.querySelectorAll('.language-option-row');
+    if (!rows.length) return defaultLanguageOptions();
+    return Array.from(rows).map(row => ({
+      value: row.querySelector('.lang-opt-value')?.value.trim() || '',
+      label: row.querySelector('.lang-opt-label')?.value.trim() || '',
+      aliases: (row.querySelector('.lang-opt-aliases')?.value || '')
+        .split(',')
+        .map(s => s.trim())
+        .filter(Boolean),
+    })).filter(o => o.value);
+  }
+
+  function bindLanguageOptions(card) {
+    const panel = card.querySelector('.language-options-panel');
+    if (!panel || panel.dataset.bound) return;
+    panel.dataset.bound = '1';
+    const rows = panel.querySelector('.language-options-rows');
+    const addBtn = panel.querySelector('.add-lang-opt-btn');
+    const rebindRemove = () => {
+      rows.querySelectorAll('.remove-lang-opt').forEach(btn => {
+        if (btn.dataset.bound) return;
+        btn.dataset.bound = '1';
+        btn.addEventListener('click', () => {
+          if (rows.querySelectorAll('.language-option-row').length <= 2) return;
+          btn.closest('.language-option-row')?.remove();
+          rows.querySelectorAll('.remove-lang-opt').forEach((b, i) => {
+            b.disabled = i < 2;
+          });
+        });
+      });
+    };
+    rebindRemove();
+    if (addBtn && !addBtn.dataset.bound) {
+      addBtn.dataset.bound = '1';
+      addBtn.addEventListener('click', () => {
+        const row = document.createElement('div');
+        row.className = 'language-option-row';
+        row.style.cssText = 'display:grid;grid-template-columns:80px 1fr 1fr auto;gap:8px;margin-bottom:8px;align-items:end;';
+        row.innerHTML = `
+          <label>Code<input class="lang-opt-value" placeholder="fr"></label>
+          <label>Spoken label<input class="lang-opt-label" placeholder="Français"></label>
+          <label>Aliases (comma-separated)<input class="lang-opt-aliases" placeholder="french, francais"></label>
+          <button type="button" class="btn btn-secondary btn-sm remove-lang-opt">Remove</button>`;
+        rows.appendChild(row);
+        rebindRemove();
+      });
+    }
+  }
+
+  function syncLanguageChoiceUi(card) {
+    const type = card.querySelector('.edit-answer-type')?.value || 'text';
+    const isLang = type === 'language_choice';
+    const panel = card.querySelector('.language-options-panel');
+    if (panel) panel.style.display = isLang ? 'block' : 'none';
+    const confirm = card.querySelector('.edit-confirm');
+    if (confirm) {
+      confirm.checked = isLang ? false : confirm.checked;
+      confirm.disabled = isLang;
+      confirm.closest('label')?.classList.toggle('text-muted', isLang);
+    }
+    const scoreEnabled = card.querySelector('.simple-score-enabled');
+    if (scoreEnabled) {
+      if (isLang) scoreEnabled.checked = false;
+      scoreEnabled.disabled = isLang;
+      scoreEnabled.closest('label')?.classList.toggle('text-muted', isLang);
+    }
+    const fieldKey = card.querySelector('.edit-field-key');
+    if (fieldKey && isLang) {
+      fieldKey.value = 'preferred_language';
+      fieldKey.readOnly = true;
+      fieldKey.style.background = 'var(--line-soft)';
+      fieldKey.style.cursor = 'not-allowed';
+    }
+    const extraPanel = card.querySelector('.extra-fields-container')?.closest('fieldset');
+    if (extraPanel) extraPanel.style.display = isLang ? 'none' : '';
+    const speechMode = card.querySelector('.edit-speech-mode')?.closest('label');
+    if (speechMode) speechMode.style.display = isLang ? 'none' : '';
+  }
+
   function primaryFieldInputHtml(q) {
     const field = (q.extract_fields || [''])[0];
+    if (q.answer_type === 'language_choice') {
+      return `<label>Primary field key
+        <input class="edit-field-key" value="preferred_language" readonly tabindex="-1" style="background:var(--line-soft);cursor:not-allowed;">
+        <span class="text-muted" style="display:block;margin-top:4px;font-size:12px;font-weight:normal;">Locked — stores the caller's language choice (<code>en</code> / <code>es</code>).</span>
+      </label>`;
+    }
     if (isCustomQuestion(q)) {
       return `<label>Primary field key
         <input class="edit-field-key" value="${esc(field)}">
@@ -425,6 +546,7 @@
         <label>Answer type
           <select class="edit-answer-type">${answerTypeOptions(q.answer_type)}</select>
         </label>
+        ${languageOptionsPanelHtml(q)}
         <label>If the caller is unclear, say…
           <textarea class="edit-retry1" rows="2" placeholder="Optional — leave blank to use a friendly default">${esc(q.retry_prompt || '')}</textarea>
         </label>
@@ -659,6 +781,11 @@
     if (card.dataset.bound) return;
     card.dataset.bound = '1';
 
+    card.querySelector('.edit-answer-type')?.addEventListener('change', () => {
+      syncLanguageChoiceUi(card);
+      updateLiveWarnings();
+    });
+
     card.querySelector('.simple-cond-mode')?.addEventListener('change', () => {
       syncSimpleCondVisibility(card);
       if (card.querySelector('.simple-cond-mode')?.value === 'custom') {
@@ -687,9 +814,35 @@
     });
 
     bindExtraFields(card);
+    bindLanguageOptions(card);
+    syncLanguageChoiceUi(card);
   }
 
   function newQuestionTemplate(answerType) {
+    if (answerType === 'language_choice') {
+      const uid = Math.random().toString(36).slice(2, 10);
+      return {
+        schema_version: 2,
+        id: 'Q0_LANGUAGE_' + uid.toUpperCase(),
+        state: 'Q0_LANGUAGE_' + uid.toUpperCase(),
+        question: 'Which language would you like to use for this call — English or Spanish?',
+        answer_type: 'language_choice',
+        extract_fields: ['preferred_language'],
+        field_labels: { preferred_language: 'preferred language' },
+        language_options: defaultLanguageOptions(),
+        validation: null,
+        retry_prompt: 'You can say English or Spanish.',
+        retry_prompt_2: '',
+        retry_prompt_3: '',
+        active: true,
+        order: document.querySelectorAll('.question-card').length + 1,
+        required: true,
+        requires_confirmation: false,
+        conditional: null,
+        scoring: { enabled: false, max_points: 0, rule_type: 'any_answer', pass_config: {} },
+        understanding_guide: '',
+      };
+    }
     const uid = Math.random().toString(36).slice(2, 10);
     const field = 'custom_' + uid;
     const prompts = {
@@ -830,10 +983,13 @@
     if (!edit || !edit.querySelector('.edit-question')) {
       return { ...meta };
     }
+    const answerType = card.querySelector('.edit-answer-type').value;
     const lockedPrimary = (meta.extract_fields || [''])[0];
-    const fieldKey = isCustomQuestion(meta)
-      ? (card.querySelector('.edit-field-key')?.value.trim() || lockedPrimary)
-      : lockedPrimary;
+    const fieldKey = answerType === 'language_choice'
+      ? 'preferred_language'
+      : (isCustomQuestion(meta)
+        ? (card.querySelector('.edit-field-key')?.value.trim() || lockedPrimary)
+        : lockedPrimary);
     const fieldLabel = card.querySelector('.edit-field-label')?.value.trim() || fieldKey;
     const extra = readExtraFields(card, fieldKey);
     const extractFields = [fieldKey, ...extra.fields.filter(f => f && f !== fieldKey)];
@@ -856,7 +1012,7 @@
     return {
       ...meta,
       question: card.querySelector('.edit-question').value.trim(),
-      answer_type: card.querySelector('.edit-answer-type').value,
+      answer_type: answerType,
       extract_fields: extractFields,
       field_labels: fieldLabels,
       retry_prompt: card.querySelector('.edit-retry1').value.trim(),
@@ -871,6 +1027,9 @@
       conditional: buildConditionalFromSimple(card),
       scoring,
       schema_version: 2,
+      ...(answerType === 'language_choice'
+        ? { language_options: readLanguageOptions(card) }
+        : {}),
     };
   }
 
@@ -932,6 +1091,25 @@
     return confirm('Save anyway?\n\n' + notes.join('\n'));
   }
 
+  function formatApiError(payload, fallback) {
+    const detail = payload && payload.detail;
+    if (!detail) return fallback || 'Request failed';
+    if (typeof detail === 'string') return detail;
+    if (Array.isArray(detail)) {
+      return detail.map(item => {
+        if (typeof item === 'string') return item;
+        if (item && typeof item === 'object') {
+          const loc = Array.isArray(item.loc) ? item.loc.join('.') : '';
+          const msg = item.msg || JSON.stringify(item);
+          return loc ? `${loc}: ${msg}` : msg;
+        }
+        return String(item);
+      }).join('; ');
+    }
+    if (typeof detail === 'object') return detail.msg || JSON.stringify(detail);
+    return String(detail);
+  }
+
   async function saveAllQuestions() {
     const questions = collectQuestions();
     if (!confirmSaveWarnings(questions)) return;
@@ -941,7 +1119,10 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ questions }),
       });
-      if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || r.statusText); }
+      if (!r.ok) {
+        const e = await r.json().catch(() => ({}));
+        throw new Error(formatApiError(e, r.statusText));
+      }
       const data = await r.json().catch(() => ({}));
       let msg = 'Questions saved.';
       if (data.warnings && data.warnings.length) msg += ' Note: ' + data.warnings.join(' ');

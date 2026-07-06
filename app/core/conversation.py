@@ -109,6 +109,8 @@ class ConversationSession:
     greeting_message: str = ""
     closing_message: str = ""
     provider_failure_message: str = ""
+    # Caller-selected language for spoken responses. Defaults to English.
+    call_language: str = "en"
     # Admin-tunable LLM behavior. 0 tokens = use the per-turn tuned default.
     llm_temperature: float = 0.3
     llm_max_tokens: int = 0
@@ -700,15 +702,20 @@ def navigation_repeat_text(session: ConversationSession) -> str:
     if pending and pending.get("mode") == "correction":
         fields = pending.get("fields") or []
         if fields:
-            return build_correction_readback(fields)
+            return build_correction_readback(fields, session=session)
     if pending and not pending.get("mode"):
         rb = readback_prompt_for_state(
-            pending["state"], str(pending.get("value", "")), session.questions
+            pending["state"],
+            str(pending.get("value", "")),
+            session.questions,
+            language_code=session.call_language,
         )
         if rb:
             return rb
     question_cfg = session.get_current_question()
     if not question_cfg:
+        if str(session.call_language).lower().startswith("es"):
+            return "Adelante cuando este listo."
         return "Go ahead whenever you're ready."
     return retry_prompt_for_count(question_cfg, session.retry_count)
 
@@ -724,10 +731,15 @@ def turn_timeout_recovery_text(
     """Admin retry prompt after orchestration timeout — never blame the caller for slow AI."""
     heard = (transcript or "").strip()
     prompt = navigation_repeat_text(session)
+    pause = (
+        "Perdon por la pausa."
+        if str(session.call_language).lower().startswith("es")
+        else "Sorry for the pause."
+    )
     if session.streamed_speakable_prefix or session.streamed_audio_sent_during_turn:
-        return f"Sorry for the pause. {prompt}" if heard else prompt
+        return f"{pause} {prompt}" if heard else prompt
     if heard:
-        return f"Sorry for the pause. {prompt}"
+        return f"{pause} {prompt}"
     return polite_redirect(session, "unclear")
 
 
@@ -760,7 +772,12 @@ def plan_turn_timeout_recovery(
                 "value": str(value),
                 "attempts": 1,
             }
-            read_back = readback_prompt_for_state(state, str(value), session.questions)
+            read_back = readback_prompt_for_state(
+                state,
+                str(value),
+                session.questions,
+                language_code=session.call_language,
+            )
             if read_back:
                 return read_back
 
@@ -861,8 +878,11 @@ def polite_redirect(session: ConversationSession, kind: str) -> str:
     Real agents never read the exact same sentence twice — they rephrase and
     offer more guidance each attempt, then make it clear it's okay.
     """
+    is_es = str(session.call_language).lower().startswith("es")
     question_cfg = session.get_current_question()
     if not question_cfg:
+        if is_es:
+            return "No hay problema. Continue cuando este listo."
         return "No problem. Please continue when you are ready."
 
     retry_count = session.retry_count
@@ -871,6 +891,11 @@ def polite_redirect(session: ConversationSession, kind: str) -> str:
         prompt = str(question_cfg.get("question") or "")
 
     if kind == "refusal":
+        if is_es:
+            return (
+                "Esta bien. Hacemos las mismas preguntas a todos y es confidencial. "
+                f"{prompt}"
+            )
         return (
             "That's completely okay — we ask everyone the same questions and it "
             f"stays confidential. {prompt}"
@@ -884,10 +909,23 @@ def polite_redirect(session: ConversationSession, kind: str) -> str:
             "Apologies, the line broke up a little.",
             "I want to be sure I get this right.",
         )
+        if is_es:
+            leadins = (
+                "Perdon, no lo alcance a escuchar bien.",
+                "Disculpe, la linea se corto un poco.",
+                "Quiero asegurarme de anotarlo bien.",
+            )
         lead = leadins[min(retry_count, len(leadins) - 1)]
         return f"{lead} {prompt}"
 
     lead = _REDIRECT_LEADINS[min(retry_count, len(_REDIRECT_LEADINS) - 1)]
+    if is_es:
+        leadins_es = (
+            "Perdon, no lo entendi bien.",
+            "Quiero asegurarme de que quede correcto.",
+            "Intentemos una vez mas.",
+        )
+        lead = leadins_es[min(retry_count, len(leadins_es) - 1)]
     return f"{lead} {prompt}"
 
 
@@ -1038,14 +1076,22 @@ def compose_agent_response(
         if session.closing_message:
             closing = session.closing_message.replace("{property_name}", business)
         else:
-            closing = (
-                "Thank you. A leasing specialist will review your information "
-                "and follow up soon."
-            )
+            if str(session.call_language).lower().startswith("es"):
+                closing = (
+                    "Gracias. Un especialista de alquiler revisara su informacion "
+                    "y se comunicara pronto."
+                )
+            else:
+                closing = (
+                    "Thank you. A leasing specialist will review your information "
+                    "and follow up soon."
+                )
         return (ack, closing) if ack else (closing, "")
 
     if current == CallState.ENDED.value and not ack:
         business = (session.property_name or "").strip() or BUSINESS_NAME
+        if str(session.call_language).lower().startswith("es"):
+            return f"Gracias por llamar a {business}. Adios.", ""
         return f"Thank you for calling {business}. Goodbye.", ""
 
     return ack, ""
@@ -1070,19 +1116,27 @@ def build_correction_readback(
 ) -> str:
     """Combined read-back confirming one or more EARLIER fields the caller just
     corrected. ``fields`` is a list of {"field", "value"} dicts."""
+    is_es = bool(session and str(session.call_language).lower().startswith("es"))
     parts: list[str] = []
     for item in fields:
         label = _short_label(item.get("field", ""), session)
         value = str(item.get("value", "")).strip()
         if not value:
             continue
-        parts.append(f"your {label} to {value}")
+        if is_es:
+            parts.append(f"su {label} a {value}")
+        else:
+            parts.append(f"your {label} to {value}")
     if not parts:
+        if is_es:
+            return "Permita confirmar los datos actualizados. Es correcto?"
         return "Let me make sure I have your updated details right. Is that correct?"
     if len(parts) == 1:
         joined = parts[0]
     else:
         joined = ", ".join(parts[:-1]) + ", and " + parts[-1]
+    if is_es:
+        return f"Confirmo antes de continuar: actualice {joined}. Es correcto?"
     return f"Quick check before we move on — I've updated {joined}. Did I get that right?"
 
 
@@ -1402,6 +1456,11 @@ def build_system_prompt(
         if optional_notes_states
         else ""
     )
+    language_label = (
+        "Spanish"
+        if str(getattr(session, "call_language", "en")).lower().startswith("es")
+        else "English"
+    )
 
     if confirmation and confirmation.get("mode") == "correction":
         cfields = confirmation.get("fields", []) or []
@@ -1428,6 +1487,7 @@ Set understood=true when they clearly confirmed or corrected; false otherwise.
 
 # VOICE UX
 Keep response_text under 18 words, natural, no markdown. A brief "Perfect, thank you." is enough when they confirm.
+Always write response_text in {language_label}.
 
 # OUTPUT FORMAT
 Respond with ONE JSON object only — no markdown, no code fences. response_text MUST be first.
@@ -1470,6 +1530,7 @@ Set understood=true when they clearly confirmed or corrected; false otherwise.
 
 # VOICE UX
 Keep response_text under 18 words, natural, no markdown. Vary your wording — don't always say the same phrase. If they confirmed, a brief, warm acknowledgment is enough (the next question is added by the system).
+Always write response_text in {language_label}.
 
 # OUTPUT FORMAT
 Respond with ONE JSON object only — no markdown, no code fences. response_text MUST be first.
@@ -1490,6 +1551,7 @@ You are the conversational intelligence for "{business}", screening tenants on a
 - Vague dates/amounts: ask once for precision; accept if they cannot be more specific. For dates: if the year is before today, ask whether they meant a future date before accepting.
 - Cross-fill: if they volunteer later-step info, extract it, acknowledge briefly, stay on CURRENT.
 - Spoken text only — no markdown, bullets, or lists. Vary acknowledgments; answer interruptions warmly first, then resume CURRENT.
+- Always write response_text in {language_label}.
 - Extract only configured fields below, including future volunteered fields. *_raw = caller's exact words as a string (never true/false or bare numbers). Dates: ISO YYYY-MM-DD when clear. Phone/email/money: raw value; system normalizes.
 - Do not overwrite confirmed fields unless corrected this turn. understood=true if they answered CURRENT (even partial); false if off-topic, gibberish, only asked us, declined, or human/callback/stop.
 Fields:
@@ -1662,5 +1724,12 @@ def provider_failure_message_for_session(session: ConversationSession) -> str:
     business = (session.property_name or "").strip() or BUSINESS_NAME
     template = (getattr(session, "provider_failure_message", "") or "").strip()
     if not template:
-        template = DEFAULT_PROVIDER_FAILURE_MESSAGE
+        if str(getattr(session, "call_language", "en")).lower().startswith("es"):
+            template = (
+                "Lo siento, estamos teniendo un problema tecnico y no podemos "
+                "continuar esta llamada ahora. Alguien de {property_name} revisara "
+                "lo compartido y le dara seguimiento pronto. Adios."
+            )
+        else:
+            template = DEFAULT_PROVIDER_FAILURE_MESSAGE
     return template.replace("{property_name}", business)
