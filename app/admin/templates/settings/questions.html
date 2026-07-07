@@ -1,4 +1,116 @@
 {% extends "settings/base.html" %}
+{% block head %}
+{{ super() }}
+<style>
+  .question-card { scroll-margin-top: 96px; }
+  .question-edit {
+    border-top: 1px solid var(--line-soft);
+    padding-top: 16px;
+  }
+  .q-edit-shell {
+    display: grid;
+    gap: 14px;
+  }
+  .q-edit-shell label {
+    display: grid;
+    gap: 6px;
+    font-weight: 600;
+    font-size: 13px;
+    margin: 0;
+  }
+  .q-edit-shell input,
+  .q-edit-shell select,
+  .q-edit-shell textarea {
+    width: 100%;
+    max-width: 100%;
+    margin-top: 0;
+  }
+  .q-edit-shell textarea {
+    resize: vertical;
+    min-height: 72px;
+  }
+  .q-edit-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+    padding-bottom: 4px;
+  }
+  .q-edit-title {
+    font-weight: 700;
+    color: var(--ink);
+    margin: 0;
+  }
+  .q-edit-section {
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: #fbfcfe;
+    padding: 14px;
+  }
+  .q-edit-section h4 {
+    margin: 0 0 10px;
+    font-size: 13px;
+    color: var(--ink);
+  }
+  .q-edit-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 12px;
+  }
+  .q-edit-grid .wide { grid-column: 1 / -1; }
+  .q-edit-checks {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 8px;
+  }
+  .q-edit-check {
+    display: flex !important;
+    align-items: center;
+    gap: 8px;
+    padding: 9px 10px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: var(--panel);
+    font-weight: 600 !important;
+  }
+  .q-edit-check input {
+    width: auto;
+    max-width: none;
+    margin: 0;
+  }
+  .q-edit-shell .language-option-row label {
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .q-edit-shell .language-option-row input {
+    min-width: 0;
+  }
+  .q-edit-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+  }
+  .q-fieldset {
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    padding: 12px;
+    background: var(--panel);
+  }
+  .q-fieldset legend {
+    font-size: 13px;
+    font-weight: 700;
+    padding: 0 4px;
+  }
+  .q-muted-note {
+    margin: 0 0 10px;
+    font-size: 12px;
+    color: var(--muted);
+    font-weight: normal;
+  }
+</style>
+{% endblock %}
 {% block title %}Screening questions{% endblock %}
 {% block page_title %}Screening questions{% endblock %}
 {% block settings_page_sub %}<div class="sub">Build the conversation your assistant asks on every call — reorder, edit wording, and control scoring.</div>{% endblock %}
@@ -24,6 +136,7 @@
     {% endfor %}
     <div id="liveScoringWarn" class="admin-warn" style="display:none;padding:10px 12px;border-radius:8px;background:#fef3c7;color:#92400e;font-size:13px;"></div>
     <div id="liveIdentityWarn" class="admin-warn" style="display:none;padding:10px 12px;border-radius:8px;background:#fee2e2;color:#991b1b;font-size:13px;"></div>
+    <div id="liveLocaleWarn" class="admin-warn" style="display:none;padding:10px 12px;border-radius:8px;background:#e0f2fe;color:#075985;font-size:13px;"></div>
   </div>
 
   <p class="text-muted" style="margin: 0 0 12px; font-size: 13px;">
@@ -63,6 +176,12 @@
       <h3 style="margin-top: 0;">Sample conversation path</h3>
       <label style="display:block;margin-bottom:8px;font-weight:600;">Preview scenario
         <select id="previewPathSelect" style="display:block;margin-top:4px;max-width:420px;"></select>
+      </label>
+      <label style="display:block;margin-bottom:8px;font-weight:600;">Preview language
+        <select id="previewLanguageSelect" style="display:block;margin-top:4px;max-width:220px;">
+          <option value="en">English</option>
+          <option value="es">Spanish</option>
+        </select>
       </label>
       <p id="previewMeta" class="text-muted"></p>
       <div id="previewContent" class="conversation-preview"></div>
@@ -124,6 +243,10 @@
 
   function answerTypeLabel(t) {
     return ANSWER_TYPE_LABELS[t] || t;
+  }
+
+  function spanishLocale(meta) {
+    return (meta.locales && meta.locales.es) ? meta.locales.es : {};
   }
 
   function speechModeOptions(selected) {
@@ -531,6 +654,7 @@
     const condMode = classifyConditional(cond);
     const scorePreset = classifyScoringPreset(scoring);
     const scoringOn = !!(scoring && scoring.enabled);
+    const es = spanishLocale(q);
     const openAdvanced = condMode === 'custom' || scorePreset === 'custom'
       || ['yes_no_no_better', 'yes_no_yes_better', 'yes_no_dq_yes', 'yes_no_dq_no', 'numeric_min', 'date_within'].includes(scorePreset)
       || !!(q.understanding_guide || '').trim()
@@ -539,91 +663,144 @@
       || ((q.extract_fields || []).length > 1);
 
     return `
-      <div class="simple-panel form-grid">
-        <label>What should the assistant ask?
-          <textarea class="edit-question" rows="2">${esc(q.question)}</textarea>
-        </label>
-        <label>Answer type
-          <select class="edit-answer-type">${answerTypeOptions(q.answer_type)}</select>
-        </label>
-        ${languageOptionsPanelHtml(q)}
-        <label>If the caller is unclear, say…
-          <textarea class="edit-retry1" rows="2" placeholder="Optional — leave blank to use a friendly default">${esc(q.retry_prompt || '')}</textarea>
-        </label>
-        <label>When should this be asked?
-          <select class="simple-cond-mode">
-            <option value="always" ${condMode === 'always' ? 'selected' : ''}>Always (every caller hears it)</option>
-            <option value="if_yes" ${condMode === 'if_yes' ? 'selected' : ''}>Only if a previous answer was Yes</option>
-            <option value="if_no" ${condMode === 'if_no' ? 'selected' : ''}>Only if a previous answer was No</option>
-            <option value="if_answered" ${condMode === 'if_answered' ? 'selected' : ''}>Only if a previous question was answered</option>
-            <option value="custom" ${condMode === 'custom' ? 'selected' : ''}>Custom rule (in Advanced)</option>
-          </select>
-        </label>
-        <label class="simple-cond-prior-wrap">Which previous question?
-          <select class="simple-cond-prior">${priorQuestionOptionsHtml(card, cond.field || '')}</select>
-        </label>
-        <label style="display:flex;align-items:center;gap:8px;font-weight:600;">
-          <input type="checkbox" class="edit-active" ${q.active !== false ? 'checked' : ''} style="width:auto;max-width:none;"> On — ask during calls
-        </label>
-        <label style="display:flex;align-items:center;gap:8px;font-weight:600;">
-          <input type="checkbox" class="edit-required" ${q.required !== false ? 'checked' : ''} style="width:auto;max-width:none;"> Required — must answer before moving on
-        </label>
-        <label style="display:flex;align-items:center;gap:8px;font-weight:600;">
-          <input type="checkbox" class="simple-score-enabled" ${scoringOn ? 'checked' : ''} style="width:auto;max-width:none;"> Affects applicant score
-        </label>
-        <label class="simple-score-points-wrap">Points for this question (0–100)
-          <input type="number" class="simple-score-points" min="0" max="100" value="${scoring.max_points || 0}">
-        </label>
-        <label style="display:flex;align-items:center;gap:8px;font-weight:600;">
-          <input type="checkbox" class="edit-confirm" ${q.requires_confirmation ? 'checked' : ''} style="width:auto;max-width:none;"> Read answer back to confirm (name, phone, email)
-        </label>
-      </div>
-      <details class="q-advanced" ${openAdvanced ? 'open' : ''}>
-        <summary>Advanced options — field keys, extra data, special scoring rules</summary>
-        <div class="form-grid" style="display:grid;gap:10px;max-width:640px;margin-top:8px;">
-          ${primaryFieldInputHtml(q)}
-          <label>Field label (spoken)
-            <input class="edit-field-label" value="${esc(flabel)}">
-          </label>
-          <label>Understanding guide (optional)
-            <textarea class="edit-understanding-guide" rows="2" placeholder="Hints for the AI. Leave blank for smart defaults.">${esc(q.understanding_guide || '')}</textarea>
-          </label>
-          <fieldset style="border:1px solid var(--line);border-radius:8px;padding:10px;">
-            <legend style="font-size:13px;font-weight:600;">Additional fields (optional)</legend>
-            <p class="text-muted" style="margin:0 0 8px;font-size:12px;font-weight:normal;">Capture multiple values from one question (e.g. pet type + weight).</p>
-            <div class="extra-fields-container">${extraFieldsHtml(q.extract_fields, q.field_labels, field)}</div>
-            <button type="button" class="btn btn-secondary btn-sm add-extra-field-btn settings-edit-only">+ Add field</button>
-          </fieldset>
-          <label style="display:flex;align-items:center;gap:8px;font-weight:600;">
-            <input type="checkbox" class="edit-require-all-fields" ${q.require_all_extract_fields ? 'checked' : ''} style="width:auto;max-width:none;"> Require every saved field before moving on
-          </label>
-          <label>Speech parser (fallback extraction)
-            <select class="edit-speech-mode">${speechModeOptions(q.speech_mode || 'default')}</select>
-          </label>
-          <p class="text-muted" style="margin:0;font-size:12px;">Used when AI extraction fails — pick a parser that matches this question.</p>
-          <label>Retry prompt (2nd) <textarea class="edit-retry2" rows="2">${esc(q.retry_prompt_2 || '')}</textarea></label>
-          <label>Retry prompt (3rd) <textarea class="edit-retry3" rows="2">${esc(q.retry_prompt_3 || '')}</textarea></label>
-          ${advancedCondPanelHtml(cond)}
-          <fieldset style="border:1px solid var(--line);border-radius:8px;padding:10px;">
-            <legend style="font-size:13px;font-weight:600;">Scoring rule (beyond simple points)</legend>
-            <p class="text-muted" style="margin:0 0 8px;font-size:12px;font-weight:normal;">Use a preset for yes/no disqualify rules, minimum numbers, date windows, etc.</p>
-            <label>Scoring preset
-              <select class="simple-score-preset">${scorePresetOptions(scorePreset)}</select>
-            </label>
-            <label class="simple-score-min-wrap">Minimum value to pass
-              <input type="number" class="simple-score-min" step="any" value="${(scoring.pass_config || {}).min ?? ''}">
-            </label>
-            <label class="simple-score-days-wrap">Date must be within (days)
-              <input type="number" class="simple-score-days" min="1" value="${(scoring.pass_config || {}).max_days_ahead ?? 90}">
-            </label>
-          </fieldset>
-          <fieldset class="adv-score-panel" style="border:1px solid var(--line);border-radius:8px;padding:10px;">
-            <legend style="font-size:13px;font-weight:600;">Custom scoring rule</legend>
-            ${passConfigPanelHtml(scoring)}
-          </fieldset>
+      <div class="q-edit-shell">
+        <div class="q-edit-header">
+          <p class="q-edit-title">Edit question</p>
+          <div class="q-edit-actions">
+            <button type="button" onclick="toggleEdit(this)" class="btn btn-primary btn-sm">Done</button>
+          </div>
         </div>
-      </details>
-      <button type="button" onclick="toggleEdit(this)" class="btn btn-secondary" style="margin-top:10px;">Done</button>`;
+
+        <section class="q-edit-section">
+          <h4>Basics</h4>
+          <div class="q-edit-grid">
+            <label class="wide">What should the assistant ask?
+              <textarea class="edit-question" rows="2">${esc(q.question)}</textarea>
+            </label>
+            <label>Answer type
+              <select class="edit-answer-type">${answerTypeOptions(q.answer_type)}</select>
+            </label>
+            <label>If the caller is unclear, say…
+              <textarea class="edit-retry1" rows="2" placeholder="Optional — leave blank to use a friendly default">${esc(q.retry_prompt || '')}</textarea>
+            </label>
+            <div class="wide">${languageOptionsPanelHtml(q)}</div>
+          </div>
+        </section>
+
+        <section class="q-edit-section">
+          <h4>When and how to ask</h4>
+          <div class="q-edit-grid">
+            <label>When should this be asked?
+              <select class="simple-cond-mode">
+                <option value="always" ${condMode === 'always' ? 'selected' : ''}>Always (every caller hears it)</option>
+                <option value="if_yes" ${condMode === 'if_yes' ? 'selected' : ''}>Only if a previous answer was Yes</option>
+                <option value="if_no" ${condMode === 'if_no' ? 'selected' : ''}>Only if a previous answer was No</option>
+                <option value="if_answered" ${condMode === 'if_answered' ? 'selected' : ''}>Only if a previous question was answered</option>
+                <option value="custom" ${condMode === 'custom' ? 'selected' : ''}>Custom rule (in Advanced)</option>
+              </select>
+            </label>
+            <label class="simple-cond-prior-wrap">Which previous question?
+              <select class="simple-cond-prior">${priorQuestionOptionsHtml(card, cond.field || '')}</select>
+            </label>
+          </div>
+          <div class="q-edit-checks" style="margin-top:12px;">
+            <label class="q-edit-check">
+              <input type="checkbox" class="edit-active" ${q.active !== false ? 'checked' : ''}> On — ask during calls
+            </label>
+            <label class="q-edit-check">
+              <input type="checkbox" class="edit-required" ${q.required !== false ? 'checked' : ''}> Required — must answer before moving on
+            </label>
+            <label class="q-edit-check">
+              <input type="checkbox" class="simple-score-enabled" ${scoringOn ? 'checked' : ''}> Affects applicant score
+            </label>
+            <label class="q-edit-check">
+              <input type="checkbox" class="edit-confirm" ${q.requires_confirmation ? 'checked' : ''}> Read answer back to confirm
+            </label>
+          </div>
+          <label class="simple-score-points-wrap" style="margin-top:12px;">Points for this question (0–100)
+            <input type="number" class="simple-score-points" min="0" max="100" value="${scoring.max_points || 0}">
+          </label>
+        </section>
+
+        <section class="q-edit-section">
+          <h4>Spanish wording (optional)</h4>
+          <p class="q-muted-note">Keep blank to reuse English. Fill only if you want Spanish wording controlled by admin.</p>
+          <div class="q-edit-grid">
+            <label class="wide">Question (ES)
+              <textarea class="edit-question-es" rows="2">${esc(es.question || '')}</textarea>
+            </label>
+            <label>Retry prompt (ES)
+              <textarea class="edit-retry1-es" rows="2">${esc(es.retry_prompt || '')}</textarea>
+            </label>
+            <label>Retry prompt (2nd ES)
+              <textarea class="edit-retry2-es" rows="2">${esc(es.retry_prompt_2 || '')}</textarea>
+            </label>
+            <label>Retry prompt (3rd ES)
+              <textarea class="edit-retry3-es" rows="2">${esc(es.retry_prompt_3 || '')}</textarea>
+            </label>
+          </div>
+        </section>
+
+        <details class="q-advanced" ${openAdvanced ? 'open' : ''}>
+          <summary>Advanced options — field keys, extra data, special scoring rules</summary>
+          <div class="q-edit-section" style="margin-top:10px;">
+            <h4>Field and extraction settings</h4>
+            <div class="q-edit-grid">
+              ${primaryFieldInputHtml(q)}
+              <label>Field label (spoken)
+                <input class="edit-field-label" value="${esc(flabel)}">
+              </label>
+              <label class="wide">Understanding guide (optional)
+                <textarea class="edit-understanding-guide" rows="2" placeholder="Hints for the AI. Leave blank for smart defaults.">${esc(q.understanding_guide || '')}</textarea>
+              </label>
+              <fieldset class="q-fieldset wide">
+                <legend>Additional fields (optional)</legend>
+                <p class="q-muted-note">Capture multiple values from one question (e.g. pet type + weight).</p>
+                <div class="extra-fields-container">${extraFieldsHtml(q.extract_fields, q.field_labels, field)}</div>
+                <button type="button" class="btn btn-secondary btn-sm add-extra-field-btn settings-edit-only">+ Add field</button>
+              </fieldset>
+              <label class="q-edit-check">
+                <input type="checkbox" class="edit-require-all-fields" ${q.require_all_extract_fields ? 'checked' : ''}> Require every saved field before moving on
+              </label>
+              <label>Speech parser (fallback extraction)
+                <select class="edit-speech-mode">${speechModeOptions(q.speech_mode || 'default')}</select>
+                <span class="text-muted" style="display:block;margin-top:4px;font-size:12px;font-weight:normal;">Used when AI extraction fails.</span>
+              </label>
+              <label>Retry prompt (2nd)
+                <textarea class="edit-retry2" rows="2">${esc(q.retry_prompt_2 || '')}</textarea>
+              </label>
+              <label>Retry prompt (3rd)
+                <textarea class="edit-retry3" rows="2">${esc(q.retry_prompt_3 || '')}</textarea>
+              </label>
+            </div>
+          </div>
+
+          <div class="q-edit-section" style="margin-top:10px;">
+            <h4>Advanced rules</h4>
+            <div class="q-edit-grid">
+              <div class="wide">${advancedCondPanelHtml(cond)}</div>
+              <fieldset class="q-fieldset">
+                <legend>Scoring rule</legend>
+                <p class="q-muted-note">Use a preset for yes/no disqualify rules, minimum numbers, date windows, etc.</p>
+                <label>Scoring preset
+                  <select class="simple-score-preset">${scorePresetOptions(scorePreset)}</select>
+                </label>
+                <label class="simple-score-min-wrap">Minimum value to pass
+                  <input type="number" class="simple-score-min" step="any" value="${(scoring.pass_config || {}).min ?? ''}">
+                </label>
+                <label class="simple-score-days-wrap">Date must be within (days)
+                  <input type="number" class="simple-score-days" min="1" value="${(scoring.pass_config || {}).max_days_ahead ?? 90}">
+                </label>
+              </fieldset>
+              <fieldset class="q-fieldset adv-score-panel">
+                <legend>Custom scoring rule</legend>
+                ${passConfigPanelHtml(scoring)}
+              </fieldset>
+            </div>
+          </div>
+        </details>
+
+      </div>`;
   }
 
   function summaryBadges(q) {
@@ -807,7 +984,7 @@
     card.querySelector('.edit-score-rule')?.addEventListener('change', () => syncPassConfigVisibility(card));
 
     card.querySelectorAll(
-      '.edit-score-enabled, .edit-score-points, .simple-score-points, .simple-score-enabled, .edit-active, .edit-required, .edit-field-key'
+      '.edit-score-enabled, .edit-score-points, .simple-score-points, .simple-score-enabled, .edit-active, .edit-required, .edit-field-key, .edit-question-es'
     ).forEach(el => {
       el.addEventListener('change', updateLiveWarnings);
       el.addEventListener('input', updateLiveWarnings);
@@ -961,8 +1138,15 @@
     const edit = card.querySelector('.question-edit');
     const open = edit.style.display === 'none';
     if (!open) {
+      const topBefore = card.getBoundingClientRect().top;
       const q = collectFromCard(card);
       renderCard(card, q, cardIndex(card));
+      card.querySelector('.question-edit').style.display = 'none';
+      card.querySelector('.question-view').style.display = 'block';
+      const topAfter = card.getBoundingClientRect().top;
+      window.scrollBy(0, topAfter - topBefore);
+      updateLiveWarnings();
+      return;
     }
     edit.style.display = open ? 'block' : 'none';
     view.style.display = open ? 'none' : 'block';
@@ -1008,6 +1192,18 @@
       const maxPts = parseInt(card.querySelector('.simple-score-points')?.value || '0', 10);
       scoring = { enabled: true, max_points: maxPts, rule_type: 'any_answer', pass_config: {} };
     }
+    const esQuestion = card.querySelector('.edit-question-es')?.value.trim() || '';
+    const esRetry1 = card.querySelector('.edit-retry1-es')?.value.trim() || '';
+    const esRetry2 = card.querySelector('.edit-retry2-es')?.value.trim() || '';
+    const esRetry3 = card.querySelector('.edit-retry3-es')?.value.trim() || '';
+    const esLocale = {};
+    if (esQuestion) esLocale.question = esQuestion;
+    if (esRetry1) esLocale.retry_prompt = esRetry1;
+    if (esRetry2) esLocale.retry_prompt_2 = esRetry2;
+    if (esRetry3) esLocale.retry_prompt_3 = esRetry3;
+    const locales = { ...(meta.locales || {}) };
+    if (Object.keys(esLocale).length) locales.es = esLocale;
+    else delete locales.es;
 
     return {
       ...meta,
@@ -1027,6 +1223,7 @@
       conditional: buildConditionalFromSimple(card),
       scoring,
       schema_version: 2,
+      ...(Object.keys(locales).length ? { locales } : {}),
       ...(answerType === 'language_choice'
         ? { language_options: readLanguageOptions(card) }
         : {}),
@@ -1055,6 +1252,49 @@
     }, 0);
   }
 
+  function countMissingSpanishQuestionOverrides(questions) {
+    return questions.filter(q =>
+      q &&
+      q.active !== false &&
+      q.answer_type !== 'language_choice' &&
+      !String((((q.locales || {}).es || {}).question || '')).trim()
+    ).length;
+  }
+
+  function questionMissingSpanishOverride(meta) {
+    if (!meta || meta.active === false || meta.answer_type === 'language_choice') return false;
+    return !String((((meta.locales || {}).es || {}).question || '')).trim();
+  }
+
+  function clearSpanishMissingHighlights() {
+    document.querySelectorAll('.question-card.locale-missing').forEach(card => {
+      card.classList.remove('locale-missing');
+      card.style.boxShadow = '';
+    });
+  }
+
+  function highlightMissingSpanishOverrides() {
+    clearSpanishMissingHighlights();
+    const cards = Array.from(document.querySelectorAll('.question-card'));
+    const missingCards = cards.filter(card => questionMissingSpanishOverride(collectFromCard(card)));
+    if (!missingCards.length) return;
+    missingCards.forEach(card => {
+      card.classList.add('locale-missing');
+      card.style.boxShadow = '0 0 0 2px rgba(2,132,199,.35)';
+    });
+    const first = missingCards[0];
+    first.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    const edit = first.querySelector('.question-edit');
+    const view = first.querySelector('.question-view');
+    if (edit && view && edit.style.display === 'none') {
+      edit.style.display = 'block';
+      view.style.display = 'none';
+    }
+    setTimeout(() => {
+      clearSpanishMissingHighlights();
+    }, 3500);
+  }
+
   function updateLiveWarnings() {
     const questions = collectQuestions();
     const total = scoringPointsTotal(questions);
@@ -1077,6 +1317,19 @@
         idWarn.textContent = 'Warning: No active question collects ' + missing.join(', ') + '. Result emails and CRM may lack contact info.';
       } else {
         idWarn.style.display = 'none';
+      }
+    }
+    const localeWarn = document.getElementById('liveLocaleWarn');
+    if (localeWarn) {
+      const missingEs = countMissingSpanishQuestionOverrides(questions);
+      if (missingEs > 0) {
+        localeWarn.style.display = 'block';
+        localeWarn.innerHTML = `${missingEs} active question${missingEs === 1 ? '' : 's'} still using English fallback in Spanish calls. <button type="button" id="showMissingSpanishBtn" class="btn btn-secondary btn-sm" style="margin-left:8px;">Show questions</button>`;
+        const btn = document.getElementById('showMissingSpanishBtn');
+        if (btn) btn.onclick = () => highlightMissingSpanishOverrides();
+      } else {
+        localeWarn.style.display = 'none';
+        localeWarn.innerHTML = '';
       }
     }
   }
@@ -1144,8 +1397,13 @@
   async function previewFlow() {
     try {
       const pathSel = document.getElementById('previewPathSelect');
+      const langSel = document.getElementById('previewLanguageSelect');
       const path = pathSel?.value || '';
-      const url = '/api/settings/questions/preview' + (path ? '?path=' + encodeURIComponent(path) : '');
+      const language = langSel?.value || 'en';
+      const params = new URLSearchParams();
+      if (path) params.set('path', path);
+      params.set('language', language);
+      const url = '/api/settings/questions/preview?' + params.toString();
       const r = await fetch(url);
       const data = await r.json();
       document.getElementById('previewContainer').style.display = 'block';
@@ -1155,10 +1413,15 @@
         ).join('');
         pathSel.onchange = () => withBtnLoading(pathSel, previewFlow, 'Loading\u2026');
       }
+      if (langSel) {
+        langSel.value = data.selected_language || language;
+        langSel.onchange = () => withBtnLoading(langSel, previewFlow, 'Loading\u2026');
+      }
       const selected = (data.paths || []).find(p => p.id === data.selected_path);
       document.getElementById('previewMeta').textContent =
         `${data.active_question_count_sample} questions on this path` +
-        (selected ? ` — ${selected.label}` : '');
+        (selected ? ` — ${selected.label}` : '') +
+        ` — ${(data.selected_language || language).toUpperCase()}`;
       document.getElementById('previewContent').innerHTML = (data.flow || []).map((turn, i) => {
         const cls = (turn.speaker || '').toLowerCase().includes('ai') ? 'assistant' : 'caller';
         const label = cls === 'assistant' ? 'Assistant' : 'Caller';

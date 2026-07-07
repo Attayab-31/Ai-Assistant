@@ -91,6 +91,43 @@ def normalize_language_options(raw: Any) -> list[dict[str, Any]]:
     return out if len(out) >= 2 else default_language_options()
 
 
+def normalize_question_locales(raw: Any) -> dict[str, dict[str, str]]:
+    """Normalize optional per-language question wording overrides."""
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, dict[str, str]] = {}
+    for lang, entries in raw.items():
+        code = canonical_language_code(lang) or str(lang or "").strip().lower()
+        if not code or not isinstance(entries, dict):
+            continue
+        cleaned: dict[str, str] = {}
+        for key in ("question", "retry_prompt", "retry_prompt_2", "retry_prompt_3"):
+            val = str(entries.get(key) or "").strip()
+            if val:
+                cleaned[key] = val
+        if cleaned:
+            out[code] = cleaned
+    return out
+
+
+def localized_question_text(
+    question: dict[str, Any] | None,
+    *,
+    language_code: str = "en",
+    key: str = "question",
+) -> str:
+    """Return admin-defined localized text, falling back to base question fields."""
+    if not question:
+        return ""
+    code = canonical_language_code(language_code) or str(language_code or "en").lower()
+    locales = normalize_question_locales(question.get("locales"))
+    if code and code in locales:
+        localized = str((locales.get(code) or {}).get(key) or "").strip()
+        if localized:
+            return localized
+    return str(question.get(key) or "").strip()
+
+
 def resolve_language_choice(
     transcript: str,
     question: dict[str, Any] | None = None,
@@ -426,6 +463,7 @@ def migrate_question_to_v2(q: dict[str, Any]) -> dict[str, Any]:
         "speech_mode": _normalize_speech_mode(
             q.get("speech_mode"), meta.get("speech_mode"), state
         ),
+        "locales": normalize_question_locales(q.get("locales")),
     }
     if answer_type == "language_choice":
         result["extract_fields"] = ["preferred_language"]
@@ -776,7 +814,11 @@ def repair_prompt_for_question(q: dict[str, Any], *, language_code: str = "en") 
     """Re-ask prompt after the caller rejects a read-back."""
     answer_type = str(q.get("answer_type") or "text")
     primary = _primary_field(q)
-    question_text = str(q.get("question") or "").strip()
+    question_text = localized_question_text(
+        q,
+        language_code=language_code,
+        key="question",
+    )
     is_es = _is_spanish_language(language_code)
     if answer_type == "phone":
         if is_es:
@@ -1157,17 +1199,28 @@ def validation_hint_for_question(q: dict[str, Any]) -> str:
     return defaults.get(answer_type, defaults["text"])
 
 
-def retry_prompt_for_count(question: dict[str, Any] | None, retry_count: int) -> str:
+def retry_prompt_for_count(
+    question: dict[str, Any] | None,
+    retry_count: int,
+    *,
+    language_code: str = "en",
+) -> str:
     """Pick the admin retry prompt for the current retry attempt."""
     if not question:
         return ""
     if retry_count >= 2 and question.get("retry_prompt_3"):
-        return str(question["retry_prompt_3"])
+        return localized_question_text(
+            question, language_code=language_code, key="retry_prompt_3"
+        ) or str(question["retry_prompt_3"])
     if retry_count >= 1 and question.get("retry_prompt_2"):
-        return str(question["retry_prompt_2"])
+        return localized_question_text(
+            question, language_code=language_code, key="retry_prompt_2"
+        ) or str(question["retry_prompt_2"])
     if retry_count > 0 and question.get("retry_prompt"):
-        return str(question["retry_prompt"])
-    return str(question.get("question") or "")
+        return localized_question_text(
+            question, language_code=language_code, key="retry_prompt"
+        ) or str(question["retry_prompt"])
+    return localized_question_text(question, language_code=language_code, key="question")
 
 
 def build_question_slot_config(q: dict[str, Any]) -> dict[str, Any]:
@@ -2147,6 +2200,7 @@ def build_conversation_preview_flow(
     business: str,
     greeting_message: str = "",
     closing_message: str = "",
+    language_code: str = "en",
 ) -> list[dict[str, str]]:
     """Simulate assistant turns for one preview sample path."""
     from app.core.screening_flow import build_greeting_intro
@@ -2155,7 +2209,7 @@ def build_conversation_preview_flow(
     if (greeting_message or "").strip():
         intro = str(greeting_message).replace("{property_name}", business).strip()
     else:
-        intro = build_greeting_intro(business)
+        intro = build_greeting_intro(business, language_code=language_code)
 
     first_state = first_active_question_state(normalized)
     first_q = next(
@@ -2165,7 +2219,12 @@ def build_conversation_preview_flow(
     flow: list[dict[str, str]] = [
         {
             "speaker": "AI",
-            "text": f"{intro} {first_q['question']}" if first_q else intro,
+            "text": (
+                f"{intro} "
+                f"{localized_question_text(first_q, language_code=language_code, key='question')}"
+                if first_q
+                else intro
+            ),
         }
     ]
 
@@ -2181,17 +2240,32 @@ def build_conversation_preview_flow(
                 }
             )
             continue
-        flow.append({"speaker": "AI", "text": str(q.get("question") or "")})
+        flow.append(
+            {
+                "speaker": "AI",
+                "text": localized_question_text(
+                    q,
+                    language_code=language_code,
+                    key="question",
+                ),
+            }
+        )
         flow.append({"speaker": "Tenant", "text": "(tenant responds here)"})
 
     closing = (closing_message or "").strip()
     if closing:
         closing = closing.replace("{property_name}", business)
     else:
-        closing = (
-            "Thank you. A leasing specialist will review your information "
-            "and follow up soon."
-        )
+        if str(language_code or "en").lower().startswith("es"):
+            closing = (
+                "Gracias. Un especialista de alquiler revisara su informacion "
+                "y se comunicara pronto."
+            )
+        else:
+            closing = (
+                "Thank you. A leasing specialist will review your information "
+                "and follow up soon."
+            )
     flow.append({"speaker": "AI", "text": closing})
     return flow
 

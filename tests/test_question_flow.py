@@ -779,6 +779,48 @@ def test_retry_prompt_for_count_uses_admin_escalation():
     assert retry_prompt_for_count(q, 2) == "Retry 3"
 
 
+def test_retry_prompt_for_count_uses_localized_overrides():
+    from app.core.question_flow import retry_prompt_for_count
+
+    q = {
+        "question": "What email address should we use?",
+        "retry_prompt": "Could you spell it?",
+        "retry_prompt_2": "Please say it slowly.",
+        "retry_prompt_3": "One more time please.",
+        "locales": {
+            "es": {
+                "question": "Que correo electronico debemos usar?",
+                "retry_prompt": "Podria deletrearlo?",
+                "retry_prompt_2": "Digalo despacio, por favor.",
+                "retry_prompt_3": "Una vez mas, por favor.",
+            }
+        },
+    }
+    assert retry_prompt_for_count(q, 0, language_code="es") == (
+        "Que correo electronico debemos usar?"
+    )
+    assert retry_prompt_for_count(q, 1, language_code="es") == (
+        "Digalo despacio, por favor."
+    )
+    assert retry_prompt_for_count(q, 2, language_code="es") == (
+        "Una vez mas, por favor."
+    )
+
+
+def test_localized_question_text_falls_back_to_base():
+    from app.core.question_flow import localized_question_text
+
+    q = {
+        "question": "Where do you work?",
+        "retry_prompt": "Could you share your employer?",
+        "locales": {"es": {"question": "Donde trabaja?"}},
+    }
+    assert localized_question_text(q, language_code="es", key="question") == "Donde trabaja?"
+    assert localized_question_text(q, language_code="es", key="retry_prompt") == (
+        "Could you share your employer?"
+    )
+
+
 def test_raw_field_types_always_text():
     from app.core.question_flow import default_questions_v2, field_answer_types_from_questions
 
@@ -872,6 +914,44 @@ def test_build_preview_sample_paths_includes_followups():
     assert "has_pets__true" in ids
     assert "has_eviction__true" in ids
     assert "all_followups" in ids
+
+
+def test_build_conversation_preview_flow_uses_localized_question_text():
+    from app.core.question_flow import build_conversation_preview_flow
+
+    questions = [
+        {
+            "schema_version": 2,
+            "id": "Q1",
+            "state": "Q1_FULL_NAME",
+            "question": "Can I start with your full name?",
+            "answer_type": "text",
+            "extract_fields": ["full_name"],
+            "field_labels": {"full_name": "full name"},
+            "retry_prompt": "",
+            "retry_prompt_2": "",
+            "retry_prompt_3": "",
+            "active": True,
+            "order": 1,
+            "required": True,
+            "requires_confirmation": False,
+            "conditional": None,
+            "scoring": {
+                "enabled": False,
+                "max_points": 0,
+                "rule_type": "any_answer",
+                "pass_config": {},
+            },
+            "locales": {"es": {"question": "Puedo comenzar con su nombre completo?"}},
+        }
+    ]
+    flow = build_conversation_preview_flow(
+        questions,
+        {},
+        business="Ready Rentals",
+        language_code="es",
+    )
+    assert "Puedo comenzar con su nombre completo?" in flow[0]["text"]
 
 
 def test_speech_mode_pet_bundle_extraction():

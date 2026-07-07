@@ -498,11 +498,13 @@ async def preview_conversation_flow(
     db: AsyncSession = Depends(get_db),
     user: AdminUser = Depends(require_scope("settings")),
     path: str | None = None,
+    language: str = "en",
 ):
     """Simulate the conversation flow through active questions for preview."""
     from app.core.question_flow import (
         build_conversation_preview_flow,
         build_preview_sample_paths,
+        canonical_language_code,
         normalize_questions,
         ordered_active_questions,
     )
@@ -523,12 +525,15 @@ async def preview_conversation_flow(
         selected = next((p for p in paths if p["id"] == path), paths[0])
     sample_data = dict(selected["data"])
 
+    language_code = canonical_language_code(language) or "en"
+
     flow = build_conversation_preview_flow(
         questions,
         sample_data,
         business=business,
         greeting_message=str(greeting_message or ""),
         closing_message=str(closing_message or ""),
+        language_code=language_code,
     )
     active_list = ordered_active_questions(questions, sample_data)
     return {
@@ -546,6 +551,7 @@ async def preview_conversation_flow(
             for p in paths
         ],
         "selected_path": selected["id"],
+        "selected_language": language_code,
     }
 
 

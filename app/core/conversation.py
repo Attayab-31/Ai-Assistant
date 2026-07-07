@@ -20,6 +20,7 @@ from app.core.question_flow import (
     field_answer_types_from_questions,
     flow_states_in_order,
     inactive_flow_states,
+    localized_question_text,
     next_unanswered_state,
     normalize_questions,
     prompt_fields_catalog,
@@ -717,7 +718,11 @@ def navigation_repeat_text(session: ConversationSession) -> str:
         if str(session.call_language).lower().startswith("es"):
             return "Adelante cuando este listo."
         return "Go ahead whenever you're ready."
-    return retry_prompt_for_count(question_cfg, session.retry_count)
+    return retry_prompt_for_count(
+        question_cfg,
+        session.retry_count,
+        language_code=session.call_language,
+    )
 
 
 def needs_extended_turn_budget(session: ConversationSession) -> bool:
@@ -888,7 +893,9 @@ def polite_redirect(session: ConversationSession, kind: str) -> str:
     retry_count = session.retry_count
     prompt = retry_prompt_for_count(question_cfg, retry_count)
     if not prompt:
-        prompt = str(question_cfg.get("question") or "")
+        prompt = localized_question_text(
+            question_cfg, language_code=session.call_language, key="question"
+        )
 
     if kind == "refusal":
         if is_es:
@@ -956,7 +963,11 @@ def strip_upcoming_question_from_ack(
     question = session.get_current_question()
     if not ack or not question:
         return ack
-    prompt = str(question.get("question") or "").strip()
+    prompt = localized_question_text(
+        question,
+        language_code=session.call_language,
+        key="question",
+    )
     if not prompt:
         return ack
     lower_ack = ack.lower()
@@ -1061,9 +1072,17 @@ def compose_agent_response(
             return ack, ""
 
         if current == prior_state and session.retry_count > 0:
-            prompt = retry_prompt_for_count(question, session.retry_count)
+            prompt = retry_prompt_for_count(
+                question,
+                session.retry_count,
+                language_code=session.call_language,
+            )
         else:
-            prompt = question["question"]
+            prompt = localized_question_text(
+                question,
+                language_code=session.call_language,
+                key="question",
+            )
 
         if not ack:
             return prompt, ""
@@ -1370,9 +1389,21 @@ def build_system_prompt(
     confirmation: dict[str, Any] | None = None,
 ) -> str:
     question = session.get_current_question()
-    question_text = question["question"] if question else "Close the call politely."
+    question_text = (
+        localized_question_text(
+            question,
+            language_code=session.call_language,
+            key="question",
+        )
+        if question
+        else "Close the call politely."
+    )
     retry_prompt = (
-        retry_prompt_for_count(question, session.retry_count)
+        retry_prompt_for_count(
+            question,
+            session.retry_count,
+            language_code=session.call_language,
+        )
         if question
         else question_text
     )

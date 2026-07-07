@@ -66,6 +66,7 @@ from app.core.question_flow import (
     first_active_question_state,
     is_question_answered,
     is_question_required,
+    localized_question_text,
     needs_readback_confirmation,
     next_unanswered_state,
     normalize_questions,
@@ -644,7 +645,13 @@ async def handle_call_answered(session: ConversationSession) -> list[bytes]:
     first_state = first_active_question_state(session.questions)
     session.current_state = first_state or CallState.WRAP_UP.value
     q1 = session.get_current_question()
-    question = q1["question"] if q1 else "Let's get started with your screening."
+    question = (
+        localized_question_text(
+            q1, language_code=session.call_language, key="question"
+        )
+        if q1
+        else "Let's get started with your screening."
+    )
     full_greeting = f"{intro} {question}"
 
     session.add_transcript("AI", full_greeting)
@@ -1066,7 +1073,11 @@ async def process_tenant_speech(
         returned to the question they were answering before the detour.
         """
         question = session.get_current_question()
-        follow_up = (question or {}).get("question", "") or (
+        follow_up = localized_question_text(
+            question,
+            language_code=session.call_language,
+            key="question",
+        ) or (
             "Donde ibamos? Adelante cuando este listo."
             if _is_spanish(session)
             else "Where were we — go ahead whenever you're ready."
@@ -1336,7 +1347,11 @@ async def process_tenant_speech(
             session.control_flags["callback_redirect_offered"] = True
             session.pending_confirmation = None
             question = session.get_current_question()
-            q_text = (question or {}).get("question", "")
+            q_text = localized_question_text(
+                question,
+                language_code=session.call_language,
+                key="question",
+            )
             if q_text:
                 response_text = (
                     _localize(
@@ -1706,7 +1721,13 @@ async def process_tenant_speech(
         if not response_text:
             question = session.get_current_question()
             response_text = (
-                question.get("question") if question else "How can I help?"
+                localized_question_text(
+                    question,
+                    language_code=session.call_language,
+                    key="question",
+                )
+                if question
+                else "How can I help?"
             )
         return await finish_turn(response_text, ack=response_text, follow_up="")
 

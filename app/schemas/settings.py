@@ -93,6 +93,7 @@ class ScreeningQuestion(BaseModel):
     speech_mode: str | None = None
     require_all_extract_fields: bool = False
     language_options: list[LanguageOption] | None = None
+    locales: dict[str, dict[str, str]] | None = None
 
 
 class QuestionsUpdateRequest(BaseModel):
