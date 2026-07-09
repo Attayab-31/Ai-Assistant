@@ -784,7 +784,7 @@ async def finalize_active_session_background(call_id: str) -> None:
                     )
             except Exception as e:
                 logger.error("Error finalizing call %s: %s", call_id, e, exc_info=True)
-                from app.db.crud import update_call
+                from app.db.crud import merge_call_error_log, update_call
 
                 try:
                     await update_call(
@@ -792,7 +792,12 @@ async def finalize_active_session_background(call_id: str) -> None:
                         call_id,
                         status="failed",
                         ended_at=datetime.now(UTC),
-                        error_log={"finalize_error": str(e)},
+                    )
+                    await merge_call_error_log(
+                        bg_db,
+                        call_id,
+                        {"finalize_error": str(e)},
+                        commit=True,
                     )
                 except Exception as db_err:
                     logger.error("Failed to mark call failed in DB: %s", db_err)
@@ -1679,6 +1684,14 @@ async def process_tenant_speech(
         if on_audio_part and getattr(session, "llm_streaming_enabled", True)
         else None,
     )
+    if getattr(session, "pending_hangup", False):
+        logger.info(
+            "[%s] Ignoring LLM result — hangup in progress",
+            session.call_id,
+        )
+        await _release_buffered_speakables(discard=True)
+        session.reconcile_interrupted_turn()
+        return "", [], False
     if llm_response_data.get("provider_shutdown"):
         return await end_call_for_provider_failure(
             session,
@@ -3412,10 +3425,12 @@ async def _acquire_side_effects_enqueue_lock(call_uuid) -> bool:
 
     if not await ping():
         return True
+    # Fail open on Redis transport errors so a transient SET failure does not
+    # drop email/CRM entirely. Per-channel DB claims still prevent duplicates.
     return await acquire_once(
         f"finalize:sideeffects:enqueue:{call_uuid}",
         _FINALIZE_SIDE_EFFECTS_ENQUEUE_LOCK_TTL,
-        fail_closed=True,
+        fail_closed=False,
     )
 
 
@@ -3815,17 +3830,21 @@ async def _finalize_call_impl(session: ConversationSession, db) -> dict:
             "avg_turn_ms": session.avg_turn_latency_ms,
             "max_turn_ms": int(round(session.max_turn_latency_ms)),
             "turn_count": session.turn_latency_samples,
-            "error_log": _merge_call_error_log(
-                call.error_log if isinstance(call.error_log, dict) else None,
-                _build_call_error_log(session),
-            ),
         }
+        session_error_log = _build_call_error_log(session)
 
-        from app.db.crud import update_call_if_active
+        from app.db.crud import merge_call_error_log, update_call_if_active
 
         call_persisted = await update_call_if_active(
             db, session.call_id, commit=False, **call_fields
         )
+        if call_persisted and session_error_log:
+            await merge_call_error_log(
+                db,
+                session.call_id,
+                session_error_log,
+                commit=False,
+            )
         if not call_persisted:
             await db.rollback()
             logger.warning(

@@ -223,3 +223,62 @@ def assert_safe_external_url(url: str, *, require_https: bool = False) -> str:
             raise UnsafeURLError(f"URL resolves to a non-public address: {host} → {ip}")
 
     return url
+
+
+_MAX_SAFE_REDIRECTS = 3
+_REDIRECT_STATUS_CODES = frozenset({301, 302, 303, 307, 308})
+
+
+def _resolve_redirect_url(current_url: str, location: str) -> str:
+    from urllib.parse import urljoin
+
+    if not location:
+        raise UnsafeURLError("Redirect response missing Location header")
+    return urljoin(current_url, location)
+
+
+async def async_fetch_safe_external(
+    url: str,
+    *,
+    require_https: bool = False,
+    timeout: float = 60.0,
+    max_redirects: int = _MAX_SAFE_REDIRECTS,
+) -> bytes:
+    """GET an external URL with redirect targets re-validated against SSRF rules."""
+    import httpx
+
+    current = assert_safe_external_url(url, require_https=require_https)
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+        for _ in range(max_redirects + 1):
+            response = await client.get(current)
+            if response.status_code in _REDIRECT_STATUS_CODES:
+                current = assert_safe_external_url(
+                    _resolve_redirect_url(current, response.headers.get("location")),
+                    require_https=require_https,
+                )
+                continue
+            response.raise_for_status()
+            return response.content
+    raise UnsafeURLError("Too many redirects")
+
+
+def sync_post_safe_external(
+    url: str,
+    *,
+    content: bytes,
+    headers: dict[str, str],
+    timeout: float = 10.0,
+    require_https: bool = False,
+):
+    """POST to an external URL without following redirects."""
+    import httpx
+
+    current = assert_safe_external_url(url, require_https=require_https)
+    with httpx.Client(timeout=timeout, follow_redirects=False) as client:
+        response = client.post(current, content=content, headers=headers)
+        if response.status_code in _REDIRECT_STATUS_CODES:
+            raise UnsafeURLError(
+                f"CRM webhook redirected to {response.headers.get('location') or '<missing>'}"
+            )
+        response.raise_for_status()
+        return response

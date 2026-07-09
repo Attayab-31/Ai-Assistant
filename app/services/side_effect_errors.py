@@ -50,20 +50,18 @@ async def record_side_effect_delivery_failure(
     detail: str,
 ) -> None:
     """Record permanent delivery failures under error_log.side_effect_failures."""
-    from app.db.crud import merge_call_error_log
+    from app.db.crud import merge_call_side_effect_failure
     from app.db.database import AsyncSessionLocal
 
     async with AsyncSessionLocal() as db:
         call = await _resolve_call(db, call_id)
         if call is None:
             return
-        failures = dict(getattr(call, "error_log", {}) or {}).get("side_effect_failures") or {}
-        failures = dict(failures)
-        failures[key] = detail
-        await merge_call_error_log(
+        await merge_call_side_effect_failure(
             db,
             call.call_id,
-            {"side_effect_failures": failures},
+            key,
+            detail,
             commit=True,
         )
 

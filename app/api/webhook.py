@@ -443,24 +443,18 @@ async def handle_recording_saved(db: AsyncSession, call_payload: dict) -> None:
 
     from app.db.crud import update_call
     from app.services.storage_service import storage_service
-    from app.utils.security import UnsafeURLError, assert_safe_external_url
 
     # The recording URL comes from the webhook payload — validate it points at a
     # public host before fetching so a forged/redirected URL can't be used to
     # probe internal services (SSRF).
     try:
-        assert_safe_external_url(mp3_url, require_https=True)
-    except UnsafeURLError as e:
-        logger.error("Refusing unsafe recording URL for %s: %s", call_control_id, e)
-        return
+        from app.utils.security import async_fetch_safe_external
 
-    try:
-        import httpx
-
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.get(mp3_url)
-            resp.raise_for_status()
-            audio_bytes = resp.content
+        audio_bytes = await async_fetch_safe_external(
+            mp3_url,
+            require_https=True,
+            timeout=60.0,
+        )
 
         # Stores the private Supabase object path when configured (served later
         # via a signed URL), otherwise falls back to the raw Telnyx URL.

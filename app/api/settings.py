@@ -30,6 +30,7 @@ from app.schemas.settings import (
     STTProviderSwitch,
     TTSProviderSwitch,
 )
+from app.services.admin_audit_helpers import audit_client_ip
 from app.utils.dependencies import require_scope
 from app.utils.security import encrypt_value
 from config import provider_registry
@@ -314,7 +315,7 @@ async def _apply_provider_switch_settings(
                 )
             raise HTTPException(
                 status_code=400,
-                detail=f"Failed to switch provider: {str(e)}",
+                detail="Failed to switch provider. Verify credentials and try again.",
             ) from e
 
 
@@ -542,7 +543,7 @@ async def switch_llm_provider(
         entity_type="setting",
         old_value={"provider": old_provider},
         new_value={"provider": payload.provider, "model": payload.model},
-        ip_address=request.client.host if request.client else None,
+        ip_address=audit_client_ip(request),
     )
 
     logger.info(
@@ -591,7 +592,7 @@ async def switch_stt_provider(
         entity_type="setting",
         old_value={"provider": old_provider},
         new_value={"provider": payload.provider},
-        ip_address=request.client.host if request.client else None,
+        ip_address=audit_client_ip(request),
     )
 
     logger.info(
@@ -642,7 +643,7 @@ async def switch_tts_provider(
         entity_type="setting",
         old_value={"provider": old_provider},
         new_value={"provider": payload.provider, "voice": payload.voice},
-        ip_address=request.client.host if request.client else None,
+        ip_address=audit_client_ip(request),
     )
 
     logger.info(
@@ -684,7 +685,7 @@ async def set_provider_api_key(
         # provider that isn't active); it still takes effect on the next call.
         logger.warning("Registry reload after API key update failed: %s", e)
         reload_applied = False
-        reload_error = str(e)
+        reload_error = "Registry reload failed"
 
     audit_ok = await _safe_create_audit_log(
         db,
@@ -692,7 +693,7 @@ async def set_provider_api_key(
         admin_user_id=user.id,
         entity_type="setting",
         new_value={"provider": payload.provider, "key": "updated"},
-        ip_address=request.client.host if request.client else None,
+        ip_address=audit_client_ip(request),
     )
 
     logger.info(f"API key set/rotated for {payload.provider} by {user.email}")
@@ -844,7 +845,7 @@ async def update_questions(
         entity_type="setting",
         old_value={"count": change_summary["count_before"]},
         new_value=change_summary,
-        ip_address=request.client.host if request.client else None,
+        ip_address=audit_client_ip(request),
     )
 
     response = _add_cache_warning({
@@ -875,7 +876,7 @@ async def reset_questions_to_defaults(
         action="reset_screening_questions",
         admin_user_id=user.id,
         entity_type="setting",
-        ip_address=request.client.host if request.client else None,
+        ip_address=audit_client_ip(request),
     )
     response = _add_cache_warning(
         {"success": True, "questions": DEFAULT_QUESTIONS},
@@ -980,7 +981,7 @@ async def update_faqs(
         entity_type="setting",
         old_value={"count": len(old_faqs)},
         new_value={"count": len(new_faqs)},
-        ip_address=request.client.host if request.client else None,
+        ip_address=audit_client_ip(request),
     )
 
     response = _add_cache_warning({"success": True, "faqs": new_faqs}, cache_ok)
@@ -1005,7 +1006,7 @@ async def reset_faqs_to_defaults(
         action="reset_screening_faqs",
         admin_user_id=user.id,
         entity_type="setting",
-        ip_address=request.client.host if request.client else None,
+        ip_address=audit_client_ip(request),
     )
     response = _add_cache_warning({"success": True, "faqs": DEFAULT_FAQS}, cache_ok)
     return _add_audit_warning(response, audit_ok)
@@ -1085,7 +1086,7 @@ async def _persist_email_settings(
         admin_user_id=user.id,
         entity_type="setting",
         new_value=updates,
-        ip_address=request.client.host if request.client else None,
+        ip_address=audit_client_ip(request),
     )
     return updates, cache_ok, audit_ok
 
@@ -1210,7 +1211,7 @@ async def reset_email_settings_to_defaults(
         admin_user_id=user.id,
         entity_type="setting",
         new_value={"keys": sorted(EMAIL_RESET_DEFAULTS.keys())},
-        ip_address=request.client.host if request.client else None,
+        ip_address=audit_client_ip(request),
     )
     response = _add_cache_warning(
         {"success": True, "reset": sorted(EMAIL_RESET_DEFAULTS.keys())},
@@ -1281,7 +1282,7 @@ async def update_general_settings(
         admin_user_id=user.id,
         entity_type="setting",
         new_value=redact_for_audit(updates),
-        ip_address=request.client.host if request.client else None,
+        ip_address=audit_client_ip(request),
     )
     response = _add_cache_warning(
         {"success": True, "updated": list(updates.keys())},
@@ -1370,7 +1371,7 @@ async def reset_general_settings_to_defaults(
         admin_user_id=user.id,
         entity_type="setting",
         new_value={"keys": sorted(defaults.keys())},
-        ip_address=request.client.host if request.client else None,
+        ip_address=audit_client_ip(request),
     )
 
     response = _add_cache_warning(
@@ -1402,7 +1403,7 @@ async def add_to_blacklist(
         admin_user_id=user.id,
         entity_type="setting",
         new_value={"phone_number": phone},
-        ip_address=request.client.host if request.client else None,
+        ip_address=audit_client_ip(request),
     )
     response = _add_cache_warning(
         {"success": True, "blacklist": blacklist},
@@ -1433,7 +1434,7 @@ async def remove_from_blacklist(
         admin_user_id=user.id,
         entity_type="setting",
         old_value={"phone_number": phone},
-        ip_address=request.client.host if request.client else None,
+        ip_address=audit_client_ip(request),
     )
     response = _add_cache_warning(
         {"success": True, "blacklist": blacklist},

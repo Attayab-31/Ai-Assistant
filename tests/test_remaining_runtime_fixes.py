@@ -191,3 +191,87 @@ def test_apply_encrypted_api_keys_resets_missing_key_to_env_default(monkeypatch)
     config._apply_encrypted_api_keys({})
 
     assert config.settings.openai_api_key == original
+
+
+def test_sync_post_safe_external_rejects_redirect(monkeypatch):
+    from app.utils.security import UnsafeURLError, sync_post_safe_external
+
+    class _Response:
+        status_code = 302
+        headers = {"location": "http://127.0.0.1/internal"}
+
+        def raise_for_status(self):
+            return None
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def post(self, *_args, **_kwargs):
+            return _Response()
+
+    monkeypatch.setattr("httpx.Client", _Client)
+    monkeypatch.setattr(
+        "app.utils.security.assert_safe_external_url",
+        lambda url, **kwargs: url,
+    )
+
+    with pytest.raises(UnsafeURLError, match="redirected"):
+        sync_post_safe_external(
+            "https://example.com/hook",
+            content=b"{}",
+            headers={"Content-Type": "application/json"},
+        )
+
+
+@pytest.mark.asyncio
+async def test_async_fetch_safe_external_revalidates_redirect_target(monkeypatch):
+    from app.utils.security import UnsafeURLError, async_fetch_safe_external
+
+    calls: list[str] = []
+
+    class _Response:
+        def __init__(self, status_code: int, *, body: bytes = b"", location: str = ""):
+            self.status_code = status_code
+            self.content = body
+            self.headers = {"location": location} if location else {}
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise RuntimeError(f"http {self.status_code}")
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def get(self, url):
+            calls.append(url)
+            if len(calls) == 1:
+                return _Response(302, location="http://127.0.0.1/internal")
+            return _Response(200, body=b"audio")
+
+    monkeypatch.setattr("httpx.AsyncClient", _Client)
+
+    def _validate(url, **kwargs):
+        if "127.0.0.1" in url:
+            raise UnsafeURLError("blocked redirect")
+        return url
+
+    monkeypatch.setattr("app.utils.security.assert_safe_external_url", _validate)
+
+    with pytest.raises(UnsafeURLError, match="blocked redirect"):
+        await async_fetch_safe_external("https://example.com/rec.mp3", require_https=True)
+
+    assert calls == ["https://example.com/rec.mp3"]

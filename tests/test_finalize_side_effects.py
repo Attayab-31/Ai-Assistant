@@ -242,3 +242,67 @@ async def test_dispatch_finalize_side_effects_skips_when_enqueue_lock_held():
             )
 
     enqueue.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_acquire_side_effects_enqueue_lock_fails_open_on_redis_error():
+    from app.core.call_handler import _acquire_side_effects_enqueue_lock
+
+    call_uuid = uuid.uuid4()
+    with patch("app.core.redis_client.ping", AsyncMock(return_value=True)):
+        with patch(
+            "app.core.redis_client.acquire_once",
+            AsyncMock(return_value=True),
+        ) as acquire:
+            assert await _acquire_side_effects_enqueue_lock(call_uuid) is True
+
+    acquire.assert_awaited_once()
+    assert acquire.await_args.kwargs["fail_closed"] is False
+
+
+@pytest.mark.asyncio
+async def test_dispatch_finalize_side_effects_proceeds_when_enqueue_lock_fails_open():
+    from app.core.call_handler import _dispatch_finalize_side_effects
+
+    session = MagicMock()
+    session.call_id = "call-456"
+    session.get_full_transcript.return_value = "AI: hello"
+    session.stt_provider = "deepgram"
+    session.llm_provider = "groq"
+    session.tts_provider = "deepgram"
+    session.duration_seconds = 12
+
+    notif = MagicMock()
+    notif.email_notifications_enabled = True
+    notif.crm_webhook_url = ""
+
+    with patch("app.core.redis_client.ping", AsyncMock(return_value=True)):
+        with patch(
+            "app.core.redis_client.acquire_once",
+            AsyncMock(return_value=True),
+        ):
+            with patch(
+                "app.core.call_handler._resolve_session_notification_settings",
+                AsyncMock(return_value=notif),
+            ):
+                with patch(
+                    "app.core.call_handler.notification_settings_email_dict",
+                    return_value={},
+                ):
+                    with patch(
+                        "app.core.call_handler._enqueue_finalize_side_effect_channel",
+                        AsyncMock(),
+                    ) as enqueue:
+                        await _dispatch_finalize_side_effects(
+                            AsyncMock(),
+                            call_uuid=uuid.uuid4(),
+                            tenant_id=uuid.uuid4(),
+                            session=session,
+                            persist_phone="+15551234567",
+                            merged={},
+                            score=80,
+                            status="qualified",
+                            reasons=[],
+                        )
+
+    assert enqueue.await_count >= 1

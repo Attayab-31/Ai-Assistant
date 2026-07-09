@@ -20,6 +20,7 @@ from sqlalchemy import (
     desc,
     extract,
     func,
+    literal,
     literal_column,
     or_,
     select,
@@ -44,6 +45,20 @@ from config import (
 )
 
 logger = logging.getLogger(__name__)
+
+_SETTING_VALUE_TYPES = {
+    item["key"]: item.get("value_type") or "string"
+    for item in DEFAULT_SYSTEM_SETTINGS
+}
+_JSON_SETTING_KEYS = frozenset(
+    {"screening_questions", "screening_faqs", "blacklisted_numbers"}
+)
+
+
+def _default_value_type_for_key(key: str) -> str:
+    if key in _JSON_SETTING_KEYS:
+        return "json"
+    return _SETTING_VALUE_TYPES.get(key, "string")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -338,15 +353,18 @@ async def merge_call_error_log(
 
 async def persist_stream_stop_request(db: AsyncSession, call_id: str) -> bool:
     """Persist a cross-worker hangup stop on the call row (Redis fallback)."""
-    call = await get_call_by_call_id_for_update(db, call_id)
+    call = await get_call_by_call_id(db, call_id)
     if call is None or call.status not in ("initiated", "in_progress"):
         return False
-    log = dict(call.error_log or {})
+    log = call.error_log if isinstance(call.error_log, dict) else {}
     if log.get(STREAM_STOP_DB_KEY):
         return True
-    log[STREAM_STOP_DB_KEY] = datetime.now(UTC).isoformat()
-    await update_call(db, call_id, error_log=log, commit=True)
-    return True
+    return await merge_call_error_log(
+        db,
+        call_id,
+        {STREAM_STOP_DB_KEY: datetime.now(UTC).isoformat()},
+        commit=True,
+    )
 
 
 async def is_stream_stop_requested(db: AsyncSession, call_id: str) -> bool:
@@ -360,14 +378,60 @@ async def is_stream_stop_requested(db: AsyncSession, call_id: str) -> bool:
 
 async def clear_stream_stop_request(db: AsyncSession, call_id: str) -> None:
     """Remove a persisted hangup stop after the media stream has shut down."""
-    call = await get_call_by_call_id_for_update(db, call_id)
+    call = await get_call_by_call_id(db, call_id)
     if call is None:
         return
-    log = dict(call.error_log or {})
+    log = call.error_log if isinstance(call.error_log, dict) else {}
     if STREAM_STOP_DB_KEY not in log:
         return
-    del log[STREAM_STOP_DB_KEY]
-    await update_call(db, call_id, error_log=log or None, commit=True)
+    from sqlalchemy import literal
+
+    await db.execute(
+        update(Call)
+        .where(Call.call_id == call_id, Call.is_deleted == False)
+        .values(
+            error_log=func.coalesce(Call.error_log, cast("{}", JSONB)).op("-")(
+                literal(STREAM_STOP_DB_KEY)
+            ),
+            updated_at=datetime.now(UTC),
+        )
+    )
+    await db.commit()
+
+
+async def merge_call_side_effect_failure(
+    db: AsyncSession,
+    call_id: str,
+    key: str,
+    detail: str,
+    *,
+    commit: bool = True,
+) -> bool:
+    """Atomically record one nested delivery failure on the call row."""
+    if not key:
+        return False
+    path = literal_column(
+        "ARRAY['side_effect_failures', :failure_key]::text[]"
+    ).bindparams(failure_key=key)
+    expr = func.jsonb_set(
+        func.coalesce(Call.error_log, cast("{}", JSONB)),
+        path,
+        cast(json.dumps(detail), JSONB),
+        True,
+    )
+    result = await db.execute(
+        update(Call)
+        .where(Call.call_id == call_id, Call.is_deleted == False)
+        .values(
+            error_log=expr,
+            updated_at=datetime.now(UTC),
+        )
+    )
+    if commit:
+        await db.commit()
+    else:
+        await db.flush()
+    return (result.rowcount or 0) > 0
 
 
 async def mark_call_abandoned_if_active(
@@ -1310,6 +1374,7 @@ async def set_setting(
         setting = SystemSetting(
             key=key,
             value=value,
+            value_type=_default_value_type_for_key(key),
             updated_by=updated_by,
             is_sensitive=is_sensitive,
         )
@@ -1360,6 +1425,7 @@ async def set_settings_bulk(
             SystemSetting(
                 key=key,
                 value=value,
+                value_type=_default_value_type_for_key(key),
                 updated_by=updated_by,
                 is_sensitive=is_sensitive,
             )
@@ -1405,13 +1471,16 @@ async def add_to_blacklist(
     db: AsyncSession, phone_number: str, updated_by: uuid.UUID | None = None
 ) -> tuple[list[str], bool]:
     """Add a phone number to the Do-Not-Call blacklist (idempotent)."""
-    if not phone_number:
+    from app.utils.helpers import sanitize_phone_number
+
+    phone = sanitize_phone_number(phone_number)
+    if not phone:
         current = await get_setting_value(db, "blacklisted_numbers", [])
         return current, True
     return await _mutate_blacklist_numbers(
         db,
         updated_by=updated_by,
-        add_phone=phone_number,
+        add_phone=phone,
     )
 
 
@@ -1419,14 +1488,31 @@ async def remove_from_blacklist(
     db: AsyncSession, phone_number: str, updated_by: uuid.UUID | None = None
 ) -> tuple[list[str], bool]:
     """Remove a phone number from the Do-Not-Call blacklist (idempotent)."""
-    if not phone_number:
+    from app.utils.helpers import sanitize_phone_number
+
+    phone = sanitize_phone_number(phone_number)
+    if not phone:
         current = await get_setting_value(db, "blacklisted_numbers", [])
         return current, True
     return await _mutate_blacklist_numbers(
         db,
         updated_by=updated_by,
-        remove_phone=phone_number,
+        remove_phone=phone,
     )
+
+
+def _normalize_blacklist_numbers(numbers: list[str]) -> list[str]:
+    """Normalize stored blacklist entries to canonical E.164-like values."""
+    from app.utils.helpers import sanitize_phone_number
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in numbers:
+        phone = sanitize_phone_number(str(item))
+        if phone and phone not in seen:
+            seen.add(phone)
+            normalized.append(phone)
+    return normalized
 
 
 async def _mutate_blacklist_numbers(
@@ -1456,6 +1542,8 @@ async def _mutate_blacklist_numbers(
                 current = [str(item) for item in parsed if item]
         except (TypeError, json.JSONDecodeError):
             current = []
+
+    current = _normalize_blacklist_numbers(current)
 
     if add_phone and add_phone not in current:
         current.append(add_phone)

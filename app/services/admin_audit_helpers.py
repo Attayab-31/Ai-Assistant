@@ -7,11 +7,25 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
+from fastapi import Request
+
 from app.core.question_flow import normalize_questions
 
 _CUSTOM_FIELD_MAX_LEN = 2000
 _CUSTOM_FIELD_MAX_KEYS = 50
 _ALLOWED_CUSTOM_TYPES = (str, int, float, bool, type(None))
+
+
+def audit_client_ip(request: Request | None) -> str | None:
+    """Resolve the client IP for audit logs behind trusted proxies."""
+    if request is None:
+        return None
+    if not hasattr(request, "headers"):
+        client = getattr(request, "client", None)
+        return getattr(client, "host", None) if client else None
+    from app.core.ratelimit import client_ip
+
+    return client_ip(request)
 
 
 def _json_safe(value: Any) -> Any:

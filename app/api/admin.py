@@ -56,6 +56,7 @@ from app.utils.helpers import (
     time_ago,
 )
 from app.services.admin_audit_helpers import (
+    audit_client_ip,
     format_audit_change_summary as _format_audit_change_summary,
 )
 
@@ -1145,7 +1146,7 @@ async def api_delete_call(
         entity_type="call",
         entity_id=call_id,
         old_value=audit_value,
-        ip_address=request.client.host if request.client else None,
+        ip_address=audit_client_ip(request),
     )
     response: dict = {"deleted": True}
     if recording_delete_failed:
@@ -1247,7 +1248,7 @@ async def api_resend_email(
         admin_user_id=user.id,
         entity_type="call",
         entity_id=call_id,
-        ip_address=request.client.host if request.client else None,
+        ip_address=audit_client_ip(request),
     )
     return _add_audit_warning(
         {"queued": True, "used_live_settings": used_live_settings},
@@ -1282,7 +1283,7 @@ async def api_update_call_notes(
         entity_type="tenant",
         entity_id=tenant.id,
         new_value={"call_id": str(call_id), "notes_length": len(notes_text)},
-        ip_address=request.client.host if request.client else None,
+        ip_address=audit_client_ip(request),
     )
     return _add_audit_warning({"saved": True}, audit_ok)
 
@@ -1315,7 +1316,7 @@ async def api_mark_reviewed(
         entity_id=tenant.id,
         old_value={"reviewed": old_status},
         new_value={"reviewed": new_status, "call_id": str(call_id)},
-        ip_address=request.client.host if request.client else None,
+        ip_address=audit_client_ip(request),
     )
     return _add_audit_warning({"reviewed": new_status}, audit_ok)
 
@@ -1361,7 +1362,7 @@ async def api_override_qualification(
         entity_id=tenant.id,
         old_value={"status": old_status},
         new_value={"status": new_status, "reason": reason or None},
-        ip_address=request.client.host if request.client else None,
+        ip_address=audit_client_ip(request),
     )
     return _add_audit_warning({"updated": True, "status": new_status}, audit_ok)
 
@@ -1398,7 +1399,7 @@ async def api_mark_tenant_reviewed(
         entity_id=tenant.id,
         old_value={"reviewed_by_admin": old_reviewed},
         new_value={"reviewed_by_admin": new_status},
-        ip_address=request.client.host if request.client else None,
+        ip_address=audit_client_ip(request),
     )
     return _add_audit_warning(
         {"reviewed": new_status, "tenant_id": str(tenant.id)},
@@ -1440,7 +1441,7 @@ async def api_bulk_mark_reviewed(
         admin_user_id=user.id,
         entity_type="tenant",
         new_value={"reviewed": reviewed, "updated": updated, "requested": len(raw_ids)},
-        ip_address=request.client.host if request.client else None,
+        ip_address=audit_client_ip(request),
     )
     return _add_audit_warning(
         {"updated": updated, "reviewed": reviewed},
@@ -1511,11 +1512,17 @@ async def api_blacklist_tenant(
     user: AdminUser = Depends(require_scope("tenants", edit=True)),
 ):
     """Blacklist a tenant's phone number."""
+    from app.utils.helpers import sanitize_phone_number
+
     tenant = await crud.get_tenant_by_id(db, tenant_id)
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
 
-    _, cache_ok = await crud.add_to_blacklist(db, tenant.phone_number, updated_by=user.id)
+    phone = sanitize_phone_number(tenant.phone_number or "")
+    if not phone:
+        raise HTTPException(status_code=400, detail="Tenant has no valid phone number")
+
+    _, cache_ok = await crud.add_to_blacklist(db, phone, updated_by=user.id)
     await crud.update_tenant(db, tenant_id, is_blacklisted=True)
     audit_ok = await _safe_create_audit_log(
         db,
@@ -1523,8 +1530,8 @@ async def api_blacklist_tenant(
         admin_user_id=user.id,
         entity_type="tenant",
         entity_id=tenant_id,
-        new_value={"phone_number": tenant.phone_number},
-        ip_address=request.client.host if request.client else None,
+        new_value={"phone_number": phone},
+        ip_address=audit_client_ip(request),
     )
     from app.api.settings import _add_cache_warning
 
@@ -1558,7 +1565,7 @@ async def api_update_tenant_notes(
         entity_type="tenant",
         entity_id=tenant_id,
         new_value={"notes_length": len(notes_text)},
-        ip_address=request.client.host if request.client else None,
+        ip_address=audit_client_ip(request),
     )
     return _add_audit_warning({"saved": True}, audit_ok)
 
@@ -1679,7 +1686,7 @@ async def api_update_tenant(
             entity_id=tenant_id,
             old_value=old_audit,
             new_value=new_audit,
-            ip_address=request.client.host if request.client else None,
+            ip_address=audit_client_ip(request),
         )
     else:
         audit_ok = True
@@ -1828,7 +1835,7 @@ async def api_create_user(
         entity_type="admin_user",
         entity_id=new_user.id,
         new_value={"email": email, "role": role, "scopes": stored_scopes or "all"},
-        ip_address=request.client.host if request.client else None,
+        ip_address=audit_client_ip(request),
     )
 
     logger.info("Admin user %s created by %s (role=%s)", email, user.email, role)
@@ -1934,7 +1941,7 @@ async def api_update_user(
             "scopes": list(updated.effective_scopes),
             "is_active": updated.is_active,
         },
-        ip_address=request.client.host if request.client else None,
+        ip_address=audit_client_ip(request),
     )
 
     invalidate_user_cache(user_id)
@@ -2005,7 +2012,7 @@ async def api_delete_user(
         entity_id=user_id,
         old_value={"email": deleted_email, "role": target.role},
         new_value={},
-        ip_address=request.client.host if request.client else None,
+        ip_address=audit_client_ip(request),
     )
 
     logger.info("Admin user %s deleted by %s", deleted_email, user.email)

@@ -23,16 +23,14 @@ async def test_persist_stream_stop_request_writes_error_log():
     call.error_log = {}
 
     db = AsyncMock()
-    with patch(
-        "app.db.crud.get_call_by_call_id_for_update", AsyncMock(return_value=call)
-    ) as get_call:
-        with patch("app.db.crud.update_call", AsyncMock()) as update_call:
+    with patch("app.db.crud.get_call_by_call_id", AsyncMock(return_value=call)) as get_call:
+        with patch("app.db.crud.merge_call_error_log", AsyncMock(return_value=True)) as merge:
             ok = await persist_stream_stop_request(db, call_id)
 
     assert ok is True
     get_call.assert_awaited_once_with(db, call_id)
-    update_call.assert_awaited_once()
-    assert STREAM_STOP_DB_KEY in update_call.await_args.kwargs["error_log"]
+    merge.assert_awaited_once()
+    assert STREAM_STOP_DB_KEY in merge.await_args.args[2]
 
 
 @pytest.mark.asyncio
@@ -41,10 +39,12 @@ async def test_persist_stream_stop_request_ignores_terminal_calls():
     call.status = "completed"
     db = AsyncMock()
 
-    with patch("app.db.crud.get_call_by_call_id_for_update", AsyncMock(return_value=call)):
-        ok = await persist_stream_stop_request(db, "done-call")
+    with patch("app.db.crud.get_call_by_call_id", AsyncMock(return_value=call)):
+        with patch("app.db.crud.merge_call_error_log", AsyncMock()) as merge:
+            ok = await persist_stream_stop_request(db, "done-call")
 
     assert ok is False
+    merge.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -62,14 +62,14 @@ async def test_clear_stream_stop_request_removes_flag():
     call = MagicMock()
     call.error_log = {STREAM_STOP_DB_KEY: "2026-07-09T00:00:00+00:00"}
     db = AsyncMock()
+    db.execute = AsyncMock()
+    db.commit = AsyncMock()
 
-    with patch("app.db.crud.get_call_by_call_id_for_update", AsyncMock(return_value=call)):
-        with patch("app.db.crud.update_call", AsyncMock()) as update_call:
-            await clear_stream_stop_request(db, "live-call")
+    with patch("app.db.crud.get_call_by_call_id", AsyncMock(return_value=call)):
+        await clear_stream_stop_request(db, "live-call")
 
-    update_call.assert_awaited_once()
-    cleared_log = update_call.await_args.kwargs["error_log"]
-    assert not cleared_log or STREAM_STOP_DB_KEY not in cleared_log
+    db.execute.assert_awaited_once()
+    db.commit.assert_awaited_once()
 
 
 @pytest.mark.asyncio

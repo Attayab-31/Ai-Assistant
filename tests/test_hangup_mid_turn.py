@@ -168,3 +168,64 @@ async def test_merge_skipped_when_hangup_set_after_llm(monkeypatch):
     assert text == ""
     assert "full_name" not in session.extracted_data
     assert complete is False
+
+
+@pytest.mark.asyncio
+async def test_control_intent_skipped_when_hangup_set_after_llm(monkeypatch):
+    from app.core.call_handler import process_tenant_speech
+
+    session = _session(current_state="Q1_NAME")
+
+    async def _fake_llm(*_args, **_kwargs):
+        session.pending_hangup = True
+        return {
+            "response_text": "No problem.",
+            "understood": True,
+            "intent": "stop",
+            "relevance": "relevant",
+            "question_complete": False,
+            "extracted_data": {},
+        }
+
+    monkeypatch.setattr(
+        "app.core.call_handler.get_llm_response_with_fallback", _fake_llm
+    )
+
+    text, audio, complete = await process_tenant_speech(session, "stop please")
+
+    assert text == ""
+    assert audio == []
+    assert complete is False
+    assert session.current_state == "Q1_NAME"
+    assert session.control_flags.get("stop_requested") is not True
+
+
+@pytest.mark.asyncio
+async def test_relevance_limit_skipped_when_hangup_set_after_llm(monkeypatch):
+    from app.core.call_handler import process_tenant_speech
+
+    session = _session(current_state="Q1_NAME")
+    session.max_retries = 0
+
+    async def _fake_llm(*_args, **_kwargs):
+        session.pending_hangup = True
+        return {
+            "response_text": "Let's move on.",
+            "understood": False,
+            "intent": "nothing",
+            "relevance": "off_topic",
+            "question_complete": False,
+            "extracted_data": {},
+        }
+
+    monkeypatch.setattr(
+        "app.core.call_handler.get_llm_response_with_fallback", _fake_llm
+    )
+
+    text, audio, complete = await process_tenant_speech(session, "what's the weather")
+
+    assert text == ""
+    assert audio == []
+    assert complete is False
+    assert session.current_state == "Q1_NAME"
+    assert session.answered_states == []

@@ -409,8 +409,6 @@ def fire_crm_webhook_task(
     """
     import json
 
-    import httpx
-
     from app.utils.helpers import generate_hmac_signature
     from app.utils.security import UnsafeURLError, assert_safe_external_url
 
@@ -464,9 +462,14 @@ def fire_crm_webhook_task(
         if secret:
             headers["X-Signature-SHA256"] = generate_hmac_signature(body, secret)
 
-        with httpx.Client(timeout=10.0) as client:
-            response = client.post(webhook_url, content=body, headers=headers)
-            response.raise_for_status()
+        from app.utils.security import sync_post_safe_external
+
+        response = sync_post_safe_external(
+            webhook_url,
+            content=body,
+            headers=headers,
+            timeout=10.0,
+        )
 
         logger.info(f"CRM webhook fired for call {call_id}: {response.status_code}")
         return {"sent": True, "status_code": response.status_code}
