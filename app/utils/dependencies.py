@@ -97,6 +97,16 @@ async def get_current_user(
             detail="User not found or inactive",
         )
 
+    password_changed_at = getattr(user, "password_changed_at", None)
+    if password_changed_at is not None:
+        token_pwd_at = payload.get("pwd_at")
+        if token_pwd_at != password_changed_at.isoformat():
+            _user_cache.pop(user_uuid, None)
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Session expired",
+            )
+
     return user
 
 

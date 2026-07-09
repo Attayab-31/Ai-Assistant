@@ -74,14 +74,16 @@ def run_side_effect_db_write(coro) -> None:
         try:
             asyncio.run(coro)
         except Exception as exc:
-            logger.warning("Side-effect DB write failed: %s", exc)
+            logger.error("Side-effect DB write failed: %s", exc)
+            raise
         return
 
     future = _executor.submit(asyncio.run, coro)
     try:
         future.result(timeout=10)
     except Exception as exc:
-        logger.warning("Side-effect DB write failed: %s", exc)
+        logger.error("Side-effect DB write failed: %s", exc)
+        raise
 
 
 def record_side_effect_delivery_failure_sync(

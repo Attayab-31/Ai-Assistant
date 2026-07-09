@@ -99,20 +99,33 @@ async function saveQualification() {
   } catch (e) { showMessage(e.message, true); }
 }
 
+function updateReviewUi(reviewed) {
+  const btn = document.getElementById('reviewBtn');
+  const pill = document.getElementById('reviewStatePill');
+  if (btn) btn.textContent = reviewed ? 'Mark unreviewed' : 'Mark as reviewed';
+  if (pill) {
+    pill.className = 'review-chip ' + (reviewed ? 'reviewed' : 'needs-review');
+    pill.innerHTML = reviewed
+      ? '<span class="dot ok" aria-hidden="true"></span> Reviewed'
+      : '<span class="dot warn" aria-hidden="true"></span> Needs your review';
+  }
+}
+
 async function toggleReviewed() {
   try {
     const data = await patchCall('/review');
-    const btn = document.getElementById('reviewBtn');
-    const pill = document.getElementById('reviewStatePill');
-    const reviewed = !!data.reviewed;
-    if (btn) btn.textContent = reviewed ? 'Mark unreviewed' : 'Mark as reviewed';
-    if (pill) {
-      pill.className = 'review-chip ' + (reviewed ? 'reviewed' : 'needs-review');
-      pill.innerHTML = reviewed
-        ? '<span class="dot ok" aria-hidden="true"></span> Reviewed'
-        : '<span class="dot warn" aria-hidden="true"></span> Needs your review';
-    }
-    showMessage(reviewed ? 'Marked as reviewed.' : 'Marked as not reviewed.');
+    updateReviewUi(!!data.reviewed);
+    showMessage(data.reviewed ? 'Marked as reviewed.' : 'Marked as not reviewed.');
+  } catch (e) { showMessage(e.message, true); }
+}
+
+async function toggleTenantReviewedOnDetail() {
+  const tenantId = window._tenantDetailId;
+  if (!tenantId) return;
+  try {
+    const data = await apiFetch('/admin/api/tenants/' + tenantId + '/review', { method: 'PATCH' });
+    updateReviewUi(!!data.reviewed);
+    showMessage(data.reviewed ? 'Marked as reviewed.' : 'Marked as not reviewed.');
   } catch (e) { showMessage(e.message, true); }
 }
 

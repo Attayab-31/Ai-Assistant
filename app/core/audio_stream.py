@@ -143,10 +143,45 @@ UtteranceItem = tuple[str, bytes]
 TranscriptItem = str
 
 # One reconnect attempt before degrading live Deepgram to batch transcription.
-STREAMING_STT_RECONNECT_TIMEOUT_S = 2.0
+from app.core.streaming_stt import STREAMING_STT_RECONNECT_TIMEOUT_S
 STT_STREAM_RECONNECT_FLAG = "stt_stream_reconnects"
 # Keep only a bounded recent window of caller audio for live->batch handoff.
 STREAMING_TO_BATCH_CARRYOVER_MAX_BYTES = MAX_BUFFER_BYTES
+
+
+class _StreamStopRequested(Exception):
+    """Raised when the caller hung up while a listen queue was waiting."""
+
+
+async def _queue_get_with_stop(
+    queue: asyncio.Queue,
+    stop_event: asyncio.Event,
+    *,
+    timeout: float,
+):
+    """Wait for a queue item but return promptly when hangup sets ``stop_event``."""
+    if stop_event.is_set():
+        raise _StreamStopRequested()
+    getter = asyncio.create_task(queue.get())
+    stopper = asyncio.create_task(stop_event.wait())
+    try:
+        done, pending = await asyncio.wait(
+            {getter, stopper},
+            timeout=timeout,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for task in pending:
+            task.cancel()
+        if stopper in done:
+            raise _StreamStopRequested()
+        if getter in done:
+            return getter.result()
+        raise TimeoutError()
+    finally:
+        if not getter.done():
+            getter.cancel()
+        if not stopper.done():
+            stopper.cancel()
 
 
 def agent_turn_in_progress(
@@ -526,7 +561,7 @@ async def run_bidirectional_audio_stream(
 
     streaming_stt_enabled = _use_streaming_stt(session)
     utterance_queue: asyncio.Queue[UtteranceItem] = asyncio.Queue(maxsize=8)
-    transcript_queue: asyncio.Queue[TranscriptItem | None] = asyncio.Queue(maxsize=8)
+    transcript_queue: asyncio.Queue[TranscriptItem | None] = asyncio.Queue(maxsize=32)
     audio_feed_queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=512)
     # Recent caller audio captured while live STT is active. If live STT fails
     # and we switch to batch mode, we replay this window so failover does not
@@ -539,6 +574,7 @@ async def run_bidirectional_audio_stream(
     stop_event = asyncio.Event()
     current_turn_task: list[asyncio.Task | None] = [None]
     enqueue_tasks: set[asyncio.Task] = set()
+    caller_speech_pending_since: list[float | None] = [None]
     call_handler.register_stream_stop(call_id, stop_event)
     # A hangup may have landed while this WebSocket was still connecting (before
     # the stop_event existed). If so, wind down immediately instead of running a
@@ -849,6 +885,8 @@ async def run_bidirectional_audio_stream(
             return
 
         session.caller_speech_pending = True
+        if caller_speech_pending_since[0] is None:
+            caller_speech_pending_since[0] = time.monotonic()
         listen_active.set()
 
         if is_echo_of_agent(text, session):
@@ -858,6 +896,7 @@ async def run_bidirectional_audio_stream(
                 text[:40],
             )
             session.caller_speech_pending = False
+            caller_speech_pending_since[0] = None
             listen_active.clear()
             return
 
@@ -1176,16 +1215,23 @@ async def run_bidirectional_audio_stream(
 
                 try:
                     if streaming_stt_enabled:
-                        transcript = await asyncio.wait_for(
-                            transcript_queue.get(), timeout=listen_timeout
+                        transcript = await _queue_get_with_stop(
+                            transcript_queue,
+                            stop_event,
+                            timeout=listen_timeout,
                         )
                         audio_format = "stream"
                         utterance = b""
                     else:
-                        audio_format, utterance = await asyncio.wait_for(
-                            utterance_queue.get(), timeout=listen_timeout
+                        audio_format, utterance = await _queue_get_with_stop(
+                            utterance_queue,
+                            stop_event,
+                            timeout=listen_timeout,
                         )
                         transcript = None
+                except _StreamStopRequested:
+                    listen_active.clear()
+                    break
                 except TimeoutError:
                     listen_active.clear()
                     if ai_speaking.is_set() or not outbound_queue.empty():
@@ -1195,6 +1241,28 @@ async def run_bidirectional_audio_stream(
                         )
                         tenant_may_speak.set()
                         continue
+                    if streaming_stt_enabled and session.caller_speech_pending:
+                        pending_for = time.monotonic() - (
+                            caller_speech_pending_since[0] or time.monotonic()
+                        )
+                        max_pending_s = max(float(listen_timeout) * 2.0, 30.0)
+                        if pending_for < max_pending_s:
+                            logger.debug(
+                                "[%s] Extending listen timeout — caller speech "
+                                "pending for %.1fs",
+                                call_id,
+                                pending_for,
+                            )
+                            tenant_may_speak.set()
+                            continue
+                        logger.warning(
+                            "[%s] Caller speech pending exceeded %.1fs without "
+                            "final transcript",
+                            call_id,
+                            max_pending_s,
+                        )
+                        session.caller_speech_pending = False
+                        caller_speech_pending_since[0] = None
                     if streaming_stt_enabled and _streaming_is_lost():
                         await _handle_streaming_stt_failure(
                             reason="Deepgram live session stopped producing transcripts",
@@ -1237,6 +1305,7 @@ async def run_bidirectional_audio_stream(
 
                 if streaming_stt_enabled and (transcript or "").strip():
                     session.caller_speech_pending = False
+                    caller_speech_pending_since[0] = None
                     streaming_carryover_buffer.clear()
 
                 if streaming_stt_enabled:
@@ -1345,6 +1414,7 @@ async def run_bidirectional_audio_stream(
                         reason="agent_echo",
                     )
                     session.caller_speech_pending = False
+                    caller_speech_pending_since[0] = None
                     await _emit("debug", message="Still listening…")
                     tenant_may_speak.set()
                     continue

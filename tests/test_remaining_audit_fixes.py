@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
+from starlette.requests import Request
 
 
 @pytest.mark.asyncio
@@ -33,10 +34,13 @@ async def test_remove_from_blacklist_clears_tenant_flag():
     row = MagicMock()
     row.value = '["+15551234567"]'
     db = AsyncMock()
+    tenant_scan = MagicMock()
+    tenant_scan.all.return_value = []
     db.execute = AsyncMock(
         side_effect=[
             MagicMock(scalar_one_or_none=lambda: row),
             MagicMock(),
+            tenant_scan,
         ]
     )
 
@@ -47,6 +51,33 @@ async def test_remove_from_blacklist_clears_tenant_flag():
         await crud.remove_from_blacklist(db, "+15551234567")
 
     assert db.execute.await_count >= 2
+
+
+def test_numeric_range_max_only_awards_full_points():
+    from app.core.question_scoring import evaluate_question_scoring
+
+    question = {
+        "state": "Q_INCOME",
+        "extract_fields": ["monthly_income"],
+        "scoring": {
+            "enabled": True,
+            "rule_type": "numeric_range",
+            "max_points": 20,
+            "pass_config": {"max": 5000},
+        },
+    }
+    pts, reasons, _ = evaluate_question_scoring(
+        question, {"monthly_income": 3000}
+    )
+    assert pts == 20
+    assert reasons == []
+
+
+def test_environment_normalization_treats_prod_as_production():
+    from config import Settings
+
+    settings = Settings(environment="Production")
+    assert settings.is_production is True
 
 
 def test_validate_runtime_secrets_requires_telnyx_and_no_debug(monkeypatch):
@@ -68,6 +99,68 @@ def test_validate_runtime_secrets_requires_telnyx_and_no_debug(monkeypatch):
             errors = settings.validate_runtime_secrets()
     assert any("TELNYX_API_KEY" in e for e in errors)
     assert any("DEBUG" in e for e in errors)
+
+
+def _auth_request(token: str = "") -> Request:
+    headers = []
+    if token:
+        headers.append((b"cookie", f"access_token={token}".encode()))
+    return Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/admin",
+            "headers": headers,
+            "client": ("127.0.0.1", 12345),
+            "scheme": "http",
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_password_change_timestamp_invalidates_old_token():
+    from app.models.user import AdminUser
+    from app.utils.dependencies import get_current_user
+    from app.utils.security import create_access_token
+
+    token = create_access_token(
+        {"sub": str(uuid.uuid4()), "pwd_at": "2026-01-01T00:00:00+00:00"},
+        expires_delta=timedelta(hours=1),
+    )
+    user = AdminUser(
+        id=uuid.uuid4(),
+        email="admin@example.com",
+        hashed_password="x",
+        full_name="Admin",
+        role="admin",
+        is_active=True,
+        password_changed_at=datetime(2026, 1, 2, tzinfo=UTC),
+    )
+
+    with patch("app.core.redis_client.is_token_revoked", AsyncMock(return_value=False)):
+        with patch("app.utils.dependencies.get_user_by_id", AsyncMock(return_value=user)):
+            with pytest.raises(HTTPException) as exc:
+                await get_current_user(_auth_request(token), AsyncMock())
+
+    assert exc.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_logout_clears_cookie_when_revoke_fails():
+    from unittest.mock import MagicMock
+
+    from app.api.auth import logout
+    from app.utils.security import create_access_token
+
+    token = create_access_token({"sub": str(uuid.uuid4())}, expires_delta=timedelta(hours=1))
+    request = _auth_request(token)
+    response = MagicMock()
+    with patch("app.core.redis_client.revoke_token", AsyncMock(return_value=False)):
+        result = await logout(request, response)
+
+    response.delete_cookie.assert_called_once()
+    assert result.status_code == 200
+    assert b"revoke_failed" in result.body
 
 
 def test_encrypt_api_key_for_storage_skips_ciphertext():
@@ -271,6 +364,7 @@ async def test_send_test_email_error_is_sanitized():
                         with pytest.raises(HTTPException) as exc:
                             await settings_api.send_test_email(
                                 payload={"email": "landlord@example.com"},
+                                request=MagicMock(headers={}, client=MagicMock(host="127.0.0.1")),
                                 db=db,
                                 user=user,
                             )
@@ -318,11 +412,11 @@ async def test_is_token_revoked_fails_closed_in_production():
 
 
 @pytest.mark.asyncio
-async def test_retention_uses_fail_closed_lock():
+async def test_retention_runs_when_lock_unavailable():
     from app.services import retention_service
 
     async def _capture(*args, **kwargs):
-        assert kwargs.get("fail_closed") is True
+        assert kwargs.get("fail_closed") is False
         return False
 
     with patch("app.core.redis_client.acquire_once", AsyncMock(side_effect=_capture)):
@@ -366,6 +460,7 @@ async def test_provider_switch_lock_uses_fail_closed_acquire():
 
     async def _capture(*args, **kwargs):
         assert kwargs.get("fail_closed") is True
+        assert kwargs.get("token")
         return True
 
     fake_redis = AsyncMock()

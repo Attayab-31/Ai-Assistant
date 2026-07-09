@@ -68,6 +68,11 @@ async def test_finalize_after_stream_timeout_preserves_in_progress_without_sessi
         "app.core.redis_client.is_finalize_inflight",
         AsyncMock(return_value=False),
     )
+    monkeypatch.setattr(
+        call_handler,
+        "check_stream_stop_signal",
+        AsyncMock(return_value=False),
+    )
     mark = AsyncMock(return_value=True)
     monkeypatch.setattr("app.db.crud.mark_call_abandoned_if_active", mark)
 

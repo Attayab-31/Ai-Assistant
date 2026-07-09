@@ -32,7 +32,7 @@ async def _run_retention() -> dict:
     from app.core.redis_client import acquire_once
     from app.db import crud
     from app.db.database import AsyncSessionLocal
-    if not await acquire_once("retention:purge:lock", 7200, fail_closed=True):
+    if not await acquire_once("retention:purge:lock", 7200, fail_closed=False):
         logger.info("Retention sweep already running — skipping")
         return {"enabled": False, "skipped": True}
 

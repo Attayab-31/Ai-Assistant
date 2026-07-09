@@ -847,9 +847,9 @@
             </div>
           </div>
           <div style="display:flex;gap:6px;flex-wrap:wrap;flex:none;">
-            <button type="button" class="btn btn-secondary btn-sm" onclick="moveQuestion(this,-1)" title="Move up">↑</button>
-            <button type="button" class="btn btn-secondary btn-sm" onclick="moveQuestion(this,1)" title="Move down">↓</button>
-            <button type="button" onclick="toggleEdit(this)" class="btn btn-secondary btn-sm">Edit</button>
+            <button type="button" class="btn btn-secondary btn-sm settings-edit-only" onclick="moveQuestion(this,-1)" title="Move up">↑</button>
+            <button type="button" class="btn btn-secondary btn-sm settings-edit-only" onclick="moveQuestion(this,1)" title="Move down">↓</button>
+            <button type="button" onclick="toggleEdit(this)" class="btn btn-secondary btn-sm settings-edit-only">Edit</button>
             <button type="button" onclick="deleteQuestion(this)" class="btn btn-danger btn-sm settings-edit-only">Delete</button>
           </div>
         </div>
@@ -1426,18 +1426,26 @@
       if (path) params.set('path', path);
       params.set('language', language);
       const url = '/api/settings/questions/preview?' + params.toString();
-      const r = await fetch(url);
+      const r = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ questions: collectQuestions() }),
+      });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        throw new Error(err.detail || r.statusText);
+      }
       const data = await r.json();
       document.getElementById('previewContainer').style.display = 'block';
       if (pathSel && data.paths) {
         pathSel.innerHTML = data.paths.map(p =>
           `<option value="${esc(p.id)}" ${p.id === data.selected_path ? 'selected' : ''}>${esc(p.label)} (${p.active_question_count} questions)</option>`
         ).join('');
-        pathSel.onchange = () => withBtnLoading(pathSel, previewFlow, 'Loading\u2026');
+        pathSel.onchange = () => previewFlow();
       }
       if (langSel) {
         langSel.value = data.selected_language || language;
-        langSel.onchange = () => withBtnLoading(langSel, previewFlow, 'Loading\u2026');
+        langSel.onchange = () => previewFlow();
       }
       const selected = (data.paths || []).find(p => p.id === data.selected_path);
       document.getElementById('previewMeta').textContent =

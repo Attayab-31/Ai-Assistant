@@ -5,6 +5,20 @@ from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import HTTPException
+from starlette.requests import Request
+
+
+def _http_request(path: str = "/test/api/start") -> Request:
+    return Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": path,
+            "headers": [],
+            "client": ("127.0.0.1", 12345),
+            "scheme": "http",
+        }
+    )
 
 
 @pytest.mark.asyncio
@@ -20,7 +34,7 @@ async def test_start_test_call_rejects_blacklisted_number(monkeypatch):
     monkeypatch.setattr(test_console.call_handler, "create_session", create_session)
 
     payload = test_console.StartCallRequest(phone_number="+15551234567")
-    request = type("Req", (), {"url": type("U", (), {"scheme": "http", "netloc": "localhost"})()})()
+    request = _http_request()
 
     with pytest.raises(HTTPException) as exc:
         await test_console.start_test_call(request, payload, db=object())
@@ -61,7 +75,7 @@ async def test_start_test_call_allows_non_blacklisted_number(monkeypatch):
     )
 
     payload = test_console.StartCallRequest(phone_number="555-123-4567")
-    request = type("Req", (), {"url": type("U", (), {"scheme": "http", "netloc": "localhost"})()})()
+    request = _http_request()
 
     result = await test_console.start_test_call(request, payload, db=object())
 
@@ -185,4 +199,4 @@ async def test_say_rejects_non_test_call_id(monkeypatch):
     payload = test_console.SayRequest(call_id="prod-call-1", text="hello")
 
     with pytest.raises(HTTPException, match="Invalid test call_id"):
-        await test_console.say(payload, _auth=None)
+        await test_console.say(_http_request("/test/api/say"), payload, _auth=None)

@@ -18,16 +18,16 @@ All flows reuse the production ConversationSession + call_handler, so any
 fix here is automatically a fix for real Telnyx calls.
 """
 
-from __future__ import annotations
-
 import base64
 import logging
 import uuid
 from functools import lru_cache
 from pathlib import Path
+from typing import Annotated
 
 from fastapi import (
     APIRouter,
+    Body,
     Depends,
     File,
     Form,
@@ -43,6 +43,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import call_handler
 from app.core.conversation import CallState
+from app.core.ratelimit import limiter
 from app.db.crud import get_user_by_id, is_number_blacklisted
 from app.db.database import AsyncSessionLocal, get_db
 from app.utils.audio import (
@@ -296,9 +297,10 @@ async def client_call_page(
 
 
 @router.post("/api/start")
+@limiter.limit("30/minute")
 async def start_test_call(
     request: Request,
-    payload: StartCallRequest,
+    body: Annotated[StartCallRequest, Body()],
     db: AsyncSession = Depends(get_db),
     _auth: None = Depends(require_test_console_access),
 ):
@@ -307,7 +309,7 @@ async def start_test_call(
     No DB call record is created — this is a sandbox, but the do-not-call list
     is enforced the same way as live Telnyx calls.
     """
-    phone_number = sanitize_phone_number(payload.phone_number)
+    phone_number = sanitize_phone_number(body.phone_number)
     if not phone_number:
         raise HTTPException(status_code=400, detail="Invalid phone number")
 
@@ -329,7 +331,7 @@ async def start_test_call(
         call_id=call_id,
         phone_number=phone_number,
         db=db,
-        property_name=payload.property_name,
+        property_name=body.property_name,
     )
 
     ws_path = f"/test/api/stream/{call_id}"
@@ -337,7 +339,7 @@ async def start_test_call(
     ws_url = f"{ws_scheme}://{request.url.netloc}{ws_path}"
 
     # Voice mode: session only — greeting arrives over the WebSocket (same as Telnyx).
-    if payload.mode == "voice":
+    if body.mode == "voice":
         return {
             "call_id": call_id,
             "mode": "voice",
@@ -370,15 +372,17 @@ async def start_test_call(
 
 
 @router.post("/api/say")
+@limiter.limit("120/minute")
 async def say(
-    payload: SayRequest,
+    request: Request,
+    body: Annotated[SayRequest, Body()],
     _auth: None = Depends(require_test_console_access),
 ):
     """
     Send text as if it were a transcribed tenant utterance. Returns the AI's
     text reply, TTS audio, and updated session state.
     """
-    cid = _require_test_call_id(payload.call_id)
+    cid = _require_test_call_id(body.call_id)
     session = call_handler.get_session(cid)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -387,7 +391,7 @@ async def say(
         response_text,
         response_audio,
         is_complete,
-    ) = await call_handler.process_tenant_speech(session, payload.text)
+    ) = await call_handler.process_tenant_speech(session, body.text)
 
     logger.debug(
         "Test console /say response: text=%r, audio_len=%s",
@@ -405,9 +409,11 @@ async def say(
 
 
 @router.post("/api/say-audio")
+@limiter.limit("60/minute")
 async def say_audio(
-    call_id: str = Form(...),
-    audio: UploadFile = File(...),
+    request: Request,
+    call_id: Annotated[str, Form()],
+    audio: Annotated[UploadFile, File()],
     _auth: None = Depends(require_test_console_access),
 ):
     """
@@ -450,12 +456,14 @@ class EndCallRequest(BaseModel):
 
 
 @router.post("/api/end")
+@limiter.limit("60/minute")
 async def end_test_call(
-    payload: EndCallRequest,
+    request: Request,
+    body: Annotated[EndCallRequest, Body()],
     _auth: None = Depends(require_test_console_access),
 ):
     """Finalize the test call: run extraction + scoring, then drop the session."""
-    cid = _require_test_call_id(payload.call_id)
+    cid = _require_test_call_id(body.call_id)
     session = call_handler.get_session(cid)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -527,8 +535,13 @@ async def get_session_state(
 async def list_test_sessions(
     _auth: None = Depends(require_test_console_access),
 ):
-    """List all in-memory test sessions."""
-    return {"sessions": call_handler.get_active_sessions()}
+    """List in-memory test sessions (``test-*`` call IDs only)."""
+    sessions = [
+        row
+        for row in call_handler.get_active_sessions()
+        if str(row.get("call_id", "")).startswith("test-")
+    ]
+    return {"sessions": sessions}
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -543,11 +556,7 @@ async def test_stream(websocket: WebSocket, call_id: str):
     Emits debug events (transcript, response, complete) for the test UI.
     """
     if not await _verify_ws_auth(websocket):
-        await websocket.accept()
-        await websocket.send_json(
-            {"event": "error", "message": "authentication required"}
-        )
-        await websocket.close(code=1008)
+        await websocket.close(code=1008, reason="authentication required")
         return
     await websocket.accept()
 

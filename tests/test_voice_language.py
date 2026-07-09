@@ -1,6 +1,7 @@
 """Tests for call-language → STT/TTS provider mapping."""
 
 import pytest
+from unittest.mock import AsyncMock, MagicMock
 
 from app.core.voice_language import (
     deepgram_stt_language,
@@ -59,6 +60,34 @@ def test_google_tts_voice_and_language():
         )
         == "es-US-Neural2-A"
     )
+
+
+@pytest.mark.asyncio
+async def test_language_switch_keeps_selected_language_when_live_stt_reconnect_fails(
+    monkeypatch,
+):
+    from app.core.call_handler import _apply_session_language
+    from app.core.conversation import ConversationSession
+
+    relay = MagicMock()
+    relay.reconnect = AsyncMock(side_effect=RuntimeError("socket swap failed"))
+    relay.close = AsyncMock()
+    stt = MagicMock()
+    session = ConversationSession(call_id="lang-fail", phone_number="+1")
+    session.streaming_stt_relay = relay
+
+    monkeypatch.setattr(
+        "app.core.call_handler.get_call_providers",
+        lambda _session: MagicMock(stt=stt),
+    )
+    monkeypatch.setattr("app.core.call_handler._apply_tts_voices_for_language", MagicMock())
+
+    await _apply_session_language(session, "es")
+
+    assert session.call_language == "es"
+    assert stt.language == "es"
+    relay.close.assert_awaited_once()
+    assert any(e.get("type") == "stt_language_sync_failed" for e in session.errors)
 
 
 def test_human_ack_spanish_avoids_english_transitions():

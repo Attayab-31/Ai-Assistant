@@ -41,6 +41,24 @@ LATENCY_PROFILES: dict[str, dict[str, float | int]] = {
 
 DEFAULT_VOICE_LATENCY_PROFILE = "balanced"
 
+LATENCY_ALERT_SETTING_KEYS = (
+    "latency_alert_turn_p95_ms",
+    "latency_alert_turn_p95_crit_ms",
+    "latency_alert_timeout_rate_pct",
+    "latency_alert_timeout_rate_crit_pct",
+)
+
+
+def profile_latency_alert_defaults(profile: str) -> dict[str, float | int]:
+    """Alert-threshold defaults for a voice latency profile (no DB overrides)."""
+    key = str(profile or DEFAULT_VOICE_LATENCY_PROFILE).lower()
+    if key not in LATENCY_PROFILES:
+        key = DEFAULT_VOICE_LATENCY_PROFILE
+    return {
+        k: LATENCY_PROFILES[key][k]
+        for k in LATENCY_ALERT_SETTING_KEYS
+    }
+
 # Deepgram live API rejects utterance_end_ms < 1000 with HTTP 400.
 DEEPGRAM_UTTERANCE_END_MIN_MS = 1000
 

@@ -11,6 +11,7 @@ import secrets
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
@@ -102,26 +103,13 @@ async def _provider_switch_lock():
         _PROVIDER_SWITCH_LOCK_KEY,
         _PROVIDER_SWITCH_LOCK_TTL_SECONDS,
         fail_closed=True,
+        token=lock_token,
     )
     if not acquired:
         raise HTTPException(
             status_code=409,
             detail="Another provider switch is in progress. Try again in a moment.",
         )
-    from app.core.redis_client import get_redis
-
-    r = get_redis()
-    if r is not None:
-        try:
-            await r.set(
-                _PROVIDER_SWITCH_LOCK_KEY,
-                lock_token,
-                xx=True,
-                ex=_PROVIDER_SWITCH_LOCK_TTL_SECONDS,
-            )
-        except Exception:
-            # Best effort: if this fails we still rely on fail-closed acquisition.
-            pass
     try:
         yield
     finally:
@@ -171,6 +159,184 @@ def _add_audit_warning(response: dict, audit_ok: bool) -> dict:
         else:
             response["warnings"] = [_AUDIT_STALE_WARNING]
     return response
+
+
+def _merge_voice_latency_profile_alert_keys(updates: dict[str, Any]) -> None:
+    """When the latency profile changes, sync alert thresholds to profile defaults."""
+    profile = updates.get("voice_latency_profile")
+    if profile is None:
+        return
+    from app.core.voice_latency import profile_latency_alert_defaults
+
+    for key, value in profile_latency_alert_defaults(str(profile)).items():
+        if "pct" in key:
+            updates[key] = value
+        else:
+            updates[key] = int(value)
+
+
+def _validate_llm_model(provider: str, model: str | None) -> None:
+    if not model:
+        return
+    from app.providers.llm import gemini_llm, groq_llm, openai_llm, openrouter_llm
+
+    allowlists = {
+        "groq": groq_llm.AVAILABLE_MODELS,
+        "openai": openai_llm.AVAILABLE_MODELS,
+        "openrouter": openrouter_llm.AVAILABLE_MODELS,
+        "gemini": gemini_llm.AVAILABLE_MODELS,
+    }
+    allowed = allowlists.get(provider)
+    if allowed is None:
+        raise HTTPException(status_code=400, detail=f"Unknown LLM provider: {provider}")
+    if model not in allowed:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Unknown model '{model}' for {provider}. "
+                f"Choose one of: {', '.join(allowed)}"
+            ),
+        )
+
+
+_DEEPGRAM_STT_MODELS = frozenset(
+    {
+        "nova-3",
+        "nova-2",
+        "nova",
+        "nova-2-general",
+        "nova-2-meeting",
+        "nova-2-phonecall",
+        "nova-2-voicemail",
+        "nova-2-finance",
+        "nova-2-conversationalai",
+        "nova-2-video",
+        "nova-2-medical",
+        "nova-2-drivethru",
+        "nova-2-automotive",
+        "enhanced",
+        "base",
+    }
+)
+_GROQ_STT_MODELS = frozenset(
+    {
+        "whisper-large-v3-turbo",
+        "whisper-large-v3",
+        "distil-whisper-large-v3-en",
+    }
+)
+
+
+def _validate_stt_model(provider: str, model: str | None) -> None:
+    if not model:
+        return
+    allowlists = {
+        "deepgram": _DEEPGRAM_STT_MODELS,
+        "groq": _GROQ_STT_MODELS,
+    }
+    allowed = allowlists.get(provider)
+    if allowed is None:
+        raise HTTPException(status_code=400, detail=f"Unknown STT provider: {provider}")
+    if model not in allowed:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Unknown STT model '{model}' for {provider}. "
+                f"Choose one of: {', '.join(sorted(allowed))}"
+            ),
+        )
+
+
+def _validate_tts_voice(provider: str, voice: str | None) -> None:
+    if not voice:
+        return
+    from app.providers.tts.deepgram_tts import AVAILABLE_VOICES as DEEPGRAM_VOICES
+    from app.providers.tts.deepgram_tts import VOICE_NAME_PATTERN
+    from app.providers.tts.google_tts import AVAILABLE_VOICES as GOOGLE_VOICES
+
+    slug = (provider or "").strip().lower()
+    clean = voice.strip()
+    if slug == "deepgram":
+        lowered = clean.lower()
+        if lowered in DEEPGRAM_VOICES or VOICE_NAME_PATTERN.match(lowered):
+            return
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Unknown Deepgram TTS voice '{voice}'. "
+                f"Choose one of: {', '.join(DEEPGRAM_VOICES)}"
+            ),
+        )
+    if slug == "google":
+        if clean in GOOGLE_VOICES:
+            return
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Unknown Google TTS voice '{voice}'. "
+                f"Choose one of: {', '.join(sorted(GOOGLE_VOICES))}"
+            ),
+        )
+    raise HTTPException(status_code=400, detail=f"Unknown TTS provider: {provider}")
+
+
+async def _build_questions_preview_response(
+    db: AsyncSession,
+    questions: list[dict],
+    *,
+    path: str | None = None,
+    language: str = "en",
+) -> dict:
+    from app.core.question_flow import (
+        build_conversation_preview_flow,
+        build_preview_sample_paths,
+        canonical_language_code,
+        normalize_questions,
+        ordered_active_questions,
+    )
+
+    questions = normalize_questions(questions)
+    property_name = await crud.get_setting_value(
+        db, "property_name", "Ready Rentals Online"
+    )
+    greeting_message = await crud.get_setting_value(db, "greeting_message", "")
+    closing_message = await crud.get_setting_value(db, "closing_message", "")
+    business = (property_name or "").strip() or "Ready Rentals Online"
+
+    paths = build_preview_sample_paths(questions)
+    selected = paths[0]
+    if path:
+        selected = next((p for p in paths if p["id"] == path), paths[0])
+    sample_data = dict(selected["data"])
+
+    language_code = canonical_language_code(language) or "en"
+
+    flow = build_conversation_preview_flow(
+        questions,
+        sample_data,
+        business=business,
+        greeting_message=str(greeting_message or ""),
+        closing_message=str(closing_message or ""),
+        language_code=language_code,
+    )
+    active_list = ordered_active_questions(questions, sample_data)
+    return {
+        "flow": flow,
+        "flow_state_count": len(questions),
+        "active_question_count_sample": len(active_list),
+        "paths": [
+            {
+                "id": p["id"],
+                "label": p["label"],
+                "active_question_count": len(
+                    ordered_active_questions(questions, p["data"])
+                ),
+            }
+            for p in paths
+        ],
+        "selected_path": selected["id"],
+        "selected_language": language_code,
+    }
 
 
 async def _safe_create_audit_log(*args, **kwargs) -> bool:
@@ -520,6 +686,7 @@ async def switch_llm_provider(
     No server restart required. Logged to audit trail.
     """
     old_provider = provider_registry.llm_name
+    _validate_llm_model(payload.provider, payload.model)
 
     updates: dict[str, str] = {"active_llm_provider": payload.provider}
     if payload.model:
@@ -566,6 +733,7 @@ async def switch_stt_provider(
 ):
     """Hot-swap the active STT provider (Deepgram/Groq Whisper)."""
     old_provider = provider_registry.stt_name
+    _validate_stt_model(payload.provider, payload.model)
 
     updates: dict[str, str] = {"active_stt_provider": payload.provider}
     if payload.model:
@@ -615,14 +783,20 @@ async def switch_tts_provider(
 ):
     """Hot-swap the active TTS provider (Google WaveNet/Deepgram Aura-2)."""
     old_provider = provider_registry.tts_name
+    provider = payload.provider.lower().strip()
 
-    updates: dict[str, str] = {"active_tts_provider": payload.provider}
     if payload.voice:
-        updates[f"tts_voice_{payload.provider}"] = payload.voice
+        _validate_tts_voice(provider, payload.voice)
+    if payload.spanish_voice:
+        _validate_tts_voice(provider, payload.spanish_voice)
+
+    updates: dict[str, str] = {"active_tts_provider": provider}
+    if payload.voice:
+        updates[f"tts_voice_{provider}"] = payload.voice
     if payload.spanish_voice:
         key = (
             "tts_voice_deepgram_es"
-            if payload.provider == "deepgram"
+            if provider == "deepgram"
             else "tts_voice_google_es"
         )
         updates[key] = payload.spanish_voice
@@ -726,8 +900,8 @@ async def check_provider_health(
     from app.providers.stt.groq_stt import GroqSTTProvider
 
     snapshot = await load_call_settings_snapshot(db)
-    bundle = build_call_provider_bundle(snapshot)
     configured_keys = await capture_provider_api_keys(db)
+    bundle = build_call_provider_bundle(snapshot, api_keys=configured_keys)
 
     def _has_key(provider: str) -> bool:
         return configured_keys.configured(provider)
@@ -775,9 +949,9 @@ async def check_provider_health(
         if name == "groq" and not _has_key("groq"):
             continue
         inst = (
-            DeepgramSTTProvider(model=factory_model)
+            DeepgramSTTProvider(model=factory_model, api_key=configured_keys.deepgram)
             if name == "deepgram"
-            else GroqSTTProvider(model=factory_model)
+            else GroqSTTProvider(model=factory_model, api_key=configured_keys.groq)
         )
         stt_backups.append(await _ping(inst, name, role="backup"))
     results["stt"] = stt_primary
@@ -893,58 +1067,27 @@ async def preview_conversation_flow(
     language: str = "en",
 ):
     """Simulate the conversation flow through active questions for preview."""
-    from app.core.question_flow import (
-        build_conversation_preview_flow,
-        build_preview_sample_paths,
-        canonical_language_code,
-        normalize_questions,
-        ordered_active_questions,
+    questions = await crud.get_setting_value(db, "screening_questions", [])
+    return await _build_questions_preview_response(
+        db, questions, path=path, language=language
     )
 
-    questions = normalize_questions(
-        await crud.get_setting_value(db, "screening_questions", [])
-    )
-    property_name = await crud.get_setting_value(
-        db, "property_name", "Ready Rentals Online"
-    )
-    greeting_message = await crud.get_setting_value(db, "greeting_message", "")
-    closing_message = await crud.get_setting_value(db, "closing_message", "")
-    business = (property_name or "").strip() or "Ready Rentals Online"
 
-    paths = build_preview_sample_paths(questions)
-    selected = paths[0]
-    if path:
-        selected = next((p for p in paths if p["id"] == path), paths[0])
-    sample_data = dict(selected["data"])
-
-    language_code = canonical_language_code(language) or "en"
-
-    flow = build_conversation_preview_flow(
-        questions,
-        sample_data,
-        business=business,
-        greeting_message=str(greeting_message or ""),
-        closing_message=str(closing_message or ""),
-        language_code=language_code,
+@router.post("/questions/preview")
+async def preview_conversation_flow_draft(
+    payload: QuestionsUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+    user: AdminUser = Depends(require_scope("settings")),
+    path: str | None = None,
+    language: str = "en",
+):
+    """Preview the unsaved editor draft (same shape as save warnings)."""
+    return await _build_questions_preview_response(
+        db,
+        [q.model_dump() for q in payload.questions],
+        path=path,
+        language=language,
     )
-    active_list = ordered_active_questions(questions, sample_data)
-    return {
-        "flow": flow,
-        "flow_state_count": len(questions),
-        "active_question_count_sample": len(active_list),
-        "paths": [
-            {
-                "id": p["id"],
-                "label": p["label"],
-                "active_question_count": len(
-                    ordered_active_questions(questions, p["data"])
-                ),
-            }
-            for p in paths
-        ],
-        "selected_path": selected["id"],
-        "selected_language": language_code,
-    }
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1094,6 +1237,7 @@ async def _persist_email_settings(
 @router.post("/email/test")
 async def send_test_email(
     payload: dict,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     user: AdminUser = Depends(require_scope("settings", edit=True)),
 ):
@@ -1152,7 +1296,7 @@ async def send_test_email(
             admin_user_id=user.id,
             entity_type="setting",
             new_value={"recipient": test_recipient, "subject": subject},
-            ip_address=None,
+            ip_address=audit_client_ip(request),
         )
         return {"sent": True, "email_id": result.get("id"), "subject": subject}
     except Exception as e:
@@ -1236,6 +1380,7 @@ async def update_general_settings(
     updates = payload.model_dump(exclude_none=True)
     current = await crud.get_all_settings(db)
     _validate_general_settings_updates(updates, current)
+    _merge_voice_latency_profile_alert_keys(updates)
     updates_to_persist = {key: str(value) for key, value in updates.items()}
     crm_secret = updates_to_persist.get("crm_webhook_secret")
     if crm_secret:
@@ -1254,9 +1399,9 @@ async def update_general_settings(
     # Keep the in-process display timezone (used by sync template/email helpers)
     # in lock-step with the saved setting.
     if "timezone" in updates and updates["timezone"]:
-        from app.utils.helpers import set_display_timezone
+        from app.core.redis_client import publish_display_timezone
 
-        set_display_timezone(str(updates["timezone"]))
+        await publish_display_timezone(str(updates["timezone"]))
 
     registry_keys = {
         "auto_fallback_enabled",
@@ -1307,6 +1452,10 @@ GENERAL_RESET_KEYS = frozenset(
         "llm_temperature",
         "llm_max_tokens",
         "voice_latency_profile",
+        "latency_alert_turn_p95_ms",
+        "latency_alert_turn_p95_crit_ms",
+        "latency_alert_timeout_rate_pct",
+        "latency_alert_timeout_rate_crit_pct",
         "llm_streaming_enabled",
         "auto_fallback_enabled",
         "llm_fallback_provider",
@@ -1339,6 +1488,12 @@ async def reset_general_settings_to_defaults(
         for item in DEFAULT_SYSTEM_SETTINGS
         if item["key"] in GENERAL_RESET_KEYS
     }
+    profile_defaults = defaults.get("voice_latency_profile")
+    if profile_defaults is not None:
+        from app.core.voice_latency import profile_latency_alert_defaults
+
+        for key, value in profile_latency_alert_defaults(str(profile_defaults)).items():
+            defaults[key] = value
     defaults_to_persist = {key: str(value) for key, value in defaults.items()}
     crm_secret = defaults_to_persist.get("crm_webhook_secret")
     if crm_secret:
@@ -1356,9 +1511,9 @@ async def reset_general_settings_to_defaults(
 
     tz = defaults.get("timezone")
     if tz:
-        from app.utils.helpers import set_display_timezone
+        from app.core.redis_client import publish_display_timezone
 
-        set_display_timezone(str(tz))
+        await publish_display_timezone(str(tz))
 
     try:
         await provider_registry.reload_from_db(db)

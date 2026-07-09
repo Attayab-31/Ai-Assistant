@@ -12,7 +12,7 @@ case "$ROLE" in
     # To scale out, add a shared session store and a sticky load balancer.
     # Bind to $PORT when present (Render/Heroku inject it); default to 8000.
     exec uvicorn main:app --host 0.0.0.0 --port "${PORT:-8000}" \
-      --proxy-headers --forwarded-allow-ips='*'
+      --proxy-headers --forwarded-allow-ips="${TRUSTED_PROXY_IPS:-127.0.0.1}"
     ;;
   worker)
     echo "[entrypoint] Starting Celery worker (solo pool for async DB safety)..."

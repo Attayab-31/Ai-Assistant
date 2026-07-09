@@ -93,7 +93,11 @@ def evaluate_call_latency(session) -> list[str]:
 
 
 def queue_latency_alert_if_needed(
-    session, *, call_id: str, email_settings: dict | None = None
+    session,
+    *,
+    call_id: str,
+    email_settings: dict | None = None,
+    raise_on_error: bool = False,
 ) -> bool:
     """Email the landlord when a call breached latency thresholds.
 
@@ -123,4 +127,6 @@ def queue_latency_alert_if_needed(
         return True
     except Exception as exc:
         logger.error("Failed to queue latency alert for %s: %s", call_id, exc)
+        if raise_on_error:
+            raise
         return False

@@ -132,7 +132,10 @@
       try {
         const response = await fetch('/auth/login', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Requested-With': 'XMLHttpRequest',
+          },
           body: JSON.stringify({ email: form.get('email'), password: form.get('password') })
         });
         if (response.ok) {

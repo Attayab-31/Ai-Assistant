@@ -737,6 +737,8 @@ class ConversationSession:
         }
 
 
+# Gratitude-only echoes — never block short screening answers (yes/no/ok/sure)
+# here; those are handled by liveness-ack after silence nudges, not echo filter.
 _ECHO_PHRASES = frozenset(
     {
         "thank you",
@@ -747,13 +749,27 @@ _ECHO_PHRASES = frozenset(
         "okay thank you",
         "great thank you",
         "thanks so much",
+    }
+)
+
+# Short answers callers give during screening — never treat as agent echo via
+# substring match (agent often says "yes or no" inside the question text).
+_SHORT_SCREENING_ANSWERS = frozenset(
+    {
+        "yes",
+        "no",
+        "yeah",
+        "yep",
+        "yup",
+        "nope",
+        "correct",
+        "right",
+        "wrong",
+        "sure",
         "ok",
         "okay",
-        "sure",
-        "alright",
-        "got it",
-        "perfect",
-        "great",
+        "si",
+        "sí",
     }
 )
 
@@ -844,8 +860,14 @@ def is_echo_of_agent(transcript: str, session: ConversationSession) -> bool:
         return True
     if len(norm) <= 14 and "thank" in norm:
         return True
+    # Short screening answers must reach the LLM even when the agent question
+    # text contains the same word (e.g. "Please say yes or no").
+    if norm in _SHORT_SCREENING_ANSWERS:
+        return False
     last_ai = _normalize_speech(_last_ai_text(session))
-    if last_ai and norm in last_ai:
+    # Substring echo only for longer repetitions of agent speech; short
+    # utterances are almost always intentional caller input on listen floor.
+    if last_ai and len(norm) > 20 and norm in last_ai:
         return True
     return False
 

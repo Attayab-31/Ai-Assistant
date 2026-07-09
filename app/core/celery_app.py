@@ -41,7 +41,7 @@ _celery_conf = dict(
         },
         "daily-screening-digest": {
             "task": "app.services.email_service.send_daily_digest_task",
-            "schedule": 86400.0,
+            "schedule": crontab(minute=0),
         },
         "daily-data-retention-cleanup": {
             "task": "app.services.retention_service.purge_expired_data_task",
@@ -54,3 +54,30 @@ if _ssl:
     _celery_conf["redis_backend_use_ssl"] = _ssl
 
 celery_app.conf.update(_celery_conf)
+
+
+def _validate_celery_runtime(*, require_encryption: bool) -> None:
+    """Fail fast when Celery processes boot with insecure production config."""
+    if not settings.is_production:
+        return
+    errors = settings.validate_celery_runtime_secrets(
+        require_encryption=require_encryption
+    )
+    if errors:
+        raise RuntimeError(
+            "Refusing to start Celery in production with insecure configuration: "
+            + "; ".join(errors)
+        )
+
+
+from celery.signals import beat_init, worker_ready
+
+
+@worker_ready.connect
+def _validate_celery_worker(**_kwargs) -> None:
+    _validate_celery_runtime(require_encryption=True)
+
+
+@beat_init.connect
+def _validate_celery_beat(**_kwargs) -> None:
+    _validate_celery_runtime(require_encryption=False)

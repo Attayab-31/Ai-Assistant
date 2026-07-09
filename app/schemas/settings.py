@@ -43,7 +43,9 @@ class ProviderApiKeyUpdate(BaseModel):
 
 class ConditionalRule(BaseModel):
     field: str
-    operator: Literal["eq", "ne", "truthy", "falsy"] = "truthy"
+    operator: Literal[
+        "eq", "ne", "truthy", "falsy", "gt", "gte", "lt", "lte", "in", "asked"
+    ] = "truthy"
     value: Any | None = None
 
 

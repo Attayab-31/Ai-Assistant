@@ -182,6 +182,9 @@ async def _render_admin_page(
             else:
                 extra["questions_spanish_warnings"] = []
         context = {**context, **extra}
+    from app.core.redis_client import sync_display_timezone_from_redis
+
+    await sync_display_timezone_from_redis()
     return templates.TemplateResponse(
         template_name,
         {
@@ -244,9 +247,9 @@ async def dashboard_page(
     active_count = 0
     if can_monitor:
         try:
-            from app.core.call_handler import get_active_sessions
+            from app.core.call_handler import list_monitor_sessions
 
-            active_count = len(get_active_sessions())
+            active_count = len(await list_monitor_sessions())
         except (ImportError, AttributeError) as e:
             logger.debug("Could not fetch active sessions: %s", e)
 
@@ -424,8 +427,12 @@ async def call_detail_page(
         )
 
         all_settings = await crud.get_all_settings(db)
+        from app.core.question_flow import scoring_thresholds_from_tenant
+
         score_breakdown = get_score_breakdown(
-            scoring_data, all_settings, questions=snapshot
+            scoring_data,
+            scoring_thresholds_from_tenant(tenant, fallback_settings=all_settings),
+            questions=snapshot,
         )
         # The page headline shows the score STORED at finalize. Keep the
         # breakdown panel in agreement with it (settings may have changed since
@@ -563,6 +570,10 @@ async def tenant_detail_page(
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
 
+    linked_call = None
+    if tenant.call_id:
+        linked_call = await crud.get_call_by_uuid(db, tenant.call_id)
+
     # Get call history for this phone number
     history_calls, _ = await crud.list_calls(
         db, page=1, per_page=50, phone_search=tenant.phone_number
@@ -576,6 +587,7 @@ async def tenant_detail_page(
         cf = tenant.normalized_data.get("custom_fields")
         if isinstance(cf, dict):
             custom_fields = cf
+        from app.core.qualifier import build_tenant_scoring_data
         from app.core.question_flow import (
             build_applicant_summary_rows,
             build_flow_rows,
@@ -587,16 +599,21 @@ async def tenant_detail_page(
         snapshot = questions_snapshot_from_tenant(tenant)
         if snapshot:
             field_labels = field_labels_from_questions(snapshot)
+            scoring_data = build_tenant_scoring_data(
+                tenant,
+                questions_answered=linked_call.questions_answered
+                if linked_call
+                else 0,
+            )
             flow_rows = build_flow_rows(
-                snapshot, tenant.answered_states, tenant.refused_states
+                snapshot,
+                tenant.answered_states,
+                tenant.refused_states,
+                scoring_data=scoring_data,
             )
 
     has_snapshot = snapshot is not None
     active_question_count = sum(1 for q in snapshot if q.get("active", True)) if snapshot else 0
-
-    linked_call = None
-    if tenant.call_id:
-        linked_call = await crud.get_call_by_uuid(db, tenant.call_id)
 
     nav_prev_id = nav_next_id = None
     queue_ids = await crud.list_tenant_ids_for_navigation(db, review_filter="unreviewed")
@@ -718,8 +735,13 @@ async def settings_providers_page(request: Request, db: AsyncSession = Depends(g
         return guard
 
     all_settings = await crud.get_all_settings(db)
-    from config import provider_registry
     from app.core.call_settings import provider_key_configured_map
+    from config import provider_registry
+
+    try:
+        await provider_registry.reload_from_db(db)
+    except Exception as e:
+        logger.warning("Provider registry reload on settings page failed: %s", e)
 
     provider_status = provider_registry.get_status()
     provider_keys = await provider_key_configured_map(db)
@@ -943,8 +965,13 @@ async def account_page(request: Request, db: AsyncSession = Depends(get_db)):
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-# Approx number of core questions, used only for the live progress bar.
+# Approx fallback for the live progress bar when session question count is unknown.
 _PROGRESS_DENOMINATOR = 15
+
+
+def _monitor_progress_pct(answered: int, total: int | None) -> int:
+    denom = total if total and total > 0 else _PROGRESS_DENOMINATOR
+    return min(100, round((answered or 0) / denom * 100))
 
 
 def _csv_attachment_response(
@@ -952,6 +979,7 @@ def _csv_attachment_response(
     filename_stem: str,
     header: list[str],
     rows: list[list],
+    extra_headers: dict[str, str] | None = None,
 ) -> StreamingResponse:
     """Build a one-shot CSV download response."""
     output = io.StringIO()
@@ -959,15 +987,18 @@ def _csv_attachment_response(
     writer.writerow(header)
     writer.writerows(rows)
     output.seek(0)
+    headers = {
+        "Content-Disposition": (
+            f"attachment; filename={filename_stem}_"
+            f"{datetime.now().strftime('%Y%m%d')}.csv"
+        )
+    }
+    if extra_headers:
+        headers.update(extra_headers)
     return StreamingResponse(
         iter([output.getvalue()]),
         media_type="text/csv",
-        headers={
-            "Content-Disposition": (
-                f"attachment; filename={filename_stem}_"
-                f"{datetime.now().strftime('%Y%m%d')}.csv"
-            )
-        },
+        headers=headers,
     )
 
 
@@ -982,13 +1013,15 @@ async def api_monitor(
     Designed to be polled every few seconds, so each piece is cheap or cached and
     nothing here is allowed to fail the whole response.
     """
-    # 1) Live calls in progress (in-memory, this worker).
+    # 1) Live calls in progress (local + other workers via Redis when available).
     active_calls = []
+    latency_slo: dict[str, float | int] = {}
     try:
-        from app.core.call_handler import get_active_sessions
+        from app.core.call_handler import list_monitor_sessions
 
-        for s in get_active_sessions():
+        for s in await list_monitor_sessions():
             answered = s.get("questions_answered") or 0
+            total_q = s.get("active_question_count") or 0
             active_calls.append(
                 {
                     "call_id": s.get("call_id"),
@@ -998,9 +1031,7 @@ async def api_monitor(
                     "duration_seconds": s.get("duration"),
                     "duration_label": format_duration(s.get("duration")),
                     "questions_answered": answered,
-                    "progress_pct": min(
-                        100, round(answered / _PROGRESS_DENOMINATOR * 100)
-                    ),
+                    "progress_pct": _monitor_progress_pct(answered, total_q),
                     "started_at": s.get("started_at"),
                     "avg_turn_latency_ms": s.get("avg_turn_latency_ms") or 0,
                     "last_turn_latency_ms": s.get("last_turn_latency_ms") or 0,
@@ -1010,6 +1041,17 @@ async def api_monitor(
             )
     except Exception as e:
         logger.debug("Could not collect active sessions: %s", e)
+
+    try:
+        from app.core.call_settings import load_call_settings_snapshot
+
+        snapshot = await load_call_settings_snapshot(db)
+        latency_slo = {
+            "turn_warn_ms": int(snapshot.latency_alert_turn_p95_ms),
+            "turn_crit_ms": int(snapshot.latency_alert_turn_p95_crit_ms),
+        }
+    except Exception as e:
+        logger.debug("Could not load latency SLO settings for monitor: %s", e)
 
     # 2) System health (DB is implicitly OK — this query ran).
     redis_ok = False
@@ -1069,6 +1111,7 @@ async def api_monitor(
         },
         "stats": stats,
         "usage": usage,
+        "latency_slo": latency_slo,
     }
 
 
@@ -1138,7 +1181,18 @@ async def api_delete_call(
             recording_delete_failed = True
             await enqueue_orphaned_recording(recording_url)
 
-    await crud.hard_delete_call(db, call_id)
+    deleted = await crud.hard_delete_call(db, call_id)
+    if not deleted:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Call was not deleted because its recording could not be "
+                "removed or queued for retry."
+            ),
+        )
+    from app.core.redis_client import mark_call_admin_deleted
+
+    await mark_call_admin_deleted(call.call_id)
     audit_ok = await _safe_create_audit_log(
         db,
         action="deleted_call",
@@ -1343,8 +1397,28 @@ async def api_override_qualification(
     old_status = tenant.qualification_status
     flags = dict(tenant.control_flags or {})
     flags["qualification_status_overridden"] = True
+
+    qualified_threshold = await crud.get_setting_value(
+        db, "qualified_score_threshold", 75
+    )
+    review_threshold = await crud.get_setting_value(db, "review_score_threshold", 50)
+    try:
+        qualified_threshold = int(qualified_threshold)
+    except (TypeError, ValueError):
+        qualified_threshold = 75
+    try:
+        review_threshold = int(review_threshold)
+    except (TypeError, ValueError):
+        review_threshold = 50
+    score_for_status = {
+        "qualified": qualified_threshold,
+        "review": review_threshold,
+        "unqualified": max(0, review_threshold - 1),
+    }
+
     update_kwargs: dict = {
         "qualification_status": new_status,
+        "qualification_score": score_for_status[new_status],
         "control_flags": flags,
     }
     if reason:
@@ -1462,7 +1536,7 @@ async def api_export_calls_csv(
     """Export filtered calls as CSV."""
     date_from, date_to = date_range_from_days(days)
     search = (q or phone or "").strip() or None
-    calls, _ = await crud.list_calls(
+    calls, total = await crud.list_calls(
         db,
         page=1,
         per_page=10000,
@@ -1472,6 +1546,10 @@ async def api_export_calls_csv(
         date_from=date_from,
         date_to=date_to,
     )
+
+    extra_headers: dict[str, str] = {"X-Export-Total-Count": str(total)}
+    if total > len(calls):
+        extra_headers["X-Export-Truncated"] = "true"
 
     rows = [
         [
@@ -1501,6 +1579,7 @@ async def api_export_calls_csv(
             "Email Sent",
         ],
         rows=rows,
+        extra_headers=extra_headers,
     )
 
 
@@ -1522,8 +1601,9 @@ async def api_blacklist_tenant(
     if not phone:
         raise HTTPException(status_code=400, detail="Tenant has no valid phone number")
 
-    _, cache_ok = await crud.add_to_blacklist(db, phone, updated_by=user.id)
-    await crud.update_tenant(db, tenant_id, is_blacklisted=True)
+    _, cache_ok = await crud.add_to_blacklist(
+        db, phone, updated_by=user.id, tenant_id=tenant_id
+    )
     audit_ok = await _safe_create_audit_log(
         db,
         action="blacklisted_number",

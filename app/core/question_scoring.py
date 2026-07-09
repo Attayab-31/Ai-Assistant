@@ -109,6 +109,9 @@ def evaluate_question_scoring(
             reasons.append(f"{q_label}: below minimum ({label})")
             return int(max_points * 0.25), reasons, False
         if maximum is not None and num > maximum:
+            reasons.append(f"{q_label}: above maximum ({label})")
+            return int(max_points * 0.25), reasons, False
+        if maximum is not None and (minimum is None or num >= minimum) and num <= maximum:
             return max_points, [], False
         if minimum is not None and num >= minimum:
             return max_points, [], False
@@ -143,6 +146,32 @@ def evaluate_question_scoring(
     return 0, [f"{q_label}: not answered"], False
 
 
+def _question_applicable_for_scoring(
+    q: dict[str, Any],
+    tenant_data: dict[str, Any],
+    *,
+    questions: list[dict[str, Any]] | None,
+) -> bool:
+    """True when a question counts toward scoring (admin skipped = excluded)."""
+    conditional = q.get("conditional")
+    if not conditional:
+        return True
+    state = str(q.get("state") or "")
+    answered = set(tenant_data.get("answered_states") or [])
+    refused = set(tenant_data.get("refused_states") or [])
+    if state in answered or state in refused:
+        return True
+    from app.core.question_flow import ConditionalFlowContext, evaluate_conditional
+
+    flow_ctx = ConditionalFlowContext(
+        answered_states=frozenset(answered),
+        refused_states=frozenset(refused),
+        completed_states=frozenset(answered | refused),
+        questions=tuple(questions or []),
+    )
+    return evaluate_conditional(conditional, tenant_data, flow_context=flow_ctx)
+
+
 def score_custom_questions(
     questions: list[dict[str, Any]] | None,
     tenant_data: dict[str, Any],
@@ -161,6 +190,8 @@ def score_custom_questions(
             continue
         scoring = q.get("scoring") or {}
         if not scoring.get("enabled"):
+            continue
+        if not _question_applicable_for_scoring(q, tenant_data, questions=questions):
             continue
         pts, q_reasons, auto_dq = evaluate_question_scoring(q, tenant_data)
         total += pts

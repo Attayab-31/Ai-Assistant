@@ -445,3 +445,33 @@ async def test_admin_delete_call_warns_when_recording_delete_fails(monkeypatch):
     assert result["recording_delete_failed"] is True
     assert any("recording" in w.lower() for w in result.get("warnings", []))
     enqueue.assert_awaited_once_with("recordings/x.mp3")
+
+
+@pytest.mark.asyncio
+async def test_admin_delete_marks_call_tombstone(monkeypatch):
+    from types import SimpleNamespace
+
+    from app.api import admin as admin_api
+
+    call = SimpleNamespace(
+        call_id="call-tombstone",
+        phone_number="+15550001",
+        recording_url=None,
+    )
+    monkeypatch.setattr(admin_api.crud, "get_call_by_uuid", AsyncMock(return_value=call))
+    monkeypatch.setattr(admin_api.crud, "hard_delete_call", AsyncMock())
+    monkeypatch.setattr(admin_api, "_safe_create_audit_log", AsyncMock(return_value=True))
+    mark_deleted = AsyncMock()
+    monkeypatch.setattr(
+        "app.core.redis_client.mark_call_admin_deleted",
+        mark_deleted,
+    )
+
+    await admin_api.api_delete_call(
+        call_id="00000000-0000-0000-0000-000000000002",
+        request=SimpleNamespace(client=SimpleNamespace(host="127.0.0.1")),
+        db=object(),
+        user=SimpleNamespace(id="admin-1"),
+    )
+    mark_deleted.assert_awaited_once_with("call-tombstone")
+

@@ -171,6 +171,13 @@ class Settings(BaseSettings):
     tts_voice_google_es: str = "es-US-Neural2-A"
     tts_speed: float = 1.0
 
+    @field_validator("environment", mode="before")
+    @classmethod
+    def normalize_environment(cls, value: object) -> str:
+        if isinstance(value, str):
+            return value.strip().lower()
+        return str(value or "development")
+
     @field_validator("redis_url", "celery_broker_url", "celery_result_backend")
     @classmethod
     def warn_readonly_upstash_redis(cls, value: str) -> str:
@@ -184,7 +191,7 @@ class Settings(BaseSettings):
 
     @property
     def is_production(self) -> bool:
-        return self.environment == "production"
+        return self.environment.strip().lower() == "production"
 
     @property
     def allow_test_console(self) -> bool:
@@ -247,7 +254,8 @@ class Settings(BaseSettings):
         if self.web_workers != 1:
             errors.append(
                 "WEB_WORKERS must be 1 in production until shared session "
-                "store is implemented (live calls use in-process state)"
+                "store is implemented (live calls use in-process state; "
+                "rate limits are also per-process)"
             )
 
         if self.debug:
@@ -261,6 +269,83 @@ class Settings(BaseSettings):
             errors.append(
                 "ENABLE_TEST_CONSOLE must be false in production"
             )
+
+        app_host = (self.app_url or "").lower()
+        if (
+            app_host.startswith("https://")
+            and "localhost" not in app_host
+            and "127.0.0.1" not in app_host
+            and not (self.trusted_proxy_ips or "").strip()
+        ):
+            errors.append(
+                "TRUSTED_PROXY_IPS must be set in production behind a reverse proxy "
+                "(comma-separated load-balancer peer IPs) so per-client rate limits "
+                "and login lockouts work correctly"
+            )
+
+        for name, url in (
+            ("REDIS_URL", self.redis_url),
+            ("CELERY_BROKER_URL", self.celery_broker_url),
+            ("CELERY_RESULT_BACKEND", self.celery_result_backend),
+        ):
+            if url and "default_ro" in url:
+                errors.append(
+                    f"{name} uses Upstash read-only credentials (default_ro); "
+                    "use the Standard TCP password with username default"
+                )
+
+        return errors
+
+    def validate_celery_runtime_secrets(
+        self, *, require_encryption: bool = True
+    ) -> list[str]:
+        """Production checks for Celery worker/beat processes.
+
+        Unlike ``validate_runtime_secrets``, this omits web-only requirements
+        (Telnyx, admin password, WEB_WORKERS, trusted proxy IPs). Workers that
+        send email or fire CRM webhooks need ``require_encryption=True`` so
+        encrypted settings can be decrypted; beat only schedules tasks.
+        """
+        if not self.is_production:
+            return []
+
+        errors: list[str] = []
+
+        weak_secret_keys = {
+            "",
+            "change-me",
+            "insecure-dev-key-change-in-production",
+        }
+        if self.secret_key in weak_secret_keys:
+            errors.append(
+                "SECRET_KEY must be set to a strong, unique value in production"
+            )
+        elif len(self.secret_key) < 32:
+            errors.append("SECRET_KEY must be at least 32 characters in production")
+
+        if require_encryption:
+            if not self.encryption_key:
+                errors.append(
+                    "ENCRYPTION_KEY must be set in production "
+                    '(generate one with: python -c "from cryptography.fernet import '
+                    'Fernet; print(Fernet.generate_key().decode())")'
+                )
+            else:
+                try:
+                    from cryptography.fernet import Fernet
+
+                    Fernet(self.encryption_key.encode())
+                except Exception:
+                    errors.append(
+                        "ENCRYPTION_KEY is not a valid Fernet key "
+                        "(must be a 32-byte urlsafe base64 key)"
+                    )
+
+        if not self.app_url.lower().startswith("https://"):
+            errors.append("APP_URL must use https:// in production")
+
+        if self.debug:
+            errors.append("DEBUG must be false in production")
 
         for name, url in (
             ("REDIS_URL", self.redis_url),
@@ -773,6 +858,7 @@ def _apply_encrypted_api_keys(values: dict) -> None:
             decrypted = decrypt_value(str(raw)).strip()
         except Exception as e:  # noqa: BLE001 - never let a bad key break startup
             logger.warning("Could not decrypt %s: %s", enc_key, e)
+            setattr(settings, attr, _ENV_API_KEY_DEFAULTS.get(attr, ""))
             continue
         if decrypted:
             setattr(settings, attr, decrypted)
@@ -815,6 +901,8 @@ class ProviderRegistry:
                 await self.reload_from_db(db)
         except Exception as e:
             logger.warning(f"Could not load provider settings from DB: {e}")
+            if settings.is_production:
+                raise
             logger.info("Initializing ProviderRegistry from env defaults...")
             await self.switch_llm(settings.active_llm_provider)
             await self.switch_stt(settings.active_stt_provider)
@@ -889,7 +977,7 @@ class ProviderRegistry:
 
         stt_model_by_provider = {
             "deepgram": values.get("deepgram_model") or settings.deepgram_model,
-            "groq": values.get("groq_stt_model") or "whisper-large-v3-turbo",
+            "groq": values.get("groq_stt_model") or settings.groq_stt_model,
         }
         await self.switch_llm(llm, model=model_by_llm.get(llm.lower()))
         await self.switch_stt(stt, model=stt_model_by_provider.get(stt.lower()))

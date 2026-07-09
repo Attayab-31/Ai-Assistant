@@ -105,7 +105,8 @@ async def test_purge_calls_before_skips_row_when_orphan_queue_fails(monkeypatch)
     from app.db import crud
 
     cid = uuid.uuid4()
-    rows = [(cid, "recordings/stuck.mp3")]
+    created = datetime.now(UTC)
+    rows = [(cid, "recordings/stuck.mp3", created)]
 
     db = AsyncMock()
     db.execute = AsyncMock(
@@ -149,6 +150,91 @@ def test_fire_crm_webhook_records_unsafe_url_failure(monkeypatch):
         "call-1",
         key="crm_webhook",
         detail="unsafe_webhook_url",
+    )
+
+
+def test_fire_crm_webhook_requires_https_at_delivery(monkeypatch):
+    from app.services import email_service
+
+    record = MagicMock()
+    monkeypatch.setattr(email_service, "_record_side_effect_failure_sync", record)
+
+    result = email_service.fire_crm_webhook_task.run(
+        "http://example.com/hook",
+        "call-https",
+        "+15551234567",
+        "qualified",
+        80,
+        {},
+        "https://app.example.com",
+    )
+
+    assert result["sent"] is False
+    assert result["error"] == "unsafe_webhook_url"
+    record.assert_called_once_with(
+        "call-https",
+        key="crm_webhook",
+        detail="unsafe_webhook_url",
+    )
+
+
+@pytest.mark.asyncio
+async def test_hard_delete_call_skips_when_recording_pointer_not_safe(monkeypatch):
+    from app.db import crud
+
+    call_id = uuid.uuid4()
+    db = AsyncMock()
+    select_result = MagicMock()
+    select_result.one_or_none.return_value = (call_id, "recordings/stuck.mp3")
+    db.execute = AsyncMock(return_value=select_result)
+    monkeypatch.setattr(
+        "app.services.recording_cleanup.recording_pointer_safe_to_drop",
+        AsyncMock(return_value=False),
+    )
+
+    assert await crud.hard_delete_call(db, call_id) is False
+    db.commit.assert_not_awaited()
+
+
+def test_latency_alert_queue_failure_can_raise_for_persistence(monkeypatch):
+    from app.core.conversation import ConversationSession
+    from app.services.latency_alerts import queue_latency_alert_if_needed
+
+    session = ConversationSession(call_id="latency", phone_number="+1")
+    session.turn_traces = [{"turn_ms": 5000, "timed_out": True}]
+    task = MagicMock()
+    task.delay.side_effect = RuntimeError("broker down")
+    monkeypatch.setattr("app.services.email_service.send_latency_alert_task", task)
+
+    with pytest.raises(RuntimeError, match="broker down"):
+        queue_latency_alert_if_needed(
+            session,
+            call_id="latency",
+            email_settings={"landlord_email": "admin@example.com"},
+            raise_on_error=True,
+        )
+
+
+def test_latency_alert_delivery_failure_is_recorded(monkeypatch):
+    from app.services import email_service
+
+    record = MagicMock()
+    monkeypatch.setattr(email_service, "_record_side_effect_failure_sync", record)
+    monkeypatch.setattr("config.settings.resend_api_key", "test-key")
+    monkeypatch.setattr("config.settings.default_landlord_email", "")
+
+    result = email_service.send_latency_alert_task.run(
+        "call-latency",
+        ["slow turn"],
+        email_settings={"landlord_email": ""},
+    )
+
+    assert result["sent"] is False
+    assert result["reason"] == "no_recipient"
+    record.assert_called_once_with(
+        "call-latency",
+        key="latency_alert",
+        detail="no_recipient",
     )
 
 

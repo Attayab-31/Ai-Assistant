@@ -3,8 +3,11 @@ Wipe all application data and re-seed defaults (admin + settings).
 
 Preserves ``alembic_version`` so the schema/migration history stays intact.
 Run: python scripts/reset_database.py
+
+Refuses to run against a production ``ENVIRONMENT`` unless ``--force`` is passed.
 """
 
+import argparse
 import asyncio
 import logging
 import sys
@@ -53,5 +56,29 @@ async def reset_database() -> None:
     logger.info("Database reset complete — fresh install ready.")
 
 
-if __name__ == "__main__":
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Wipe app data and re-seed defaults")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Required when ENVIRONMENT=production",
+    )
+    args = parser.parse_args()
+
+    from config import settings
+
+    if settings.is_production and not args.force:
+        logger.error(
+            "Refusing to reset database in production. "
+            "Pass --force if you really intend to wipe all data."
+        )
+        raise SystemExit(1)
+    if settings.is_production:
+        logger.warning("DESTRUCTIVE: wiping production database tables.")
+
     asyncio.run(reset_database())
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

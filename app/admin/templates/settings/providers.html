@@ -312,7 +312,12 @@
         const err = await r.json().catch(() => ({}));
         throw new Error(err.detail || r.statusText);
       }
-      showMessage('Saved — new calls will use this right away.');
+      const result = await r.json();
+      let msg = 'Saved — new calls will use this right away.';
+      if (result.warnings && result.warnings.length) {
+        msg += ' ' + result.warnings.join(' ');
+      }
+      showMessage(msg, !!(result.warnings && result.warnings.length));
       setTimeout(() => location.reload(), 1200);
     } catch (e) {
       showMessage('Could not switch: ' + e.message, true);
@@ -336,8 +341,16 @@
         const err = await r.json().catch(() => ({}));
         throw new Error(err.detail || r.statusText);
       }
+      const result = await r.json();
       input.value = '';
-      showMessage(label + ' key saved — new calls will use it right away.');
+      let msg = label + ' key saved — new calls will use it right away.';
+      if (result.reload_applied === false) {
+        msg += ' Registry reload failed — health checks may be stale until restart.';
+      }
+      if (result.warnings && result.warnings.length) {
+        msg += ' ' + result.warnings.join(' ');
+      }
+      showMessage(msg, result.reload_applied === false || !!(result.warnings && result.warnings.length));
       setTimeout(() => location.reload(), 1200);
     } catch (e) {
       showMessage('Could not save key: ' + e.message, true);

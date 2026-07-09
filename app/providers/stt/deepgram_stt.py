@@ -72,7 +72,12 @@ class DeepgramSTTProvider(BaseSTTProvider):
         response = await self.client.listen.asyncprerecorded.v("1").transcribe_file(
             source, options
         )
-        return response.results.channels[0].alternatives[0].transcript.strip()
+        try:
+            channel = response.results.channels[0]
+            alternative = channel.alternatives[0]
+            return (alternative.transcript or "").strip()
+        except (AttributeError, IndexError, TypeError):
+            return ""
 
     async def transcribe_chunk(self, audio_bytes: bytes) -> str:
         """

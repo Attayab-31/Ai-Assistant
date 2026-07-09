@@ -266,7 +266,7 @@ async def test_apply_session_language_switches_tts_after_stt_reconnect():
 
 
 @pytest.mark.asyncio
-async def test_apply_session_language_keeps_tts_when_stt_reconnect_fails():
+async def test_apply_session_language_applies_language_when_stt_reconnect_fails():
     from app.core.call_handler import _apply_session_language
     from app.core.conversation import ConversationSession
     from app.providers.tts.deepgram_tts import DeepgramTTSProvider
@@ -281,6 +281,7 @@ async def test_apply_session_language_keeps_tts_when_stt_reconnect_fails():
     relay = MagicMock()
     relay.lost = False
     relay.reconnect = AsyncMock(side_effect=TimeoutError())
+    relay.close = AsyncMock()
     session.streaming_stt_relay = relay
 
     tts = DeepgramTTSProvider(voice="aura-2-thalia-en")
@@ -291,8 +292,9 @@ async def test_apply_session_language_keeps_tts_when_stt_reconnect_fails():
     with patch("app.core.call_handler.get_call_providers", return_value=providers):
         await _apply_session_language(session, "es")
 
-    assert session.call_language == "en"
-    assert tts.voice == "aura-2-thalia-en"
+    assert session.call_language == "es"
+    assert tts.voice == "aura-2-estrella-es"
+    relay.close.assert_awaited_once()
     assert any(e.get("type") == "stt_language_sync_failed" for e in session.errors)
 
 

@@ -131,11 +131,15 @@
     `).join('');
   }
 
-  // Colour a latency number: green < 2.5s, amber < 4s, red beyond.
+  let latencySlo = { turn_warn_ms: 2500, turn_crit_ms: 4000 };
+
+  // Colour a latency number using admin voice-latency SLO thresholds.
   function latencyClass(ms) {
     if (!ms) return '';
-    if (ms < 2500) return 'ok';
-    if (ms < 4000) return 'warn';
+    const warn = Number(latencySlo.turn_warn_ms) || 2500;
+    const crit = Number(latencySlo.turn_crit_ms) || 4000;
+    if (ms < warn) return 'ok';
+    if (ms < crit) return 'warn';
     return 'bad';
   }
 
@@ -323,6 +327,7 @@
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const data = await res.json();
 
+      latencySlo = data.latency_slo || latencySlo;
       $('m_active').textContent = data.active_count;
 
       renderActiveCalls(data.active_calls || []);

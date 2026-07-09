@@ -31,12 +31,14 @@
 {% endif %}
 {% endmacro %}
 
-{% macro reviewer_action_bar(call_id, tenant, user, show_delete=true) %}
+{% macro reviewer_action_bar(call_id, tenant, user, show_delete=true, review_via='call') %}
 {% if user and user.can_edit and tenant and call_id %}
 <nav class="reviewer-actions" aria-label="Reviewer actions">
-  <button type="button" class="btn btn-primary" id="reviewBtn" onclick="withBtnLoading(this, toggleReviewed, 'Saving\u2026')">
+  <button type="button" class="btn btn-primary" id="reviewBtn"
+    onclick="withBtnLoading(this, {{ 'toggleTenantReviewedOnDetail' if review_via == 'tenant' else 'toggleReviewed' }}, 'Saving\u2026')">
     {{ "Mark unreviewed" if tenant.reviewed_by_admin else "Mark as reviewed" }}
   </button>
+  {% if user.can('calls') %}
   <div class="reviewer-result-group">
     <label class="muted" for="qualOverride">Change result</label>
     <select id="qualOverride" data-current="{{ tenant.qualification_status }}">
@@ -51,6 +53,7 @@
   <button type="button" class="btn btn-secondary" onclick="withBtnLoading(this, resendEmail, 'Sending\u2026')">Resend result email</button>
   {% if show_delete %}
   <button type="button" class="btn btn-danger reviewer-danger" onclick="withBtnLoading(this, deleteCall, 'Deleting\u2026')">Delete call</button>
+  {% endif %}
   {% endif %}
 </nav>
 {% endif %}

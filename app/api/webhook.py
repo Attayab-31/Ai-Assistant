@@ -190,13 +190,11 @@ async def telnyx_webhook(request: Request, db: AsyncSession = Depends(get_db)):
     if event_type in _ID_REQUIRED_WEBHOOK_EVENTS and not call_control_id:
         logger.warning("Rejecting %s webhook with empty call_control_id", event_type)
         raise HTTPException(status_code=400, detail="Missing call_control_id")
-    if (
-        event_type == "call.recording.saved"
-        and not call_control_id
-        and not call_payload.get("recording_id")
-    ):
-        logger.warning("Rejecting call.recording.saved webhook with no call identifier")
-        raise HTTPException(status_code=400, detail="Missing call identifier")
+    if event_type == "call.recording.saved" and not call_control_id:
+        logger.warning(
+            "Rejecting call.recording.saved webhook with empty call_control_id"
+        )
+        raise HTTPException(status_code=400, detail="Missing call_control_id")
 
     try:
         if event_type == "call.initiated":
@@ -361,7 +359,12 @@ async def handle_call_answered_event(db: AsyncSession, call_payload: dict) -> No
         # If streaming really can't start, the caller would otherwise sit in
         # silence on an active call. Mark it failed and hang up cleanly.
         logger.error("Failed to start streaming for call %s: %s", call_control_id, e)
-        await update_call(db, call_control_id, status="failed")
+        await update_call(
+            db,
+            call_control_id,
+            status="failed",
+            ended_at=datetime.now(UTC),
+        )
         try:
             await telnyx_service.hangup_call(call_control_id)
         except Exception as hangup_err:
@@ -480,6 +483,29 @@ async def handle_recording_saved(db: AsyncSession, call_payload: dict) -> None:
 # ──────────────────────────────────────────────────────────────────────────────
 
 
+async def _mark_stream_connection_failed(call_id: str, reason: str) -> None:
+    """Close zombie calls when the media WebSocket cannot be established."""
+    from app.db.crud import get_call_by_call_id, mark_call_abandoned_if_active
+    from app.db.database import AsyncSessionLocal
+
+    try:
+        async with AsyncSessionLocal() as db:
+            call = await get_call_by_call_id(db, call_id)
+            if call is None:
+                return
+            if call.status not in ("initiated", "in_progress"):
+                return
+            await mark_call_abandoned_if_active(
+                db,
+                call_id,
+                error_log={"stream_reject": reason},
+            )
+    except Exception as exc:
+        logger.warning(
+            "Failed to mark stream connection failure for %s: %s", call_id, exc
+        )
+
+
 @router.websocket("/stream/{call_id}")
 async def telnyx_audio_stream(websocket: WebSocket, call_id: str):
     """
@@ -497,6 +523,7 @@ async def telnyx_audio_stream(websocket: WebSocket, call_id: str):
         logger.warning(
             "Rejecting media WebSocket for %s — missing/invalid stream token", call_id
         )
+        await _mark_stream_connection_failed(call_id, "invalid_stream_token")
         await websocket.close(code=1008)
         return
 
@@ -508,6 +535,7 @@ async def telnyx_audio_stream(websocket: WebSocket, call_id: str):
     session = await call_handler.ensure_stream_session(call_id)
     if session is None:
         logger.error("No session for call %s — closing WS", call_id)
+        await _mark_stream_connection_failed(call_id, "session_unavailable")
         await websocket.close(code=1008)
         return
 

@@ -225,6 +225,44 @@ def assert_safe_external_url(url: str, *, require_https: bool = False) -> str:
     return url
 
 
+def _resolve_safe_ips(hostname: str, port: int) -> list[str]:
+    """Resolve *hostname* to public IPs or raise ``UnsafeURLError``."""
+    try:
+        infos = socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
+    except socket.gaierror as e:
+        raise UnsafeURLError(f"Could not resolve host: {hostname}") from e
+
+    ips: list[str] = []
+    for info in infos:
+        ip = info[4][0]
+        if _is_blocked_ip(ip):
+            raise UnsafeURLError(
+                f"URL resolves to a non-public address: {hostname} → {ip}"
+            )
+        if ip not in ips:
+            ips.append(ip)
+    if not ips:
+        raise UnsafeURLError(f"Could not resolve host: {hostname}")
+    return ips
+
+
+class _PinnedGetaddrinfo:
+    """Pin DNS for one hostname to pre-validated IPs (SSRF TOCTOU guard)."""
+
+    def __init__(self, hostname: str, ips: list[str], original):
+        self.hostname = hostname
+        self.ips = ips
+        self._original = original
+
+    def __call__(self, host, port, family=0, type=0, proto=0, flags=0):
+        if host == self.hostname:
+            return [
+                (socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, port))
+                for ip in self.ips
+            ]
+        return self._original(host, port, family, type, proto, flags)
+
+
 _MAX_SAFE_REDIRECTS = 3
 _REDIRECT_STATUS_CODES = frozenset({301, 302, 303, 307, 308})
 
@@ -248,7 +286,11 @@ async def async_fetch_safe_external(
     import httpx
 
     current = assert_safe_external_url(url, require_https=require_https)
-    async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+    async with httpx.AsyncClient(
+        timeout=timeout,
+        follow_redirects=False,
+        trust_env=False,
+    ) as client:
         for _ in range(max_redirects + 1):
             response = await client.get(current)
             if response.status_code in _REDIRECT_STATUS_CODES:
@@ -274,11 +316,20 @@ def sync_post_safe_external(
     import httpx
 
     current = assert_safe_external_url(url, require_https=require_https)
-    with httpx.Client(timeout=timeout, follow_redirects=False) as client:
-        response = client.post(current, content=content, headers=headers)
-        if response.status_code in _REDIRECT_STATUS_CODES:
-            raise UnsafeURLError(
-                f"CRM webhook redirected to {response.headers.get('location') or '<missing>'}"
-            )
-        response.raise_for_status()
-        return response
+    parsed = urlparse(current)
+    host = parsed.hostname or ""
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    pinned_ips = _resolve_safe_ips(host, port)
+    original_getaddrinfo = socket.getaddrinfo
+    socket.getaddrinfo = _PinnedGetaddrinfo(host, pinned_ips, original_getaddrinfo)
+    try:
+        with httpx.Client(timeout=timeout, follow_redirects=False, trust_env=False) as client:
+            response = client.post(current, content=content, headers=headers)
+            if response.status_code in _REDIRECT_STATUS_CODES:
+                raise UnsafeURLError(
+                    f"CRM webhook redirected to {response.headers.get('location') or '<missing>'}"
+                )
+            response.raise_for_status()
+            return response
+    finally:
+        socket.getaddrinfo = original_getaddrinfo

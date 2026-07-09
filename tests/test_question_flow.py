@@ -76,7 +76,27 @@ def test_normalize_accepts_partial_custom_list():
     assert normalized[0]["schema_version"] == 2
 
 
-def test_conditional_skip_pets_followup():
+def test_screening_question_schema_accepts_admin_conditional_operators():
+    from app.schemas.settings import ScreeningQuestion
+
+    q = ScreeningQuestion(
+        id="q1",
+        state="Q_INCOME_HIGH",
+        question="High income follow-up?",
+        conditional={"field": "monthly_income", "operator": "gte", "value": 5000},
+    )
+    assert q.conditional is not None
+    assert q.conditional.operator == "gte"
+
+    asked = ScreeningQuestion(
+        id="q2",
+        state="Q_PETS_DETAIL",
+        question="Pet details?",
+        conditional={"field": "has_pets", "operator": "asked"},
+    )
+    assert asked.conditional.operator == "asked"
+
+
     from app.core.question_flow import ordered_active_questions, should_skip_question
 
     questions = default_questions_v2()
@@ -206,6 +226,20 @@ def test_normalize_keeps_eviction_raw_as_caller_text():
     assert out["has_eviction"] is False
     assert out["eviction_raw"] == utterance
     assert isinstance(out["eviction_raw"], str)
+
+
+def test_coerce_preserves_admin_extract_fields_without_custom_prefix():
+    from app.core.data_extractor import coerce_extracted_data
+    from app.core.question_flow import new_custom_question
+
+    q = new_custom_question(question="Do you smoke?", answer_type="yes_no", order=1)
+    q["extract_fields"] = ["smokes"]
+    out = coerce_extracted_data(
+        {"smokes": True, "full_name": "Jane Doe"},
+        questions=[q],
+    )
+    assert out["smokes"] is True
+    assert out["full_name"] == "Jane Doe"
 
 
 def test_coerce_extracted_data_drops_bool_raw_fields():
@@ -626,7 +660,33 @@ def test_scoring_skips_inactive_questions():
     assert breakdown == []
 
 
-def test_pet_details_require_all_extract_fields():
+def test_scoring_excludes_conditionally_skipped_questions():
+    from app.core.question_scoring import score_custom_questions
+
+    parent = new_custom_question(question="Pets?", answer_type="yes_no", order=1)
+    parent["extract_fields"] = ["has_pets"]
+    parent["state"] = "Q_PETS"
+    follow = new_custom_question(question="Pet breed?", answer_type="text", order=2)
+    follow["state"] = "Q_PET_BREED"
+    follow["conditional"] = {"field": "has_pets", "operator": "truthy"}
+    follow["scoring"] = {
+        "enabled": True,
+        "max_points": 40,
+        "rule_type": "any_answer",
+        "pass_config": {},
+    }
+    tenant_data = {
+        "has_pets": False,
+        "answered_states": ["Q_PETS"],
+        "refused_states": [],
+    }
+    total, _, breakdown, _ = score_custom_questions(
+        [parent, follow], tenant_data
+    )
+    assert total == 0
+    assert breakdown == []
+
+
     from app.core.question_flow import (
         build_question_slot_config,
         default_questions_v2,
@@ -682,6 +742,80 @@ def test_skipped_conditional_is_not_counted_answered():
     )
     pet_row = next(r for r in rows if r["state"] == "Q6A_PET_DETAILS")
     assert pet_row["status"] == "Skipped"
+
+
+def test_build_flow_rows_asked_conditional_uses_visit_history():
+    from app.core.question_flow import build_flow_rows
+
+    questions = [
+        {
+            "id": "q1",
+            "state": "Q1",
+            "question": "Pets?",
+            "answer_type": "yes_no",
+            "extract_fields": ["has_pets"],
+            "active": True,
+            "order": 1,
+        },
+        {
+            "id": "q2",
+            "state": "Q2",
+            "question": "Pet type?",
+            "answer_type": "text",
+            "extract_fields": ["pet_type"],
+            "active": True,
+            "order": 2,
+            "conditional": {"field": "has_pets", "operator": "asked"},
+        },
+    ]
+    rows = build_flow_rows(
+        questions,
+        answered_states=["Q1"],
+        refused_states=[],
+        scoring_data={},
+    )
+    followup = next(r for r in rows if r["state"] == "Q2")
+    assert followup["status"] == "—"
+    rows_skipped = build_flow_rows(
+        questions,
+        answered_states=[],
+        refused_states=[],
+        scoring_data={},
+    )
+    skipped = next(r for r in rows_skipped if r["state"] == "Q2")
+    assert skipped["status"] == "Skipped"
+
+
+def test_language_choice_must_be_first_question():
+    from app.core.question_flow import validate_questions_for_save
+
+    with pytest.raises(ValueError, match="order 1"):
+        validate_questions_for_save(
+            [
+                {
+                    "id": "q1",
+                    "state": "Q1",
+                    "question": "Name?",
+                    "answer_type": "text",
+                    "extract_fields": ["full_name"],
+                    "order": 1,
+                    "active": True,
+                },
+                {
+                    "id": "lang",
+                    "state": "LANG",
+                    "question": "Language?",
+                    "answer_type": "language_choice",
+                    "extract_fields": ["preferred_language"],
+                    "language_options": [
+                        {"value": "en", "label": "English"},
+                        {"value": "es", "label": "Spanish"},
+                    ],
+                    "order": 2,
+                    "active": True,
+                },
+            ]
+        )
 
 
 def test_confirmation_required_before_question_counts_answered():

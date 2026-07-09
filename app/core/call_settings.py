@@ -8,6 +8,7 @@ admin changes apply to NEW calls only — never mid-call.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -17,8 +18,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.question_flow import coerce_questions_for_runtime_with_reason
 from app.core.screening_flow import normalize_faqs
 from app.core.voice_latency import resolve_voice_latency
-from config import DEFAULT_FAQS
 from config import settings as env_settings
+
+logger = logging.getLogger(__name__)
 
 CALL_SETTINGS_KEYS = (
     "active_llm_provider",
@@ -587,7 +589,7 @@ def snapshot_from_map(values: dict[str, Any]) -> CallSettingsSnapshot:
             _parse_setting(
                 "screening_faqs",
                 values.get("screening_faqs"),
-                DEFAULT_FAQS,
+                [],
             )
         ),
         max_retries=_parse_setting(
@@ -660,9 +662,13 @@ def build_call_provider_bundle(
     api_keys: ProviderApiKeys | None = None,
 ) -> CallProviderBundle:
     """Construct isolated provider instances for one call session."""
+    from app.providers.llm.gemini_llm import AVAILABLE_MODELS as GEMINI_MODELS
     from app.providers.llm.gemini_llm import GeminiLLMProvider
+    from app.providers.llm.groq_llm import AVAILABLE_MODELS as GROQ_MODELS
     from app.providers.llm.groq_llm import GroqLLMProvider
+    from app.providers.llm.openai_llm import AVAILABLE_MODELS as OPENAI_MODELS
     from app.providers.llm.openai_llm import OpenAILLMProvider
+    from app.providers.llm.openrouter_llm import AVAILABLE_MODELS as OPENROUTER_MODELS
     from app.providers.llm.openrouter_llm import OpenRouterLLMProvider
     from app.providers.stt.deepgram_stt import DeepgramSTTProvider
     from app.providers.stt.groq_stt import GroqSTTProvider
@@ -708,8 +714,34 @@ def build_call_provider_bundle(
 
     llm_models = snapshot.llm_models_by_provider
     tts_voices = snapshot.tts_voices_by_provider
+    llm_allowlists = {
+        "groq": GROQ_MODELS,
+        "openai": OPENAI_MODELS,
+        "openrouter": OPENROUTER_MODELS,
+        "gemini": GEMINI_MODELS,
+    }
+    llm_defaults = {
+        "groq": "llama-3.3-70b-versatile",
+        "openai": "gpt-4o-mini",
+        "openrouter": OPENROUTER_MODELS[0],
+        "gemini": GEMINI_MODELS[0],
+    }
+
+    def _validated_llm_model(provider_name: str, model: str) -> str:
+        allowed = llm_allowlists.get(provider_name, ())
+        if model in allowed:
+            return model
+        fallback = llm_defaults[provider_name]
+        logger.error(
+            "Configured LLM model %r is invalid for %s — using %r",
+            model,
+            provider_name,
+            fallback,
+        )
+        return fallback
+
     llm_by_name = {
-        name: factory(str(llm_models.get(name, snapshot.llm_model)))
+        name: factory(_validated_llm_model(name, str(llm_models.get(name, snapshot.llm_model))))
         for name, factory in llm_factories.items()
     }
     tts_by_name = {

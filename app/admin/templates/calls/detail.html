@@ -22,7 +22,7 @@
       {% elif alert.kind == 'crm' %}
       Check that Celery workers and Redis are running, then verify your CRM webhook URL in Settings.
       {% elif alert.kind == 'questions' %}
-      Fix your <a href="/admin/settings/questions">screening questions</a> — saved config was invalid, so callers heard the built-in default flow.
+      Fix your <a href="/admin/settings/questions">screening questions</a> — saved config was invalid, so live screening was blocked and callers heard your provider-failure message instead.
       {% endif %}
     </p>
     {% endfor %}

@@ -410,11 +410,14 @@ def _apply_tts_voices_for_language(session: ConversationSession, language_code: 
         elif isinstance(tts_obj, GoogleTTSProvider):
             es_voice = session.tts_voice_google_es or session.tts_voice_es
             tts_obj.language_code = google_tts_language_code(language_code)
-            tts_obj.voice = google_tts_voice(
+            voice = google_tts_voice(
                 language_code=language_code,
                 english_voice=en_voice or tts_obj.voice,
                 spanish_voice=es_voice,
             )
+            from app.providers.tts.google_tts import AVAILABLE_VOICES
+
+            tts_obj.voice = voice if voice in AVAILABLE_VOICES else tts_obj.voice
 
 
 async def _sync_streaming_stt_language(
@@ -437,6 +440,18 @@ async def _sync_streaming_stt_language(
             session.call_id,
             exc,
         )
+        # The caller/admin language choice is the source of truth. If the live
+        # socket cannot switch languages, mark it unhealthy so audio_stream's
+        # normal recovery path degrades to batch STT in the selected language
+        # instead of silently continuing to listen in the old one.
+        try:
+            await relay.close()
+        except Exception as close_exc:
+            logger.debug(
+                "[%s] Streaming STT close after language failure: %s",
+                session.call_id,
+                close_exc,
+            )
         return False
     if relay.lost:
         logger.warning(
@@ -466,9 +481,8 @@ async def _apply_session_language(session: ConversationSession, lang: str | None
     if not await _sync_streaming_stt_language(session, resolved):
         session.add_error(
             "stt_language_sync_failed",
-            f"Could not switch listening to {resolved}; keeping {session.call_language}",
+            f"Live STT reconnect failed for {resolved}; switching to batch STT",
         )
-        return
     session.call_language = resolved
     _apply_batch_stt_language(session, resolved)
     _apply_tts_voices_for_language(session, resolved)
@@ -802,19 +816,35 @@ async def finalize_active_session_background(call_id: str) -> None:
                 except Exception as db_err:
                     logger.error("Failed to mark call failed in DB: %s", db_err)
     finally:
-        # Always drop the in-memory session once finalize finishes (or was skipped).
-        if get_session(call_id) is session:
+        # Drop the in-memory session only when finalize actually ran. A
+        # concurrent finalize returns "skipped" and must keep the session so
+        # the winning finalize can complete.
+        if get_session(call_id) is session and result.get("status") != "skipped":
             remove_session(call_id)
-            unregister_stream_stop(call_id)
+            unregister_stream_stop(call_id            )
+
+
+STREAM_FINALIZE_GRACE_S = 28.0
 
 
 async def finalize_after_stream_timeout(
     call_id: str,
-    timeout: float = 8.0,
+    timeout: float = STREAM_FINALIZE_GRACE_S,
 ) -> None:
     """Fallback finalize if hangup stopped the stream but on_complete never ran."""
     await asyncio.sleep(timeout)
-    if get_session(call_id) is not None:
+    session = get_session(call_id)
+    if session is not None:
+        hangup_requested = bool(getattr(session, "pending_hangup", False)) or (
+            await check_stream_stop_signal(call_id)
+        )
+        if not hangup_requested:
+            logger.info(
+                "[%s] Stream finalize grace elapsed but no hangup signal — "
+                "leaving active session alone",
+                call_id,
+            )
+            return
         logger.warning(
             "[%s] Stream did not finalize within %.0fs after hangup — forcing",
             call_id,
@@ -822,7 +852,7 @@ async def finalize_after_stream_timeout(
         )
         await finalize_active_session_background(call_id)
         return
-    from app.db.crud import get_call_by_call_id
+    from app.db.crud import get_call_by_call_id, mark_call_abandoned_if_active
 
     from app.db.database import AsyncSessionLocal
 
@@ -837,11 +867,24 @@ async def finalize_after_stream_timeout(
                     call_id,
                 )
                 return
-            # A missing local session here often means stream/finalize is running
-            # on another worker and just hasn't published inflight yet. Marking
-            # abandoned can race with a late successful finalize and cause that
-            # finalize to skip persistence. Leave the call in_progress and let the
-            # owning worker finalize, with stale-call cleanup as a backstop.
+            stop_requested = await check_stream_stop_signal(call_id)
+            if stop_requested:
+                marked = await mark_call_abandoned_if_active(
+                    db,
+                    call_id,
+                    error_log={
+                        "finalize_timeout": (
+                            f"No local session after {timeout:.0f}s hangup grace "
+                            "(cross-worker safety net)"
+                        )
+                    },
+                )
+                if marked:
+                    logger.warning(
+                        "[%s] Marked abandoned after hangup timeout on non-owning worker",
+                        call_id,
+                    )
+                return
             logger.warning(
                 "[%s] Hangup timeout with no local session — preserving in_progress "
                 "(waiting for owning worker finalize / stale-call backstop)",
@@ -1036,6 +1079,16 @@ async def create_session(
                 snapshot.questions_runtime_fallback
             )
         _active_sessions[call_id] = session
+        try:
+            import asyncio
+
+            from app.core.redis_client import upsert_monitor_session
+
+            summary = _monitor_session_summary(session)
+            loop = asyncio.get_running_loop()
+            loop.create_task(upsert_monitor_session(call_id, summary))
+        except Exception:
+            pass
         event = _session_ready_events.setdefault(call_id, asyncio.Event())
         event.set()
         vinfo(
@@ -1108,6 +1161,15 @@ def remove_session(call_id: str) -> ConversationSession | None:
     _session_ready_events.pop(call_id, None)
     unregister_stream_stop(call_id)
     if session:
+        try:
+            import asyncio
+
+            from app.core.redis_client import remove_monitor_session
+
+            loop = asyncio.get_running_loop()
+            loop.create_task(remove_monitor_session(call_id))
+        except Exception:
+            pass
         vinfo(
             logger,
             "Session removed",
@@ -1118,27 +1180,62 @@ def remove_session(call_id: str) -> ConversationSession | None:
     return session
 
 
+def _monitor_session_summary(session: ConversationSession) -> dict:
+    return {
+        "call_id": session.call_id,
+        "phone_number": session.phone_number,
+        "state": session.current_state,
+        "duration": session.duration_seconds,
+        "questions_answered": session.questions_answered,
+        "active_question_count": session.active_question_count(),
+        "started_at": session.started_at.isoformat(),
+        "avg_turn_latency_ms": session.avg_turn_latency_ms,
+        "last_turn_latency_ms": int(round(session.last_turn_latency_ms)),
+        "avg_llm_latency_ms": session.avg_llm_latency_ms,
+        "avg_tts_latency_ms": session.avg_tts_latency_ms,
+    }
+
+
 def get_active_sessions() -> list[dict]:
     """Get summary of live-stream sessions for the dashboard (stream still open)."""
     result = []
     for call_id, session in _active_sessions.items():
         if session.stream_ended_at is not None:
             continue
-        result.append(
-            {
-                "call_id": call_id,
-                "phone_number": session.phone_number,
-                "state": session.current_state,
-                "duration": session.duration_seconds,
-                "questions_answered": session.questions_answered,
-                "started_at": session.started_at.isoformat(),
-                "avg_turn_latency_ms": session.avg_turn_latency_ms,
-                "last_turn_latency_ms": int(round(session.last_turn_latency_ms)),
-                "avg_llm_latency_ms": session.avg_llm_latency_ms,
-                "avg_tts_latency_ms": session.avg_tts_latency_ms,
-            }
-        )
+        result.append(_monitor_session_summary(session))
     return result
+
+
+async def list_monitor_sessions() -> list[dict]:
+    """Live sessions on this worker plus any published by other workers."""
+    from app.core.redis_client import list_remote_monitor_sessions, upsert_monitor_session
+
+    local = get_active_sessions()
+    for row in local:
+        await upsert_monitor_session(str(row["call_id"]), row)
+
+    remote = await list_remote_monitor_sessions()
+    merged = {str(row["call_id"]): row for row in remote}
+    for row in local:
+        merged[str(row["call_id"])] = row
+    return list(merged.values())
+
+
+def touch_monitor_session(call_id: str) -> None:
+    """Refresh Redis live-monitor payload during an in-progress call."""
+    session = _active_sessions.get(call_id)
+    if session is None or session.stream_ended_at is not None:
+        return
+    try:
+        import asyncio
+
+        from app.core.redis_client import upsert_monitor_session
+
+        asyncio.get_running_loop().create_task(
+            upsert_monitor_session(call_id, _monitor_session_summary(session))
+        )
+    except Exception:
+        pass
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1541,6 +1638,7 @@ async def process_tenant_speech(
         ):
             session.current_state = CallState.WRAP_UP.value
         session.refresh_progress()
+        touch_monitor_session(session.call_id)
         if screening_complete(
             session.extracted_data,
             session.skip_states,
@@ -1551,6 +1649,7 @@ async def process_tenant_speech(
         ):
             session.current_state = CallState.WRAP_UP.value
             session.refresh_progress()
+            touch_monitor_session(session.call_id)
         text = strip_upcoming_question_from_ack(
             session, ack_text or human_ack(session)
         )
@@ -2150,6 +2249,7 @@ async def process_tenant_speech(
         ):
             session.current_state = CallState.WRAP_UP.value
         session.refresh_progress()
+        touch_monitor_session(session.call_id)
         text = strip_upcoming_question_from_ack(
             session, (ack_text or response_text or "").strip() or human_ack(session)
         )
@@ -2165,6 +2265,7 @@ async def process_tenant_speech(
         ):
             session.current_state = CallState.WRAP_UP.value
             session.refresh_progress()
+            touch_monitor_session(session.call_id)
         is_complete = session.current_state in (
             CallState.WRAP_UP.value,
             CallState.ENDED.value,
@@ -3570,11 +3671,22 @@ async def _dispatch_finalize_side_effects(
             from app.services.latency_alerts import queue_latency_alert_if_needed
 
             async def _enqueue_latency_alert() -> bool:
-                return queue_latency_alert_if_needed(
-                    session,
-                    call_id=session.call_id,
-                    email_settings=email_settings,
-                )
+                try:
+                    return queue_latency_alert_if_needed(
+                        session,
+                        call_id=session.call_id,
+                        email_settings=email_settings,
+                        raise_on_error=True,
+                    )
+                except Exception as exc:
+                    from app.services.side_effect_errors import (
+                        record_side_effect_queue_failure,
+                    )
+
+                    await record_side_effect_queue_failure(
+                        db, call_id, "latency_queue", str(exc)
+                    )
+                    return False
 
             await _enqueue_finalize_side_effect_channel(
                 db,
@@ -3701,7 +3813,7 @@ async def _finalize_call_impl(session: ConversationSession, db) -> dict:
     # (they are used for scoring/reasons only, not persisted to the tenant row).
     meta_keys = ("answered_states", "refused_states", "faq_topics", "control_flags")
     meta = {k: merged[k] for k in meta_keys if k in merged}
-    merged = coerce_extracted_data(merged)
+    merged = coerce_extracted_data(merged, questions=session.questions)
     merged.update(meta)
     merged["questions_answered"] = session.questions_answered
     merged = normalize_extracted_fields(merged, session.questions)
@@ -3767,6 +3879,19 @@ async def _finalize_call_impl(session: ConversationSession, db) -> dict:
 
     db_persisted = False
     if call is None:
+        from app.core.redis_client import is_call_admin_deleted
+
+        if await is_call_admin_deleted(session.call_id):
+            logger.warning(
+                "[%s] Finalize skipped — call was deleted by admin",
+                session.call_id,
+            )
+            return {
+                "status": "abandoned",
+                "score": 0,
+                "reasons": ["Call deleted by administrator"],
+                "db_persisted": False,
+            }
         # Production path expects call.initiated to create the row, but if that
         # webhook failed while the media stream still connected we would lose
         # the entire screening otherwise (test console already guards this).
@@ -3899,6 +4024,9 @@ async def _finalize_call_impl(session: ConversationSession, db) -> dict:
                     finalize_notif
                 ),
             }
+            completed = sorted(session.completed_states or set())
+            if completed:
+                normalized_data["completed_states"] = completed
             if custom_fields:
                 normalized_data["custom_fields"] = custom_fields
             tenant_payload["normalized_data"] = normalized_data
@@ -3943,13 +4071,34 @@ async def _finalize_call_impl(session: ConversationSession, db) -> dict:
                         session.call_id,
                     )
                     already_finalized = True
+                    await update_call(db, session.call_id, commit=True, **call_fields)
                 else:
-                    logger.warning(
-                        "[%s] Tenant insert failed — persisting call without tenant",
+                    logger.error(
+                        "[%s] Tenant insert failed — persisting call as failed without tenant",
                         session.call_id,
                     )
-                    db_persisted = False
-                await update_call(db, session.call_id, commit=True, **call_fields)
+                    fail_fields = dict(call_fields)
+                    fail_fields["status"] = "failed"
+                    fail_log = dict(session_error_log or {})
+                    errors = list(fail_log.get("errors") or [])
+                    errors.append(
+                        {
+                            "kind": "tenant_persist_failed",
+                            "detail": "Could not save applicant profile for this call",
+                        }
+                    )
+                    fail_log["errors"] = errors
+                    await update_call_if_active(
+                        db, session.call_id, commit=False, **fail_fields
+                    )
+                    await merge_call_error_log(
+                        db,
+                        session.call_id,
+                        fail_log,
+                        commit=False,
+                    )
+                    await db.commit()
+                    db_persisted = True
         else:
             await db.commit()
 

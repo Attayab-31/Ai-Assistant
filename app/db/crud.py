@@ -166,6 +166,29 @@ async def seed_defaults(db: AsyncSession) -> None:
     await ensure_screening_questions_spanish_locales(db)
 
 
+async def sync_admin_password_from_env(db: AsyncSession) -> bool:
+    """Align the seeded admin user's password hash with ADMIN_PASSWORD from env."""
+    from app.utils.security import hash_password, verify_password
+    from config import settings
+
+    admin = await get_user_by_email(db, settings.admin_email)
+    if admin is None:
+        return False
+    if verify_password(settings.admin_password, admin.hashed_password):
+        return False
+    await update_user_password(
+        db,
+        admin.id,
+        hash_password(settings.admin_password),
+        invalidate_sessions=True,
+    )
+    logger.warning(
+        "Updated admin password hash to match ADMIN_PASSWORD for %s",
+        mask_email(settings.admin_email),
+    )
+    return True
+
+
 async def ensure_screening_questions_spanish_locales(db: AsyncSession) -> bool:
     """Backfill missing locales.es on built-in questions from seed defaults."""
     from app.core.question_flow import merge_seed_spanish_locales, normalize_questions
@@ -353,18 +376,21 @@ async def merge_call_error_log(
 
 async def persist_stream_stop_request(db: AsyncSession, call_id: str) -> bool:
     """Persist a cross-worker hangup stop on the call row (Redis fallback)."""
-    call = await get_call_by_call_id(db, call_id)
-    if call is None or call.status not in ("initiated", "in_progress"):
-        return False
-    log = call.error_log if isinstance(call.error_log, dict) else {}
-    if log.get(STREAM_STOP_DB_KEY):
-        return True
-    return await merge_call_error_log(
-        db,
-        call_id,
-        {STREAM_STOP_DB_KEY: datetime.now(UTC).isoformat()},
-        commit=True,
+    now = datetime.now(UTC).isoformat()
+    result = await db.execute(
+        update(Call)
+        .where(
+            Call.call_id == call_id,
+            Call.is_deleted == False,
+            Call.status.in_(("initiated", "in_progress")),
+        )
+        .values(
+            error_log=_error_log_merge_expr({STREAM_STOP_DB_KEY: now}),
+            updated_at=datetime.now(UTC),
+        )
     )
+    await db.commit()
+    return (result.rowcount or 0) > 0
 
 
 async def is_stream_stop_requested(db: AsyncSession, call_id: str) -> bool:
@@ -561,7 +587,23 @@ async def list_calls(
 
 async def hard_delete_call(db: AsyncSession, call_uuid: uuid.UUID) -> bool:
     """Permanently delete a call. The linked tenant row is removed by the
-    ``ON DELETE CASCADE`` on ``tenants.call_id`` (see the initial migration)."""
+    ``ON DELETE CASCADE`` on ``tenants.call_id`` (see the initial migration).
+
+    The recording pointer is the only durable reference to managed storage, so
+    verify it is removable or queued for retry before deleting the row.
+    """
+    from app.services.recording_cleanup import recording_pointer_safe_to_drop
+
+    row = (
+        await db.execute(
+            select(Call.id, Call.recording_url).where(Call.id == call_uuid)
+        )
+    ).one_or_none()
+    if row is None:
+        return False
+    _call_id, recording_url = row
+    if not await recording_pointer_safe_to_drop(recording_url):
+        return False
     await db.execute(delete(Call).where(Call.id == call_uuid))
     await db.commit()
     return True
@@ -583,22 +625,32 @@ async def purge_calls_before(
     from app.services.recording_cleanup import recording_pointer_safe_to_drop
 
     total = 0
+    cursor_after: tuple[datetime, uuid.UUID] | None = None
     while True:
-        rows = (
-            await db.execute(
-                select(Call.id, Call.recording_url)
-                .where(
-                    Call.created_at < cutoff,
-                    Call.is_deleted == False,  # noqa: E712
-                )
-                .order_by(Call.created_at, Call.id)
-                .limit(batch_size)
+        query = (
+            select(Call.id, Call.recording_url, Call.created_at)
+            .where(
+                Call.created_at < cutoff,
+                Call.is_deleted == False,  # noqa: E712
             )
-        ).all()
+            .order_by(Call.created_at, Call.id)
+            .limit(batch_size)
+        )
+        if cursor_after is not None:
+            cursor_created_at, cursor_id = cursor_after
+            query = query.where(
+                or_(
+                    Call.created_at > cursor_created_at,
+                    (Call.created_at == cursor_created_at) & (Call.id > cursor_id),
+                )
+            )
+        rows = (await db.execute(query)).all()
         if not rows:
             break
         safe_ids: list[uuid.UUID] = []
-        for call_id, recording_url in rows:
+        for row in rows:
+            call_id = row[0]
+            recording_url = row[1]
             if await recording_pointer_safe_to_drop(recording_url):
                 safe_ids.append(call_id)
             else:
@@ -608,12 +660,16 @@ async def purge_calls_before(
                     call_id,
                     recording_url,
                 )
-        if not safe_ids:
-            break
-        result = await db.execute(delete(Call).where(Call.id.in_(safe_ids)))
-        await db.commit()
-        total += result.rowcount or 0
+        if safe_ids:
+            result = await db.execute(delete(Call).where(Call.id.in_(safe_ids)))
+            await db.commit()
+            total += result.rowcount or 0
         if len(rows) < batch_size:
+            break
+        last = rows[-1]
+        if len(last) > 2:
+            cursor_after = (last[2], last[0])
+        else:
             break
     return total
 
@@ -628,19 +684,29 @@ async def purge_soft_deleted_calls_before(
     from app.services.recording_cleanup import recording_pointer_safe_to_drop
 
     total = 0
+    cursor_after: tuple[datetime, uuid.UUID] | None = None
     while True:
-        rows = (
-            await db.execute(
-                select(Call.id, Call.recording_url)
-                .where(Call.is_deleted == True, Call.updated_at < cutoff)  # noqa: E712
-                .order_by(Call.updated_at, Call.id)
-                .limit(batch_size)
+        query = (
+            select(Call.id, Call.recording_url, Call.updated_at)
+            .where(Call.is_deleted == True, Call.updated_at < cutoff)  # noqa: E712
+            .order_by(Call.updated_at, Call.id)
+            .limit(batch_size)
+        )
+        if cursor_after is not None:
+            cursor_updated_at, cursor_id = cursor_after
+            query = query.where(
+                or_(
+                    Call.updated_at > cursor_updated_at,
+                    (Call.updated_at == cursor_updated_at) & (Call.id > cursor_id),
+                )
             )
-        ).all()
+        rows = (await db.execute(query)).all()
         if not rows:
             break
         safe_ids: list[uuid.UUID] = []
-        for call_id, recording_url in rows:
+        for row in rows:
+            call_id = row[0]
+            recording_url = row[1]
             if await recording_pointer_safe_to_drop(recording_url):
                 safe_ids.append(call_id)
             else:
@@ -650,12 +716,16 @@ async def purge_soft_deleted_calls_before(
                     call_id,
                     recording_url,
                 )
-        if not safe_ids:
-            break
-        result = await db.execute(delete(Call).where(Call.id.in_(safe_ids)))
-        await db.commit()
-        total += result.rowcount or 0
+        if safe_ids:
+            result = await db.execute(delete(Call).where(Call.id.in_(safe_ids)))
+            await db.commit()
+            total += result.rowcount or 0
         if len(rows) < batch_size:
+            break
+        last = rows[-1]
+        if len(last) > 2:
+            cursor_after = (last[2], last[0])
+        else:
             break
     return total
 
@@ -706,7 +776,11 @@ async def close_stale_calls(
         now = datetime.now(UTC)
         result = await db.execute(
             update(Call)
-            .where(Call.id.in_(ids))
+            .where(
+                Call.id.in_(ids),
+                Call.status.in_(stale_statuses),
+                Call.is_deleted == False,
+            )
             .values(
                 status="failed",
                 ended_at=now,
@@ -1229,13 +1303,20 @@ async def create_user(
 
 
 async def update_user_password(
-    db: AsyncSession, user_id: uuid.UUID, hashed_password: str
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    hashed_password: str,
+    *,
+    invalidate_sessions: bool = True,
 ) -> None:
     """Replace a user's stored password hash."""
+    values: dict[str, Any] = {"hashed_password": hashed_password}
+    if invalidate_sessions:
+        values["password_changed_at"] = datetime.now(UTC)
     await db.execute(
         update(AdminUser)
         .where(AdminUser.id == user_id)
-        .values(hashed_password=hashed_password)
+        .values(**values)
     )
     await db.commit()
 
@@ -1464,11 +1545,18 @@ async def is_number_blacklisted(db: AsyncSession, phone_number: str) -> bool:
     if not normalized:
         return False
     blacklist = await get_setting_value(db, "blacklisted_numbers", [])
-    return normalized in (blacklist or [])
+    stored = _normalize_blacklist_numbers(
+        [str(item) for item in (blacklist or []) if item]
+    )
+    return normalized in stored
 
 
 async def add_to_blacklist(
-    db: AsyncSession, phone_number: str, updated_by: uuid.UUID | None = None
+    db: AsyncSession,
+    phone_number: str,
+    updated_by: uuid.UUID | None = None,
+    *,
+    tenant_id: uuid.UUID | None = None,
 ) -> tuple[list[str], bool]:
     """Add a phone number to the Do-Not-Call blacklist (idempotent)."""
     from app.utils.helpers import sanitize_phone_number
@@ -1481,6 +1569,7 @@ async def add_to_blacklist(
         db,
         updated_by=updated_by,
         add_phone=phone,
+        tenant_id=tenant_id,
     )
 
 
@@ -1515,12 +1604,39 @@ def _normalize_blacklist_numbers(numbers: list[str]) -> list[str]:
     return normalized
 
 
+async def _set_tenant_blacklist_flag_for_phone(
+    db: AsyncSession, phone: str, is_blacklisted: bool
+) -> None:
+    """Sync tenant.is_blacklisted for rows matching *phone* (exact or normalized)."""
+    from app.utils.helpers import sanitize_phone_number
+
+    now = datetime.now(UTC)
+    await db.execute(
+        update(Tenant)
+        .where(Tenant.phone_number == phone)
+        .values(is_blacklisted=is_blacklisted, updated_at=now)
+    )
+    result = await db.execute(select(Tenant.id, Tenant.phone_number))
+    rows = result.all() if hasattr(result, "all") else []
+    for tenant_id, tenant_phone in rows:
+        if sanitize_phone_number(tenant_phone or "") != phone:
+            continue
+        if tenant_phone == phone:
+            continue
+        await db.execute(
+            update(Tenant)
+            .where(Tenant.id == tenant_id)
+            .values(is_blacklisted=is_blacklisted, updated_at=now)
+        )
+
+
 async def _mutate_blacklist_numbers(
     db: AsyncSession,
     *,
     updated_by: uuid.UUID | None = None,
     add_phone: str | None = None,
     remove_phone: str | None = None,
+    tenant_id: uuid.UUID | None = None,
 ) -> tuple[list[str], bool]:
     """Atomically mutate blacklisted_numbers with a row lock.
 
@@ -1547,13 +1663,17 @@ async def _mutate_blacklist_numbers(
 
     if add_phone and add_phone not in current:
         current.append(add_phone)
+        if tenant_id is not None:
+            await db.execute(
+                update(Tenant)
+                .where(Tenant.id == tenant_id)
+                .values(is_blacklisted=True, updated_at=datetime.now(UTC))
+            )
+        else:
+            await _set_tenant_blacklist_flag_for_phone(db, add_phone, True)
     if remove_phone and remove_phone in current:
         current.remove(remove_phone)
-        await db.execute(
-            update(Tenant)
-            .where(Tenant.phone_number == remove_phone)
-            .values(is_blacklisted=False, updated_at=datetime.now(UTC))
-        )
+        await _set_tenant_blacklist_flag_for_phone(db, remove_phone, False)
 
     payload = json.dumps(current)
     if row is None:

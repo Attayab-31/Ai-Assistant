@@ -430,6 +430,12 @@ _AUDIT_ACTION_LABELS: dict[str, str] = {
     "created_admin_user": "Created team account",
     "updated_admin_user": "Updated team account",
     "deleted_admin_user": "Deleted team account",
+    "sent_test_email": "Sent test email",
+    "updated_call_notes": "Updated call notes",
+    "toggled_call_review": "Changed call review status",
+    "tenant_review_updated": "Updated applicant review",
+    "tenant_bulk_review_updated": "Bulk-updated applicant reviews",
+    "updated_tenant_notes": "Updated applicant notes",
 }
 
 _AUDIT_ENTITY_LABELS: dict[str, str] = {
@@ -563,7 +569,7 @@ def generate_stream_token(call_id: str, secret: str) -> str:
 
 
 def verify_stream_token(
-    call_id: str, token: str, secret: str, max_age: int = 300
+    call_id: str, token: str, secret: str, max_age: int = 900
 ) -> bool:
     """Validate a stream token created by ``generate_stream_token``.
 

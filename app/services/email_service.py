@@ -311,6 +311,10 @@ def send_screening_email_task(
             logger.warning("RESEND_API_KEY not set — skipping email")
             return {"sent": False, "reason": "no_api_key"}
 
+        if not bypass_filters and _is_email_already_sent_sync(call_id):
+            logger.info("Skipping duplicate email for call %s — already sent", call_id)
+            return {"sent": True, "reason": "already_sent"}
+
         resend.api_key = settings.resend_api_key
 
         email_settings = resolve_email_settings(email_settings)
@@ -370,7 +374,20 @@ def send_screening_email_task(
         result = resend.Emails.send(params)
         logger.info(f"Email sent for call {call_id}: {result}")
 
-        _mark_email_sent_sync(call_id)
+        try:
+            _mark_email_sent_sync(call_id)
+        except Exception as mark_exc:
+            logger.error("Email sent but failed to mark tenant for %s: %s", call_id, mark_exc)
+            _record_side_effect_failure_sync(
+                call_id,
+                key="email_mark_sent",
+                detail=str(mark_exc),
+            )
+            return {
+                "sent": True,
+                "email_id": result.get("id"),
+                "mark_failed": True,
+            }
         return {"sent": True, "email_id": result.get("id")}
 
     except Exception as e:
@@ -412,10 +429,14 @@ def fire_crm_webhook_task(
     from app.utils.helpers import generate_hmac_signature
     from app.utils.security import UnsafeURLError, assert_safe_external_url
 
+    if _is_crm_already_delivered_sync(call_id):
+        logger.info("Skipping duplicate CRM webhook for call %s", call_id)
+        return {"sent": True, "reason": "already_delivered"}
+
     # The CRM URL is admin-configured but still externally influenced; validate it
     # targets a public host so it can't be pointed at internal services (SSRF).
     try:
-        assert_safe_external_url(webhook_url)
+        assert_safe_external_url(webhook_url, require_https=True)
     except UnsafeURLError as e:
         logger.error("Refusing unsafe CRM webhook URL for call %s: %s", call_id, e)
         _record_side_effect_failure_sync(
@@ -469,9 +490,18 @@ def fire_crm_webhook_task(
             content=body,
             headers=headers,
             timeout=10.0,
+            require_https=True,
         )
 
         logger.info(f"CRM webhook fired for call {call_id}: {response.status_code}")
+        try:
+            _mark_crm_delivered_sync(call_id)
+        except Exception as mark_exc:
+            logger.error(
+                "CRM webhook sent but failed to mark delivery for %s: %s",
+                call_id,
+                mark_exc,
+            )
         return {"sent": True, "status_code": response.status_code}
 
     except Exception as e:
@@ -512,6 +542,11 @@ def send_latency_alert_task(
 
     try:
         if not settings.resend_api_key:
+            _record_side_effect_failure_sync(
+                call_id,
+                key="latency_alert",
+                detail="no_api_key",
+            )
             return {"sent": False, "reason": "no_api_key"}
 
         email_settings = resolve_email_settings(email_settings)
@@ -519,6 +554,11 @@ def send_latency_alert_task(
             email_settings.get("landlord_email") or settings.default_landlord_email
         )
         if not landlord_email:
+            _record_side_effect_failure_sync(
+                call_id,
+                key="latency_alert",
+                detail="no_recipient",
+            )
             return {"sent": False, "reason": "no_recipient"}
 
         resend.api_key = settings.resend_api_key
@@ -553,15 +593,23 @@ def send_latency_alert_task(
         try:
             raise self.retry(exc=e, countdown=30 * (2**self.request.retries))
         except self.MaxRetriesExceededError:
+            _record_side_effect_failure_sync(
+                call_id,
+                key="latency_alert",
+                detail=str(e),
+            )
             return {"sent": False, "error": str(e)}
 
 
 @celery_app.task(
+    bind=True,
+    max_retries=3,
+    default_retry_delay=300,
     soft_time_limit=30,
     time_limit=45,
     name="app.services.email_service.send_daily_digest_task",
 )
-def send_daily_digest_task():
+def send_daily_digest_task(self):
     """
     Celery beat task: send daily digest email summarizing previous day's calls.
     Runs every 24 hours via Celery beat schedule.
@@ -570,9 +618,16 @@ def send_daily_digest_task():
         if not settings.resend_api_key:
             return {"sent": False, "reason": "no_api_key"}
 
-        # Use the admin-configured email settings (recipient, sender identity,
-        # CC/BCC) just like the per-call result email, falling back to env.
         email_settings = resolve_email_settings()
+        if not email_settings.get("email_notifications_enabled", True):
+            return {"sent": False, "reason": "notifications_disabled"}
+        if not _is_digest_send_hour(email_settings.get("timezone") or ""):
+            return {"sent": False, "reason": "outside_digest_window"}
+
+        digest_window = _digest_window_label(email_settings.get("timezone") or "")
+        if not _claim_digest_send_sync(digest_window):
+            return {"sent": True, "reason": "already_sent"}
+
         stats = _get_yesterday_stats_sync(email_settings.get("timezone") or "")
         if stats["total_calls"] == 0:
             logger.info("No calls yesterday — skipping digest")
@@ -594,6 +649,7 @@ def send_daily_digest_task():
             <li>Qualified: {stats['qualified']}</li>
             <li>Needs review: {stats['review']}</li>
             <li>Disqualified: {stats['unqualified']}</li>
+            {f"<li>No screening result: {stats['unscreened_calls']}</li>" if stats.get('unscreened_calls') else ""}
           </ul>
           <a href="{settings.app_url}/admin/dashboard">View Dashboard</a>
         </div>
@@ -615,7 +671,10 @@ def send_daily_digest_task():
         return {"sent": True}
     except Exception as e:
         logger.error(f"Daily digest failed: {e}")
-        return {"sent": False, "error": str(e)}
+        try:
+            raise self.retry(exc=e, countdown=300 * (2**self.request.retries))
+        except self.MaxRetriesExceededError:
+            return {"sent": False, "error": str(e)}
 
 
 @celery_app.task(name="app.services.email_service.provider_health_check_task")
@@ -648,6 +707,12 @@ def provider_health_check_task():
             return results
 
         results = asyncio.run(_ping_all())
+        try:
+            from app.core.redis_client import cache_set_json
+
+            asyncio.run(cache_set_json("health:providers:last", results, 600))
+        except Exception as cache_exc:
+            logger.debug("Provider health cache update failed: %s", cache_exc)
         logger.info(f"Health check results: {results}")
     except Exception as e:
         logger.error(f"Health check task failed: {e}")
@@ -708,6 +773,9 @@ def normalize_email_settings(raw: dict) -> dict:
         "bcc_emails": raw.get("bcc_emails") or "",
         "timezone": raw.get("timezone") or "",
         "crm_webhook_secret": crm_secret,
+        "email_notifications_enabled": _coerce_bool(
+            raw.get("email_notifications_enabled"), default=True
+        ),
     }
 
 
@@ -730,6 +798,7 @@ def _get_email_settings_sync() -> dict:
         "bcc_emails",
         "timezone",
         "crm_webhook_secret",
+        "email_notifications_enabled",
     )
 
     async def _fetch():
@@ -751,33 +820,153 @@ def _get_email_settings_sync() -> dict:
     return normalize_email_settings(raw)
 
 
-def _mark_email_sent_sync(call_id: str) -> None:
-    """Mark email as sent on the tenant record."""
+def _run_async_coro(factory):
+    """Run async DB helpers from Celery tasks (with or without a running loop)."""
     import asyncio
+    from collections.abc import Callable
+
+    if not isinstance(factory, Callable):
+        raise TypeError("factory must be callable")
+
+    try:
+        return asyncio.run(factory())
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(factory())
+        finally:
+            loop.close()
+
+
+def _is_digest_send_hour(timezone: str) -> bool:
+    """True when the admin-local clock is 09:00 (digest delivery window)."""
+    from zoneinfo import ZoneInfo
+
+    try:
+        tz = ZoneInfo(str(timezone).strip()) if str(timezone or "").strip() else UTC
+    except Exception:
+        tz = UTC
+    return datetime.now(tz).hour == 9
+
+
+def _digest_window_label(timezone: str) -> str:
+    """Yesterday's calendar date in the admin timezone (digest idempotency key)."""
+    from datetime import timedelta
+    from zoneinfo import ZoneInfo
+
+    try:
+        tz = ZoneInfo(str(timezone).strip()) if str(timezone or "").strip() else UTC
+    except Exception:
+        tz = UTC
+    local_yesterday = (datetime.now(tz) - timedelta(days=1)).date()
+    return local_yesterday.isoformat()
+
+
+def _claim_digest_send_sync(window: str) -> bool:
+    from app.core.redis_client import acquire_once
+
+    async def _claim():
+        return await acquire_once(f"digest:sent:{window}", 48 * 3600)
+
+    return bool(_run_async_coro(lambda: _claim()))
+
+
+async def _resolve_tenant_for_call_id(db, call_id: str):
+    """Resolve tenant row from a call id or Telnyx call_control_id."""
     import uuid as uuid_module
 
-    from app.db.crud import get_tenant_by_call, update_tenant
+    from app.db.crud import get_call_by_call_id, get_call_by_uuid, get_tenant_by_call
+
+    call = None
+    try:
+        call = await get_call_by_uuid(db, uuid_module.UUID(call_id))
+    except (TypeError, ValueError):
+        pass
+    if call is None:
+        call = await get_call_by_call_id(db, call_id)
+    if call is None:
+        return None
+    return await get_tenant_by_call(db, call.id)
+
+
+def _is_email_already_sent_sync(call_id: str) -> bool:
     from app.db.database import AsyncSessionLocal
+
+    async def _check():
+        async with AsyncSessionLocal() as db:
+            tenant = await _resolve_tenant_for_call_id(db, call_id)
+            return bool(tenant and tenant.email_sent)
+
+    return bool(_run_async_coro(lambda: _check()))
+
+
+def _side_effect_delivery_key(channel: str) -> str:
+    return f"{channel}_delivered_at"
+
+
+def _is_crm_already_delivered_sync(call_id: str) -> bool:
+    return _is_side_effect_delivered_sync(call_id, "crm")
+
+
+def _is_side_effect_delivered_sync(call_id: str, channel: str) -> bool:
+    from app.db.database import AsyncSessionLocal
+
+    async def _check():
+        async with AsyncSessionLocal() as db:
+            tenant = await _resolve_tenant_for_call_id(db, call_id)
+            if tenant is None:
+                return False
+            nd = tenant.normalized_data if isinstance(tenant.normalized_data, dict) else {}
+            deliveries = nd.get("side_effect_deliveries")
+            if not isinstance(deliveries, dict):
+                return False
+            return bool(deliveries.get(_side_effect_delivery_key(channel)))
+
+    return bool(_run_async_coro(lambda: _check()))
+
+
+def _mark_crm_delivered_sync(call_id: str) -> None:
+    _mark_side_effect_delivered_sync(call_id, "crm")
+
+
+def _mark_side_effect_delivered_sync(call_id: str, channel: str) -> None:
+    from app.db.crud import update_tenant
+    from app.db.database import AsyncSessionLocal
+    from app.services.side_effect_errors import run_side_effect_db_write
 
     async def _update():
         async with AsyncSessionLocal() as db:
-            try:
-                call_uuid = uuid_module.UUID(call_id)
-                tenant = await get_tenant_by_call(db, call_uuid)
-                if tenant:
-                    await update_tenant(
-                        db,
-                        tenant.id,
-                        email_sent=True,
-                        email_sent_at=datetime.now(UTC),
-                    )
-            except Exception as e:
-                logger.error(f"Failed to mark email sent: {e}")
+            tenant = await _resolve_tenant_for_call_id(db, call_id)
+            if tenant is None:
+                raise LookupError(f"Tenant not found for call {call_id}")
+            nd = dict(tenant.normalized_data or {})
+            deliveries = dict(nd.get("side_effect_deliveries") or {})
+            deliveries[_side_effect_delivery_key(channel)] = datetime.now(UTC).isoformat()
+            nd["side_effect_deliveries"] = deliveries
+            await update_tenant(db, tenant.id, normalized_data=nd)
 
-    try:
-        asyncio.run(_update())
-    except RuntimeError:
-        pass
+    run_side_effect_db_write(_update())
+
+
+def _mark_email_sent_sync(call_id: str) -> None:
+    """Mark email as sent on the tenant record."""
+    from app.db.crud import update_tenant
+    from app.db.database import AsyncSessionLocal
+    from app.services.side_effect_errors import run_side_effect_db_write
+
+    async def _update():
+        async with AsyncSessionLocal() as db:
+            tenant = await _resolve_tenant_for_call_id(db, call_id)
+            if not tenant:
+                raise LookupError(f"Tenant not found for call {call_id}")
+            await update_tenant(
+                db,
+                tenant.id,
+                email_sent=True,
+                email_sent_at=datetime.now(UTC),
+            )
+
+    run_side_effect_db_write(_update())
 
 
 def _get_yesterday_stats_sync(timezone: str = "") -> dict:
@@ -829,6 +1018,7 @@ def _get_yesterday_stats_sync(timezone: str = "") -> dict:
                             and_(
                                 Call.created_at >= yesterday_start,
                                 Call.created_at < yesterday_end,
+                                Call.is_deleted == False,
                                 Tenant.qualification_status == status,
                             )
                         )
@@ -836,9 +1026,11 @@ def _get_yesterday_stats_sync(timezone: str = "") -> dict:
                 ).scalar() or 0
                 quals[status] = count
 
-            return {"total_calls": total, **quals}
+            bucketed = sum(quals.values())
+            return {
+                "total_calls": total,
+                "unscreened_calls": max(0, int(total) - bucketed),
+                **quals,
+            }
 
-    try:
-        return asyncio.run(_fetch())
-    except RuntimeError:
-        return {"total_calls": 0, "qualified": 0, "review": 0, "unqualified": 0}
+    return _run_async_coro(lambda: _fetch())

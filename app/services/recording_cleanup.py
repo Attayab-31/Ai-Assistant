@@ -136,6 +136,11 @@ async def retry_pending_recording_deletes(*, limit: int = 200) -> dict[str, int]
         summary["remaining"] = int(await r.scard(PENDING_DELETES_KEY))
     except Exception:
         pass
+    if summary["retried"]:
+        try:
+            await r.expire(PENDING_DELETES_KEY, PENDING_DELETES_TTL_SECONDS)
+        except Exception as e:
+            logger.debug("Could not refresh orphan delete queue TTL: %s", e)
     if summary["removed"]:
         logger.info("Pending recording delete retry removed %s object(s)", summary["removed"])
     return summary

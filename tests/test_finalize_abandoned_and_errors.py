@@ -91,6 +91,42 @@ async def test_finalize_impl_skips_abandoned_call():
 
 
 @pytest.mark.asyncio
+async def test_finalize_impl_skips_recreate_when_admin_deleted():
+    from app.core.call_handler import _finalize_call_impl
+
+    session = ConversationSession(
+        call_id="v3:admin-deleted",
+        phone_number="+15551234567",
+        questions=[],
+    )
+    db = AsyncMock()
+    create_call = AsyncMock()
+    with patch("app.db.crud.get_call_by_call_id", AsyncMock(return_value=None)):
+        with patch(
+            "app.core.redis_client.is_call_admin_deleted",
+            AsyncMock(return_value=True),
+        ):
+            with patch("app.db.crud.create_call", create_call):
+                with patch(
+                    "app.core.call_handler.get_call_providers",
+                    MagicMock(),
+                ):
+                    with patch(
+                        "app.core.call_handler._has_sufficient_extraction",
+                        return_value=True,
+                    ):
+                        with patch(
+                            "app.core.call_handler.calculate_qualification_score",
+                            return_value=(0, "review", []),
+                        ):
+                            result = await _finalize_call_impl(session, db)
+
+    assert result["db_persisted"] is False
+    assert "deleted" in result["reasons"][0].lower()
+    create_call.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_finalize_impl_skips_persist_when_call_no_longer_active():
     from app.core.call_handler import _finalize_call_impl
 

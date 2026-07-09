@@ -13,7 +13,7 @@
 <div class="stack">
   {{ review_status_strip(tenant, linked_call, active_question_count) }}
   {% if linked_call %}
-  {{ reviewer_action_bar(linked_call.id, tenant, user, show_delete=false) }}
+  {{ reviewer_action_bar(linked_call.id, tenant, user, show_delete=false, review_via='tenant') }}
   {% endif %}
 
   <section class="card">
@@ -22,7 +22,7 @@
         <h2 style="margin:0;">{{ tenant.full_name or tenant.phone_number|phone_display }}</h2>
         <p class="hint" style="margin-top:4px;">
           Phone: {{ tenant.phone_number|phone_display }}
-          {% if linked_call %} · <a href="/admin/calls/{{ linked_call.id }}">Open screening call</a>{% endif %}
+          {% if linked_call and user and user.can('calls') %} · <a href="/admin/calls/{{ linked_call.id }}">Open screening call</a>{% endif %}
         </p>
       </div>
       {% if tenant.control_flags and tenant.control_flags.get('qualification_status_overridden') %}
@@ -51,7 +51,7 @@
     <div class="empty" style="padding: 20px 12px;">
       <span class="empty-title">No screening answers saved</span>
       The call may have ended early or the applicant hung up before answering questions.
-      {% if linked_call %}<a href="/admin/calls/{{ linked_call.id }}">Open the call record</a> for more detail.{% endif %}
+      {% if linked_call and user and user.can('calls') %}<a href="/admin/calls/{{ linked_call.id }}">Open the call record</a> for more detail.{% endif %}
     </div>
     {% else %}
     {% set flow_subtitle = "(at time of call)" if flow_from_snapshot else "(current question settings)" %}
@@ -206,7 +206,7 @@
 <script src="/static/js/reviewer.js"></script>
 <script>
   initTenantDetail("{{ tenant.id }}");
-  {% if linked_call and user and user.can_edit %}
+  {% if linked_call and user and user.can_edit and user.can('calls') %}
   initReviewerWorkflow("{{ linked_call.id }}");
   {% endif %}
 </script>

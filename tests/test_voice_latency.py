@@ -79,3 +79,11 @@ def test_conversation_session_accepts_critical_latency_alert_fields():
     )
     assert session.latency_alert_turn_p95_crit_ms == 1800
     assert session.latency_alert_timeout_rate_crit_pct == 5.0
+
+
+def test_profile_latency_alert_defaults_match_profile():
+    from app.core.voice_latency import profile_latency_alert_defaults
+
+    fast = profile_latency_alert_defaults("fast")
+    assert fast["latency_alert_turn_p95_ms"] == 1000
+    assert fast["latency_alert_timeout_rate_pct"] == 3.0

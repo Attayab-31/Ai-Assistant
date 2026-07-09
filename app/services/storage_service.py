@@ -128,9 +128,18 @@ class StorageService:
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
                 response = await client.delete(url, headers=self._auth_headers())
+                if response.status_code == 404:
+                    logger.info("Recording already absent: %s", object_path)
+                    return True
                 response.raise_for_status()
                 logger.info(f"Recording deleted: {object_path}")
                 return True
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                logger.info("Recording already absent: %s", object_path)
+                return True
+            logger.error(f"Failed to delete recording {object_path}: {e}")
+            return False
         except Exception as e:
             logger.error(f"Failed to delete recording {object_path}: {e}")
             return False

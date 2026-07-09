@@ -158,6 +158,10 @@ async def initialize_database_schema() -> None:
     mode = _resolved_migration_mode()
 
     if mode == "skip":
+        if settings.is_production:
+            raise DatabaseInitializationError(
+                "DATABASE_MIGRATION_MODE=skip is not allowed in production."
+            )
         logger.warning("Skipping database migration checks by configuration.")
         return
 

@@ -1106,6 +1106,7 @@ def build_flow_rows(
     scoring_data: dict[str, Any] | None = None,
     *,
     confirmed_fields: Iterable[str] | None = None,
+    flow_context: ConditionalFlowContext | None = None,
 ) -> list[dict[str, Any]]:
     """Build the per-question flow rows used by the call/tenant detail pages.
 
@@ -1118,12 +1119,20 @@ def build_flow_rows(
     refused = set(refused_states or [])
     have_states = bool(answered or refused)
     data = scoring_data or {}
+    if flow_context is None and snapshot and (answered or refused):
+        flow_context = ConditionalFlowContext(
+            answered_states=frozenset(answered),
+            refused_states=frozenset(refused),
+            questions=tuple(snapshot),
+        )
     rows: list[dict[str, Any]] = []
     for q in sorted(snapshot, key=lambda x: int(x.get("order") or 0)):
         if not q.get("active", True):
             continue
         state = str(q.get("state") or "")
-        if q.get("conditional") and should_skip_question(q, data):
+        if q.get("conditional") and should_skip_question(
+            q, data, flow_context=flow_context
+        ):
             status_label = "Skipped"
         elif state in refused:
             status_label = "Declined"
@@ -1621,6 +1630,14 @@ def validate_questions_for_save(
 
     if active_language_choice > 1:
         raise ValueError("Only one active language choice question is allowed")
+
+    for q in normalized:
+        if q.get("active", True) and str(q.get("answer_type")) == "language_choice":
+            if int(q.get("order") or 0) != 1:
+                raise ValueError(
+                    "Language choice question must be order 1 (asked before screening)"
+                )
+            break
 
     for idx, q in enumerate(normalized, start=1):
         q["order"] = idx

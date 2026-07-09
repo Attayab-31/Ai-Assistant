@@ -11,6 +11,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,7 +22,7 @@ from app.core.ratelimit import (
     reset_auth_failures,
 )
 from app.db import crud
-from app.db.crud import create_audit_log, get_user_by_email, update_last_login
+from app.services.admin_audit_helpers import audit_client_ip
 from app.db.database import AsyncSessionLocal, get_db
 from app.utils.dependencies import ACCESS_TOKEN_COOKIE_NAME
 from app.utils.security import (
@@ -78,8 +79,8 @@ async def _post_login_tasks(
     """
     try:
         async with AsyncSessionLocal() as db:
-            await update_last_login(db, user_id)
-            await create_audit_log(
+            await crud.update_last_login(db, user_id)
+            await crud.create_audit_log(
                 db,
                 action="admin_login",
                 admin_user_id=user_id,
@@ -89,7 +90,10 @@ async def _post_login_tasks(
             )
             if password_needs_rehash(stored_hash):
                 await crud.update_user_password(
-                    db, user_id, hash_password(plain_password)
+                    db,
+                    user_id,
+                    hash_password(plain_password),
+                    invalidate_sessions=False,
                 )
     except Exception as e:
         logger.warning("Post-login bookkeeping failed for %s: %s", user_id, e)
@@ -113,7 +117,7 @@ async def login(
     """
     check_auth_rate_limit(request)
 
-    user = await get_user_by_email(db, credentials.email)
+    user = await crud.get_user_by_email(db, credentials.email)
 
     if not user or not verify_password(credentials.password, user.hashed_password):
         record_auth_failure(request)
@@ -133,7 +137,14 @@ async def login(
     reset_auth_failures(request)
 
     token = create_access_token(
-        data={"sub": str(user.id), "email": user.email, "role": user.role},
+        data={
+            "sub": str(user.id),
+            "email": user.email,
+            "role": user.role,
+            "pwd_at": user.password_changed_at.isoformat()
+            if user.password_changed_at
+            else None,
+        },
         expires_delta=timedelta(hours=8),
     )
 
@@ -150,7 +161,7 @@ async def login(
     asyncio.create_task(
         _post_login_tasks(
             user.id,
-            ip_address=request.client.host if request.client else None,
+            ip_address=audit_client_ip(request),
             user_agent=request.headers.get("user-agent"),
             plain_password=credentials.password,
             stored_hash=user.hashed_password,
@@ -175,12 +186,18 @@ async def logout(request: Request, response: Response):
     from app.core.redis_client import revoke_token
 
     token = request.cookies.get(ACCESS_TOKEN_COOKIE_NAME)
+    revoke_failed = False
     if token:
         payload = decode_access_token(token)
         if payload and payload.get("exp"):
             remaining = int(payload["exp"]) - int(datetime.now(UTC).timestamp())
             if remaining > 0:
-                await revoke_token(token, remaining)
+                revoked = await revoke_token(token, remaining)
+                if not revoked:
+                    revoke_failed = True
+                    logger.warning(
+                        "Logout could not revoke session in Redis — clearing cookie anyway"
+                    )
 
     response.delete_cookie(
         key=ACCESS_TOKEN_COOKIE_NAME,
@@ -189,4 +206,13 @@ async def logout(request: Request, response: Response):
         secure=_cookie_secure(request),
         samesite="lax",
     )
+    if revoke_failed:
+        return JSONResponse(
+            {
+                "message": "Logged out locally; session revocation is pending — "
+                "try again if this device should be fully signed out.",
+                "revoke_failed": True,
+            },
+            status_code=200,
+        )
     return {"message": "Logged out successfully"}

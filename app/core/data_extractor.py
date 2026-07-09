@@ -160,8 +160,17 @@ def _normalize_pet_weight_lbs(weight: int | None, *context: Any) -> int | None:
     return weight
 
 
-def coerce_extracted_data(raw: dict[str, Any]) -> dict[str, Any]:
-    """Type-coerce and validate extracted fields."""
+def coerce_extracted_data(
+    raw: dict[str, Any],
+    *,
+    questions: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Type-coerce and validate extracted fields.
+
+    Admin-configured ``extract_fields`` are preserved even when they are not
+    built-in tenant columns or ``custom_*`` keys — the question list is the
+    source of truth for which keys survive coercion.
+    """
     raw = raw or {}
     result: dict[str, Any] = {}
 
@@ -179,8 +188,6 @@ def coerce_extracted_data(raw: dict[str, Any]) -> dict[str, Any]:
     result["occupants_count"] = _parse_int(raw.get("occupants_count"))
     result["adults_count"] = _parse_int(raw.get("adults_count"))
     result["children_count"] = _parse_int(raw.get("children_count"))
-    if result["children_count"] is None:
-        result["children_count"] = 0
     if result["occupants_count"] is None and result["adults_count"] is not None:
         result["occupants_count"] = result["adults_count"] + (
             result["children_count"] or 0
@@ -218,9 +225,22 @@ def coerce_extracted_data(raw: dict[str, Any]) -> dict[str, Any]:
     for flag in ("human_requested", "callback_requested", "stop_requested"):
         result[flag] = _parse_bool(raw.get(flag))
 
+    admin_fields: set[str] = set()
+    if questions:
+        admin_fields = active_extract_fields(questions)
+
     for key, value in raw.items():
-        if str(key).startswith("custom_") and key not in result and value not in (None, ""):
+        if value in (None, ""):
+            continue
+        if key in result:
+            continue
+        if key in admin_fields or str(key).startswith("custom_"):
             result[key] = value
+            continue
+        if str(key).endswith("_raw"):
+            base = str(key)[:-4]
+            if base in admin_fields:
+                result[key] = value
 
     for json_field in (
         "raw_answers",
@@ -259,7 +279,7 @@ async def extract_tenant_data(
         )
         clean = re.sub(r"```json\s*|\s*```", "", raw_response).strip()
         extracted = json.loads(clean)
-        result = coerce_extracted_data(extracted)
+        result = coerce_extracted_data(extracted, questions=questions)
         logger.info("Data extraction successful: %s", sorted(result.keys()))
         return result
     except TimeoutError:
@@ -291,4 +311,4 @@ def extract_from_transcript_heuristic(
             fields = extract_fields_from_speech(utterance, question, extracted)
             if fields:
                 extracted.update(fields)
-    return coerce_extracted_data(extracted)
+    return coerce_extracted_data(extracted, questions=questions)

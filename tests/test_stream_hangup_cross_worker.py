@@ -18,33 +18,31 @@ from app.db.crud import (
 @pytest.mark.asyncio
 async def test_persist_stream_stop_request_writes_error_log():
     call_id = "v3:hangup-db"
-    call = MagicMock()
-    call.status = "in_progress"
-    call.error_log = {}
-
     db = AsyncMock()
-    with patch("app.db.crud.get_call_by_call_id", AsyncMock(return_value=call)) as get_call:
-        with patch("app.db.crud.merge_call_error_log", AsyncMock(return_value=True)) as merge:
-            ok = await persist_stream_stop_request(db, call_id)
+    result = MagicMock()
+    result.rowcount = 1
+    db.execute = AsyncMock(return_value=result)
+    db.commit = AsyncMock()
+
+    ok = await persist_stream_stop_request(db, call_id)
 
     assert ok is True
-    get_call.assert_awaited_once_with(db, call_id)
-    merge.assert_awaited_once()
-    assert STREAM_STOP_DB_KEY in merge.await_args.args[2]
+    db.execute.assert_awaited_once()
+    db.commit.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_persist_stream_stop_request_ignores_terminal_calls():
-    call = MagicMock()
-    call.status = "completed"
     db = AsyncMock()
+    result = MagicMock()
+    result.rowcount = 0
+    db.execute = AsyncMock(return_value=result)
+    db.commit = AsyncMock()
 
-    with patch("app.db.crud.get_call_by_call_id", AsyncMock(return_value=call)):
-        with patch("app.db.crud.merge_call_error_log", AsyncMock()) as merge:
-            ok = await persist_stream_stop_request(db, "done-call")
+    ok = await persist_stream_stop_request(db, "done-call")
 
     assert ok is False
-    merge.assert_not_awaited()
+    db.execute.assert_awaited_once()
 
 
 @pytest.mark.asyncio

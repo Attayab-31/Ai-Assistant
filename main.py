@@ -111,6 +111,10 @@ async def lifespan(app: FastAPI):
 
         async with AsyncSessionLocal() as db:
             await seed_defaults(db)
+            if settings.is_production:
+                from app.db.crud import sync_admin_password_from_env
+
+                await sync_admin_password_from_env(db)
         logger.info("Default data verified")
     except Exception as e:
         logger.error("Database seed failed: %s", e, exc_info=True)
@@ -121,19 +125,45 @@ async def lifespan(app: FastAPI):
         await provider_registry.initialize()
         logger.info("✅ Provider registry initialized")
     except Exception as e:
-        logger.warning("Provider registry init partial: %s", e)
+        logger.error("Provider registry init failed: %s", e, exc_info=True)
+        raise
 
     # Seed the in-process display timezone from the admin setting so synchronous
     # template/email helpers localize timestamps without a DB round-trip.
     try:
         from app.db.crud import get_setting_value
         from app.db.database import AsyncSessionLocal
-        from app.utils.helpers import set_display_timezone
+        from app.core.redis_client import publish_display_timezone
 
         async with AsyncSessionLocal() as db:
-            set_display_timezone(await get_setting_value(db, "timezone", ""))
+            await publish_display_timezone(
+                await get_setting_value(db, "timezone", "")
+            )
     except Exception as e:
         logger.warning("Could not load display timezone: %s", e)
+
+    # Warn when recording is enabled in admin settings but storage is not configured.
+    try:
+        from app.db.crud import get_setting_value
+        from app.db.database import AsyncSessionLocal
+
+        async with AsyncSessionLocal() as db:
+            recording_enabled = await get_setting_value(
+                db, "call_recording_enabled", "false"
+            )
+        if str(recording_enabled).strip().lower() in {"true", "1", "yes"}:
+            if not settings.supabase_url or not settings.supabase_secret_key:
+                msg = (
+                    "call_recording_enabled is on but Supabase Storage is not "
+                    "configured — recordings will remain on public Telnyx URLs"
+                )
+                if settings.is_production:
+                    raise RuntimeError(msg)
+                logger.warning(msg)
+    except RuntimeError:
+        raise
+    except Exception as e:
+        logger.warning("Could not verify recording storage configuration: %s", e)
 
     logger.info("✅ AI Tenant Screener ready!")
     yield
@@ -181,7 +211,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 # ──────────────────────────────────────────────────────────────────────────────
 
 _CSRF_PROTECTED_PREFIXES = ("/admin/api/", "/api/settings/", "/test/api/")
-_CSRF_PROTECTED_PATHS = frozenset({"/auth/logout"})
+_CSRF_PROTECTED_PATHS = frozenset({"/auth/logout", "/auth/login"})
 
 # With cookie-based auth we need credentialed CORS, which browsers reject
 # alongside a "*" origin. Use explicit origins (credentials on) in production
@@ -326,11 +356,28 @@ async def health_check():
         logger.warning("Celery health check failed: %s", e)
 
     providers = provider_registry.get_status()
+    provider_health_beat = None
+    try:
+        from app.core.redis_client import cache_get_json
+
+        provider_health_beat = await cache_get_json("health:providers:last")
+    except Exception as e:
+        logger.debug("Provider health beat cache read failed: %s", e)
 
     # The database is the only hard dependency for serving requests, so a DB
     # failure returns HTTP 503 to keep load balancers from routing to this
     # instance. Redis powers async jobs/cache and is reported but not fatal.
     healthy = db_ok
+    if settings.is_production:
+        payload = {
+            "status": "healthy" if healthy else "degraded",
+            "database": "connected" if db_ok else "disconnected",
+            "redis": "connected" if redis_ok else "disconnected",
+        }
+        if not healthy:
+            payload["celery"] = "unavailable" if not celery_health.get("ok") else "connected"
+        return JSONResponse(payload, status_code=200 if healthy else 503)
+
     return JSONResponse(
         {
             "status": "healthy" if healthy else "degraded",
@@ -342,6 +389,7 @@ async def health_check():
             "redis": "connected" if redis_ok else "disconnected",
             "celery": celery_health,
             "providers": providers,
+            "provider_health_beat": provider_health_beat,
         },
         status_code=200 if healthy else 503,
     )

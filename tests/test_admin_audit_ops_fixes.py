@@ -134,7 +134,7 @@ async def test_check_provider_health_includes_deepgram_backup_when_key_set(monke
     )
     monkeypatch.setattr(
         "app.core.call_settings.build_call_provider_bundle",
-        lambda _s: bundle,
+        lambda _s, **kwargs: bundle,
     )
     monkeypatch.setattr(
         "app.core.call_settings.capture_provider_api_keys",

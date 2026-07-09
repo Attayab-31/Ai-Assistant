@@ -109,21 +109,59 @@ async def cache_delete(*keys: str) -> None:
         logger.debug("cache_delete failed: %s", e)
 
 
-async def acquire_once(key: str, ttl_seconds: int, *, fail_closed: bool = False) -> bool:
+async def acquire_once(
+    key: str,
+    ttl_seconds: int,
+    *,
+    fail_closed: bool = False,
+    token: str = "1",
+) -> bool:
     """Idempotency guard: True the first time, False if already seen.
 
     By default fails OPEN (returns True when Redis is down). Set
     ``fail_closed=True`` for production webhooks so duplicate deliveries are
     rejected rather than double-processed.
+
+    Pass a unique ``token`` when the holder must release the key later via
+    compare-and-delete (e.g. provider-switch serialization).
     """
     r = get_redis()
     if r is None:
         return not fail_closed
     try:
-        return bool(await r.set(key, "1", nx=True, ex=ttl_seconds))
+        return bool(await r.set(key, token, nx=True, ex=ttl_seconds))
     except Exception as e:
         logger.debug("acquire_once(%s) failed: %s", key, e)
         return not fail_closed
+
+
+_ADMIN_DELETED_CALL_TTL_SECONDS = 7 * 24 * 3600
+
+
+async def mark_call_admin_deleted(call_id: str) -> None:
+    """Tombstone so a live stream cannot recreate an admin-deleted call row."""
+    r = get_redis()
+    if r is None:
+        return
+    try:
+        await r.setex(
+            f"call:admin_deleted:{call_id}",
+            _ADMIN_DELETED_CALL_TTL_SECONDS,
+            "1",
+        )
+    except Exception as e:
+        logger.debug("mark_call_admin_deleted(%s) failed: %s", call_id, e)
+
+
+async def is_call_admin_deleted(call_id: str) -> bool:
+    r = get_redis()
+    if r is None:
+        return False
+    try:
+        return bool(await r.get(f"call:admin_deleted:{call_id}"))
+    except Exception as e:
+        logger.debug("is_call_admin_deleted(%s) failed: %s", call_id, e)
+        return False
 
 
 async def set_stream_stop_signal(call_id: str, ttl_seconds: int = 3600) -> None:
@@ -182,16 +220,18 @@ async def clear_finalize_inflight(call_id: str) -> None:
     await cache_delete(f"finalize:inflight:{call_id}")
 
 
-async def revoke_token(token: str, ttl_seconds: int) -> None:
+async def revoke_token(token: str, ttl_seconds: int) -> bool:
     """Denylist a JWT until it expires (logout / forced sign-out)."""
     r = get_redis()
     if r is None or not token:
-        return
+        return not settings.is_production
     digest = hashlib.sha256(token.encode()).hexdigest()
     try:
         await r.setex(f"auth:revoked:{digest}", max(1, ttl_seconds), "1")
+        return True
     except Exception as e:
         logger.debug("revoke_token failed: %s", e)
+        return not settings.is_production
 
 
 async def is_token_revoked(token: str) -> bool:
@@ -205,3 +245,117 @@ async def is_token_revoked(token: str) -> bool:
     except Exception as e:
         logger.debug("is_token_revoked failed: %s", e)
         return settings.is_production
+
+
+DISPLAY_TIMEZONE_KEY = "settings:display_timezone"
+
+
+async def publish_display_timezone(name: str | None) -> None:
+    """Share display timezone across workers (Jinja filters are sync/per-process)."""
+    from app.utils.helpers import set_display_timezone
+
+    set_display_timezone(name)
+    candidate = (name or "").strip()
+    if not candidate:
+        return
+    r = get_redis()
+    if r is None:
+        return
+    try:
+        await r.set(DISPLAY_TIMEZONE_KEY, candidate)
+    except Exception as e:
+        logger.debug("publish_display_timezone failed: %s", e)
+
+
+async def sync_display_timezone_from_redis() -> None:
+    """Refresh in-process display timezone from Redis before rendering admin pages."""
+    from app.utils.helpers import set_display_timezone
+
+    r = get_redis()
+    if r is None:
+        return
+    try:
+        raw = await r.get(DISPLAY_TIMEZONE_KEY)
+    except Exception as e:
+        logger.debug("sync_display_timezone_from_redis failed: %s", e)
+        return
+    if not raw:
+        return
+    value = raw.decode() if isinstance(raw, bytes) else str(raw)
+    set_display_timezone(value.strip())
+
+
+MONITOR_SESSION_KEY_PREFIX = "monitor:session:"
+MONITOR_SESSION_SET = "monitor:active_sessions"
+MONITOR_SESSION_TTL_SECONDS = 300
+
+
+async def upsert_monitor_session(call_id: str, payload: dict) -> None:
+    """Publish a live-call summary for cross-worker Live Monitor aggregation."""
+    cid = str(call_id or "").strip()
+    if not cid:
+        return
+    r = get_redis()
+    if r is None:
+        return
+    try:
+        import json
+
+        await r.setex(
+            f"{MONITOR_SESSION_KEY_PREFIX}{cid}",
+            MONITOR_SESSION_TTL_SECONDS,
+            json.dumps(payload),
+        )
+        await r.sadd(MONITOR_SESSION_SET, cid)
+        await r.expire(MONITOR_SESSION_SET, MONITOR_SESSION_TTL_SECONDS)
+    except Exception as e:
+        logger.debug("upsert_monitor_session(%s) failed: %s", cid, e)
+
+
+async def remove_monitor_session(call_id: str) -> None:
+    cid = str(call_id or "").strip()
+    if not cid:
+        return
+    r = get_redis()
+    if r is None:
+        return
+    try:
+        await r.delete(f"{MONITOR_SESSION_KEY_PREFIX}{cid}")
+        await r.srem(MONITOR_SESSION_SET, cid)
+    except Exception as e:
+        logger.debug("remove_monitor_session(%s) failed: %s", cid, e)
+
+
+async def list_remote_monitor_sessions() -> list[dict]:
+    """Read live-call summaries published by any worker."""
+    r = get_redis()
+    if r is None:
+        return []
+    try:
+        import json
+
+        call_ids = list(await r.smembers(MONITOR_SESSION_SET))
+    except Exception as e:
+        logger.debug("list_remote_monitor_sessions smembers failed: %s", e)
+        return []
+
+    sessions: list[dict] = []
+    for cid in call_ids:
+        key = f"{MONITOR_SESSION_KEY_PREFIX}{cid}"
+        try:
+            raw = await r.get(key)
+        except Exception:
+            raw = None
+        if not raw:
+            try:
+                await r.srem(MONITOR_SESSION_SET, cid)
+            except Exception:
+                pass
+            continue
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            continue
+        if isinstance(payload, dict) and payload.get("call_id"):
+            sessions.append(payload)
+    return sessions
