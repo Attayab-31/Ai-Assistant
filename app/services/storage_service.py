@@ -115,8 +115,9 @@ class StorageService:
     async def delete_recording(self, object_path: str) -> bool:
         """Delete a stored recording object by its ``{bucket}/{name}`` path.
 
-        Used when a call is hard-deleted so recordings don't linger in storage.
-        Returns True on success (or if storage isn't configured / already gone).
+        Returns True on successful delete. Returns False when storage is not
+        configured, the path is empty, the path is an external URL, or the
+        delete request fails.
         """
         if not self.base_url or not self.secret_key or not object_path:
             return False

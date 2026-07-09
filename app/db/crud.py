@@ -5,14 +5,17 @@ Provides async functions for creating, reading, updating, and deleting
 records across all models. Used by API routes and background tasks.
 """
 
+import asyncio
 import json
 import logging
+import time
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import (
     and_,
+    cast,
     delete,
     desc,
     extract,
@@ -22,6 +25,7 @@ from sqlalchemy import (
     select,
     update,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -144,6 +148,27 @@ async def seed_defaults(db: AsyncSession) -> None:
         )
 
     await ensure_screening_questions_v2(db)
+    await ensure_screening_questions_spanish_locales(db)
+
+
+async def ensure_screening_questions_spanish_locales(db: AsyncSession) -> bool:
+    """Backfill missing locales.es on built-in questions from seed defaults."""
+    from app.core.question_flow import merge_seed_spanish_locales, normalize_questions
+    from app.core.seed_data import load_seed_questions
+
+    raw = await get_setting_value(db, "screening_questions", [])
+    if not raw or not isinstance(raw, list):
+        return False
+    seed_by_state = {str(q["state"]): q for q in load_seed_questions()}
+    merged, updated = merge_seed_spanish_locales(raw, seed_by_state)
+    if not updated:
+        return False
+    normalized = normalize_questions(merged)
+    await set_setting(db, "screening_questions", json.dumps(normalized))
+    logger.info(
+        "Backfilled Spanish locales on %d screening question(s)", updated
+    )
+    return True
 
 
 async def ensure_screening_questions_v2(db: AsyncSession) -> bool:
@@ -201,6 +226,36 @@ async def get_call_by_call_id(db: AsyncSession, call_id: str) -> Call | None:
     return result.scalar_one_or_none()
 
 
+async def get_call_by_call_id_for_update(
+    db: AsyncSession, call_id: str
+) -> Call | None:
+    """Get call by call_id with FOR UPDATE lock (RMW safety)."""
+    result = await db.execute(
+        select(Call)
+        .where(Call.call_id == call_id, Call.is_deleted == False)
+        .with_for_update()
+    )
+    return result.scalar_one_or_none()
+
+
+async def wait_for_call_by_call_id(
+    db: AsyncSession,
+    call_id: str,
+    *,
+    timeout: float = 3.0,
+    interval: float = 0.1,
+) -> Call | None:
+    """Poll until a call row exists or *timeout* elapses (webhook ordering races)."""
+    deadline = time.monotonic() + timeout
+    while True:
+        call = await get_call_by_call_id(db, call_id)
+        if call is not None:
+            return call
+        if time.monotonic() >= deadline:
+            return None
+        await asyncio.sleep(interval)
+
+
 async def get_call_by_uuid(db: AsyncSession, call_uuid: uuid.UUID) -> Call | None:
     """Get call by internal UUID."""
     result = await db.execute(
@@ -222,6 +277,133 @@ async def update_call(
         return await get_call_by_call_id(db, call_id)
     await db.flush()
     return await get_call_by_call_id(db, call_id)
+
+
+async def update_call_if_active(
+    db: AsyncSession, call_id: str, *, commit: bool = True, **kwargs
+) -> bool:
+    """Update a call only while it is still ``initiated`` or ``in_progress``.
+
+    Returns True when a row was updated. Never overwrites ``completed``,
+    ``failed``, or ``abandoned`` (race-safe vs late finalize / abandon).
+    """
+    kwargs["updated_at"] = datetime.now(UTC)
+    result = await db.execute(
+        update(Call)
+        .where(
+            Call.call_id == call_id,
+            Call.is_deleted == False,
+            Call.status.in_(("initiated", "in_progress")),
+        )
+        .values(**kwargs)
+    )
+    if commit:
+        await db.commit()
+    else:
+        await db.flush()
+    return (result.rowcount or 0) > 0
+
+
+STREAM_STOP_DB_KEY = "stream_stop_requested_at"
+
+
+def _error_log_merge_expr(patch: dict) -> Any:
+    return func.coalesce(Call.error_log, cast("{}", JSONB)).op("||")(cast(patch, JSONB))
+
+
+async def merge_call_error_log(
+    db: AsyncSession,
+    call_id: str,
+    patch: dict,
+    *,
+    commit: bool = True,
+) -> bool:
+    """Atomically merge keys into a call's error_log JSON."""
+    if not patch:
+        return False
+    result = await db.execute(
+        update(Call)
+        .where(Call.call_id == call_id, Call.is_deleted == False)
+        .values(
+            error_log=_error_log_merge_expr(patch),
+            updated_at=datetime.now(UTC),
+        )
+    )
+    if commit:
+        await db.commit()
+    else:
+        await db.flush()
+    return (result.rowcount or 0) > 0
+
+
+async def persist_stream_stop_request(db: AsyncSession, call_id: str) -> bool:
+    """Persist a cross-worker hangup stop on the call row (Redis fallback)."""
+    call = await get_call_by_call_id_for_update(db, call_id)
+    if call is None or call.status not in ("initiated", "in_progress"):
+        return False
+    log = dict(call.error_log or {})
+    if log.get(STREAM_STOP_DB_KEY):
+        return True
+    log[STREAM_STOP_DB_KEY] = datetime.now(UTC).isoformat()
+    await update_call(db, call_id, error_log=log, commit=True)
+    return True
+
+
+async def is_stream_stop_requested(db: AsyncSession, call_id: str) -> bool:
+    """True when a hangup stop was persisted on the call row."""
+    call = await get_call_by_call_id(db, call_id)
+    if call is None:
+        return False
+    log = call.error_log if isinstance(call.error_log, dict) else {}
+    return bool(log.get(STREAM_STOP_DB_KEY))
+
+
+async def clear_stream_stop_request(db: AsyncSession, call_id: str) -> None:
+    """Remove a persisted hangup stop after the media stream has shut down."""
+    call = await get_call_by_call_id_for_update(db, call_id)
+    if call is None:
+        return
+    log = dict(call.error_log or {})
+    if STREAM_STOP_DB_KEY not in log:
+        return
+    del log[STREAM_STOP_DB_KEY]
+    await update_call(db, call_id, error_log=log or None, commit=True)
+
+
+async def mark_call_abandoned_if_active(
+    db: AsyncSession,
+    call_id: str,
+    *,
+    commit: bool = True,
+    error_log: dict | None = None,
+) -> bool:
+    """Mark a call abandoned only when still ``initiated`` or ``in_progress``.
+
+    Atomic compare-and-set: never overwrites ``completed``, ``failed``, or
+    ``abandoned``. Returns True when a row was updated.
+    """
+    now = datetime.now(UTC)
+    values: dict[str, Any] = {
+        "status": "abandoned",
+        "ended_at": now,
+        "updated_at": now,
+    }
+    if error_log is not None:
+        values["error_log"] = _error_log_merge_expr(error_log)
+    result = await db.execute(
+        update(Call)
+        .where(
+            Call.call_id == call_id,
+            Call.is_deleted == False,
+            Call.status.in_(("initiated", "in_progress")),
+        )
+        .values(**values)
+    )
+    if commit:
+        await db.commit()
+    else:
+        await db.flush()
+    return (result.rowcount or 0) > 0
 
 
 async def list_calls(
@@ -329,19 +511,45 @@ async def hard_delete_call(db: AsyncSession, call_uuid: uuid.UUID) -> bool:
 async def purge_calls_before(
     db: AsyncSession, cutoff: datetime, *, batch_size: int = 500
 ) -> int:
-    """Hard-delete calls created before ``cutoff`` (CASCADE removes tenants)."""
+    """Hard-delete calls created before ``cutoff`` (CASCADE removes tenants).
+
+    Any stored recording is removed from storage first so objects don't orphan
+    when the DB row (the only pointer to them) is deleted — this holds even if
+    ``retention_calls_days`` is shorter than ``retention_recording_days``."""
+    from app.services.recording_cleanup import recording_pointer_safe_to_drop
+
     total = 0
     while True:
-        ids_result = await db.execute(
-            select(Call.id).where(Call.created_at < cutoff).limit(batch_size)
-        )
-        ids = [row[0] for row in ids_result.all()]
-        if not ids:
+        rows = (
+            await db.execute(
+                select(Call.id, Call.recording_url)
+                .where(
+                    Call.created_at < cutoff,
+                    Call.is_deleted == False,  # noqa: E712
+                )
+                .order_by(Call.created_at, Call.id)
+                .limit(batch_size)
+            )
+        ).all()
+        if not rows:
             break
-        result = await db.execute(delete(Call).where(Call.id.in_(ids)))
+        safe_ids: list[uuid.UUID] = []
+        for call_id, recording_url in rows:
+            if await recording_pointer_safe_to_drop(recording_url):
+                safe_ids.append(call_id)
+            else:
+                logger.warning(
+                    "Skipping call purge for %s — recording delete and orphan "
+                    "queue both failed (%s)",
+                    call_id,
+                    recording_url,
+                )
+        if not safe_ids:
+            break
+        result = await db.execute(delete(Call).where(Call.id.in_(safe_ids)))
         await db.commit()
         total += result.rowcount or 0
-        if len(ids) < batch_size:
+        if len(rows) < batch_size:
             break
     return total
 
@@ -349,21 +557,41 @@ async def purge_calls_before(
 async def purge_soft_deleted_calls_before(
     db: AsyncSession, cutoff: datetime, *, batch_size: int = 500
 ) -> int:
-    """Hard-delete legacy soft-deleted calls last touched before ``cutoff``."""
+    """Hard-delete legacy soft-deleted calls last touched before ``cutoff``.
+
+    Removes each call's stored recording first so storage objects don't orphan
+    when the row is deleted."""
+    from app.services.recording_cleanup import recording_pointer_safe_to_drop
+
     total = 0
     while True:
-        ids_result = await db.execute(
-            select(Call.id)
-            .where(Call.is_deleted == True, Call.updated_at < cutoff)
-            .limit(batch_size)
-        )
-        ids = [row[0] for row in ids_result.all()]
-        if not ids:
+        rows = (
+            await db.execute(
+                select(Call.id, Call.recording_url)
+                .where(Call.is_deleted == True, Call.updated_at < cutoff)  # noqa: E712
+                .order_by(Call.updated_at, Call.id)
+                .limit(batch_size)
+            )
+        ).all()
+        if not rows:
             break
-        result = await db.execute(delete(Call).where(Call.id.in_(ids)))
+        safe_ids: list[uuid.UUID] = []
+        for call_id, recording_url in rows:
+            if await recording_pointer_safe_to_drop(recording_url):
+                safe_ids.append(call_id)
+            else:
+                logger.warning(
+                    "Skipping soft-deleted call purge for %s — recording delete "
+                    "and orphan queue both failed (%s)",
+                    call_id,
+                    recording_url,
+                )
+        if not safe_ids:
+            break
+        result = await db.execute(delete(Call).where(Call.id.in_(safe_ids)))
         await db.commit()
         total += result.rowcount or 0
-        if len(ids) < batch_size:
+        if len(rows) < batch_size:
             break
     return total
 
@@ -419,7 +647,9 @@ async def close_stale_calls(
                 status="failed",
                 ended_at=now,
                 updated_at=now,
-                error_log={"stale_cleanup": "Auto-closed after exceeding stale window"},
+                error_log=_error_log_merge_expr(
+                    {"stale_cleanup": "Auto-closed after exceeding stale window"}
+                ),
             )
         )
         await db.commit()
@@ -434,18 +664,27 @@ async def get_recordings_before(
     cutoff: datetime,
     *,
     limit: int = 200,
-    offset: int = 0,
-) -> list[tuple[uuid.UUID, str]]:
+    after_created_at: datetime | None = None,
+    after_id: uuid.UUID | None = None,
+) -> list[tuple[uuid.UUID, str, datetime]]:
     """Return (call_id, recording_url) for calls older than ``cutoff`` that
     still have a stored recording, so the storage object can be removed."""
+    conditions = [Call.recording_url.isnot(None), Call.created_at < cutoff]
+    if after_created_at is not None and after_id is not None:
+        conditions.append(
+            or_(
+                Call.created_at > after_created_at,
+                and_(Call.created_at == after_created_at, Call.id > after_id),
+            )
+        )
+
     result = await db.execute(
-        select(Call.id, Call.recording_url)
-        .where(Call.recording_url.isnot(None), Call.created_at < cutoff)
-        .order_by(Call.created_at)
+        select(Call.id, Call.recording_url, Call.created_at)
+        .where(*conditions)
+        .order_by(Call.created_at, Call.id)
         .limit(limit)
-        .offset(offset)
     )
-    return [(row[0], row[1]) for row in result.all()]
+    return [(row[0], row[1], row[2]) for row in result.all()]
 
 
 async def clear_recording_url(db: AsyncSession, call_id: uuid.UUID) -> None:
@@ -547,6 +786,127 @@ async def get_tenant_by_id(db: AsyncSession, tenant_id: uuid.UUID) -> Tenant | N
     """Get a tenant by its internal UUID."""
     result = await db.execute(select(Tenant).where(Tenant.id == tenant_id))
     return result.scalar_one_or_none()
+
+
+SIDE_EFFECTS_CLAIM_KEY = "side_effects_claimed"
+SIDE_EFFECTS_CHANNELS_KEY = "side_effects_channels"
+VALID_SIDE_EFFECT_CHANNELS = frozenset({"email", "crm", "latency"})
+
+
+def _side_effect_channels_claimed(nd: dict) -> dict[str, str]:
+    """Return channel -> claimed_at ISO timestamps from tenant normalized_data."""
+    if nd.get(SIDE_EFFECTS_CLAIM_KEY) is True:
+        ts = str(nd.get("side_effects_claimed_at") or "")
+        return {channel: ts for channel in VALID_SIDE_EFFECT_CHANNELS}
+    raw = nd.get(SIDE_EFFECTS_CHANNELS_KEY)
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        channel: str(ts)
+        for channel, ts in raw.items()
+        if channel in VALID_SIDE_EFFECT_CHANNELS and ts not in (None, "")
+    }
+
+
+async def is_finalize_side_effects_claimed(
+    db: AsyncSession, tenant_id: uuid.UUID
+) -> bool:
+    """True when legacy all-channels claim is set for this tenant."""
+    tenant = await get_tenant_by_id(db, tenant_id)
+    if tenant is None:
+        return False
+    nd = tenant.normalized_data if isinstance(tenant.normalized_data, dict) else {}
+    return bool(nd.get(SIDE_EFFECTS_CLAIM_KEY))
+
+
+async def is_finalize_side_effect_channel_claimed(
+    db: AsyncSession, tenant_id: uuid.UUID, channel: str
+) -> bool:
+    """True when a specific post-call side effect was already queued."""
+    if channel not in VALID_SIDE_EFFECT_CHANNELS:
+        return False
+    tenant = await get_tenant_by_id(db, tenant_id)
+    if tenant is None:
+        return False
+    nd = tenant.normalized_data if isinstance(tenant.normalized_data, dict) else {}
+    return channel in _side_effect_channels_claimed(nd)
+
+
+async def claim_finalize_side_effects(
+    db: AsyncSession, tenant_id: uuid.UUID
+) -> bool:
+    """Atomically claim all post-call side-effect channels (legacy helper)."""
+    result = await db.execute(
+        select(Tenant).where(Tenant.id == tenant_id).with_for_update()
+    )
+    tenant = result.scalar_one_or_none()
+    if tenant is None:
+        return False
+    nd = dict(tenant.normalized_data or {})
+    if nd.get(SIDE_EFFECTS_CLAIM_KEY) or _side_effect_channels_claimed(nd):
+        return False
+    claimed_at = datetime.now(UTC).isoformat()
+    nd[SIDE_EFFECTS_CLAIM_KEY] = True
+    nd["side_effects_claimed_at"] = claimed_at
+    nd[SIDE_EFFECTS_CHANNELS_KEY] = {
+        channel: claimed_at for channel in VALID_SIDE_EFFECT_CHANNELS
+    }
+    tenant.normalized_data = nd
+    await db.commit()
+    return True
+
+
+async def claim_finalize_side_effect_channel(
+    db: AsyncSession, tenant_id: uuid.UUID, channel: str
+) -> bool:
+    """Atomically claim one side-effect channel; False if already claimed."""
+    if channel not in VALID_SIDE_EFFECT_CHANNELS:
+        return False
+    result = await db.execute(
+        select(Tenant).where(Tenant.id == tenant_id).with_for_update()
+    )
+    tenant = result.scalar_one_or_none()
+    if tenant is None:
+        return False
+    nd = dict(tenant.normalized_data or {})
+    channels = _side_effect_channels_claimed(nd)
+    if channel in channels:
+        return False
+    channels = dict(channels)
+    channels[channel] = datetime.now(UTC).isoformat()
+    nd[SIDE_EFFECTS_CHANNELS_KEY] = channels
+    nd.pop(SIDE_EFFECTS_CLAIM_KEY, None)
+    nd.pop("side_effects_claimed_at", None)
+    tenant.normalized_data = nd
+    await db.commit()
+    return True
+
+
+async def release_finalize_side_effect_channel(
+    db: AsyncSession, tenant_id: uuid.UUID, channel: str
+) -> None:
+    """Undo a channel claim when Celery enqueue fails (Redis-down path)."""
+    if channel not in VALID_SIDE_EFFECT_CHANNELS:
+        return
+    result = await db.execute(
+        select(Tenant).where(Tenant.id == tenant_id).with_for_update()
+    )
+    tenant = result.scalar_one_or_none()
+    if tenant is None:
+        return
+    nd = dict(tenant.normalized_data or {})
+    if nd.get(SIDE_EFFECTS_CLAIM_KEY) is True:
+        return
+    channels = dict(_side_effect_channels_claimed(nd))
+    if channel not in channels:
+        return
+    channels.pop(channel, None)
+    if channels:
+        nd[SIDE_EFFECTS_CHANNELS_KEY] = channels
+    else:
+        nd.pop(SIDE_EFFECTS_CHANNELS_KEY, None)
+    tenant.normalized_data = nd
+    await db.commit()
 
 
 async def update_tenant(
@@ -968,6 +1328,54 @@ async def set_setting(
     return setting, True
 
 
+async def set_settings_bulk(
+    db: AsyncSession,
+    updates: dict[str, str],
+    updated_by: uuid.UUID | None = None,
+) -> bool:
+    """Create/update multiple settings atomically, then invalidate cache once.
+
+    Returns True when cache invalidation succeeded, False otherwise. DB writes
+    are committed in a single transaction so partial admin saves are avoided.
+    """
+    if not updates:
+        return True
+
+    keys = list(updates.keys())
+    result = await db.execute(select(SystemSetting).where(SystemSetting.key.in_(keys)))
+    existing = {s.key: s for s in result.scalars()}
+    now = datetime.now(UTC)
+
+    for key, value in updates.items():
+        is_sensitive = is_sensitive_setting_key(key)
+        setting = existing.get(key)
+        if setting is not None:
+            setting.value = value
+            setting.is_sensitive = is_sensitive
+            if updated_by:
+                setting.updated_by = updated_by
+            setting.updated_at = now
+            continue
+        db.add(
+            SystemSetting(
+                key=key,
+                value=value,
+                updated_by=updated_by,
+                is_sensitive=is_sensitive,
+            )
+        )
+
+    await db.commit()
+    from app.services.settings_cache import invalidate_settings_cache
+
+    try:
+        await invalidate_settings_cache()
+    except Exception as exc:
+        logger.warning("Settings cache invalidation failed for bulk save: %s", exc)
+        return False
+    return True
+
+
 async def get_all_settings(db: AsyncSession) -> dict[str, str]:
     """Get all settings as a flat dict (sensitive values masked)."""
     result = await db.execute(select(SystemSetting))
@@ -982,30 +1390,110 @@ async def get_all_settings(db: AsyncSession) -> dict[str, str]:
     }
 
 
+async def is_number_blacklisted(db: AsyncSession, phone_number: str) -> bool:
+    """True when *phone_number* (after sanitization) is on the DNC list."""
+    from app.utils.helpers import sanitize_phone_number
+
+    normalized = sanitize_phone_number(phone_number)
+    if not normalized:
+        return False
+    blacklist = await get_setting_value(db, "blacklisted_numbers", [])
+    return normalized in (blacklist or [])
+
+
 async def add_to_blacklist(
     db: AsyncSession, phone_number: str, updated_by: uuid.UUID | None = None
-) -> list[str]:
+) -> tuple[list[str], bool]:
     """Add a phone number to the Do-Not-Call blacklist (idempotent)."""
-    blacklist = await get_setting_value(db, "blacklisted_numbers", [])
-    if phone_number and phone_number not in blacklist:
-        blacklist.append(phone_number)
-        await set_setting(
-            db, "blacklisted_numbers", json.dumps(blacklist), updated_by=updated_by
-        )
-    return blacklist
+    if not phone_number:
+        current = await get_setting_value(db, "blacklisted_numbers", [])
+        return current, True
+    return await _mutate_blacklist_numbers(
+        db,
+        updated_by=updated_by,
+        add_phone=phone_number,
+    )
 
 
 async def remove_from_blacklist(
     db: AsyncSession, phone_number: str, updated_by: uuid.UUID | None = None
-) -> list[str]:
+) -> tuple[list[str], bool]:
     """Remove a phone number from the Do-Not-Call blacklist (idempotent)."""
-    blacklist = await get_setting_value(db, "blacklisted_numbers", [])
-    if phone_number in blacklist:
-        blacklist.remove(phone_number)
-        await set_setting(
-            db, "blacklisted_numbers", json.dumps(blacklist), updated_by=updated_by
+    if not phone_number:
+        current = await get_setting_value(db, "blacklisted_numbers", [])
+        return current, True
+    return await _mutate_blacklist_numbers(
+        db,
+        updated_by=updated_by,
+        remove_phone=phone_number,
+    )
+
+
+async def _mutate_blacklist_numbers(
+    db: AsyncSession,
+    *,
+    updated_by: uuid.UUID | None = None,
+    add_phone: str | None = None,
+    remove_phone: str | None = None,
+) -> tuple[list[str], bool]:
+    """Atomically mutate blacklisted_numbers with a row lock.
+
+    Prevents lost updates when two admin requests edit the JSON list at once.
+    """
+    row = (
+        await db.execute(
+            select(SystemSetting)
+            .where(SystemSetting.key == "blacklisted_numbers")
+            .with_for_update()
         )
-    return blacklist
+    ).scalar_one_or_none()
+
+    current: list[str] = []
+    if row and row.value:
+        try:
+            parsed = json.loads(row.value)
+            if isinstance(parsed, list):
+                current = [str(item) for item in parsed if item]
+        except (TypeError, json.JSONDecodeError):
+            current = []
+
+    if add_phone and add_phone not in current:
+        current.append(add_phone)
+    if remove_phone and remove_phone in current:
+        current.remove(remove_phone)
+        await db.execute(
+            update(Tenant)
+            .where(Tenant.phone_number == remove_phone)
+            .values(is_blacklisted=False, updated_at=datetime.now(UTC))
+        )
+
+    payload = json.dumps(current)
+    if row is None:
+        row = SystemSetting(
+            key="blacklisted_numbers",
+            value=payload,
+            value_type="json",
+            updated_by=updated_by,
+            is_sensitive=False,
+        )
+        db.add(row)
+    else:
+        row.value = payload
+        row.value_type = "json"
+        row.is_sensitive = False
+        row.updated_at = datetime.now(UTC)
+        if updated_by:
+            row.updated_by = updated_by
+
+    await db.commit()
+    from app.services.settings_cache import invalidate_settings_cache
+
+    try:
+        await invalidate_settings_cache()
+    except Exception as exc:
+        logger.warning("Settings cache invalidation failed for blacklist update: %s", exc)
+        return current, False
+    return current, True
 
 
 # ──────────────────────────────────────────────────────────────────────────────

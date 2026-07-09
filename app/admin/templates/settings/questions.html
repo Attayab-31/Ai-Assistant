@@ -131,12 +131,12 @@
   </div>
 
   <div id="warningBanner" class="stack" style="margin-bottom: 12px;">
-    {% for w in save_warnings %}
-    <div class="banner banner-warn" style="padding:10px 12px;font-size:13px;">{{ w }}</div>
-    {% endfor %}
-    <div id="liveScoringWarn" class="admin-warn" style="display:none;padding:10px 12px;border-radius:8px;background:#fef3c7;color:#92400e;font-size:13px;"></div>
-    <div id="liveIdentityWarn" class="admin-warn" style="display:none;padding:10px 12px;border-radius:8px;background:#fee2e2;color:#991b1b;font-size:13px;"></div>
-    <div id="liveLocaleWarn" class="admin-warn" style="display:none;padding:10px 12px;border-radius:8px;background:#e0f2fe;color:#075985;font-size:13px;"></div>
+    <div id="liveValidationError" class="banner banner-error" style="display:none;padding:10px 12px;font-size:13px;"></div>
+    <div id="liveWarningsList" class="stack">
+      {% for w in save_warnings %}
+      <div class="banner banner-warn live-warn-item" style="padding:10px 12px;font-size:13px;">{{ w }}</div>
+      {% endfor %}
+    </div>
   </div>
 
   <p class="text-muted" style="margin: 0 0 12px; font-size: 13px;">
@@ -273,7 +273,8 @@
     const val = cond.value;
     if (op === 'eq' && (val === true || val === 'true')) return 'if_yes';
     if (op === 'eq' && (val === false || val === 'false')) return 'if_no';
-    if (op === 'truthy') return 'if_answered';
+    if (op === 'asked') return 'if_asked';
+    if (op === 'truthy') return 'if_has_value';
     return 'custom';
   }
 
@@ -314,7 +315,8 @@
     if (mode === 'always' || !field) return null;
     if (mode === 'if_yes') return { field, operator: 'eq', value: true };
     if (mode === 'if_no') return { field, operator: 'eq', value: false };
-    if (mode === 'if_answered') return { field, operator: 'truthy' };
+    if (mode === 'if_has_value') return { field, operator: 'truthy' };
+    if (mode === 'if_asked') return { field, operator: 'asked' };
     return null;
   }
 
@@ -405,7 +407,7 @@
     const mode = card.querySelector('.simple-cond-mode')?.value || 'always';
     const prior = card.querySelector('.simple-cond-prior-wrap');
     const adv = card.querySelector('.adv-cond-panel');
-    if (prior) prior.style.display = ['if_yes', 'if_no', 'if_answered'].includes(mode) ? 'block' : 'none';
+    if (prior) prior.style.display = ['if_yes', 'if_no', 'if_has_value', 'if_asked'].includes(mode) ? 'block' : 'none';
     if (adv) adv.style.display = mode === 'custom' ? 'block' : 'none';
   }
 
@@ -637,7 +639,7 @@
         <label>Field <input class="edit-cond-field" value="${esc(cond.field || '')}"></label>
         <label>Operator <select class="edit-cond-op">${opOpts}</select></label>
         <label>Value (for eq/ne) <input class="edit-cond-value" value="${esc(valStr)}" placeholder="true, false, or text"></label>
-        <p class="text-muted" style="margin:8px 0 0;font-size:12px;font-weight:normal;">Operators: <code>eq</code> equals, <code>ne</code> not equal, <code>truthy</code> has a value, <code>falsy</code> empty/no.</p>
+        <p class="text-muted" style="margin:8px 0 0;font-size:12px;font-weight:normal;">Operators: <code>eq</code> equals, <code>ne</code> not equal, <code>truthy</code> has a value, <code>falsy</code> empty/no, <code>asked</code> question was reached on the call, <code>gt</code>/<code>gte</code>/<code>lt</code>/<code>lte</code> numeric compare, <code>in</code> comma-separated list.</p>
       </fieldset>`;
   }
 
@@ -695,7 +697,8 @@
                 <option value="always" ${condMode === 'always' ? 'selected' : ''}>Always (every caller hears it)</option>
                 <option value="if_yes" ${condMode === 'if_yes' ? 'selected' : ''}>Only if a previous answer was Yes</option>
                 <option value="if_no" ${condMode === 'if_no' ? 'selected' : ''}>Only if a previous answer was No</option>
-                <option value="if_answered" ${condMode === 'if_answered' ? 'selected' : ''}>Only if a previous question was answered</option>
+                <option value="if_has_value" ${condMode === 'if_has_value' ? 'selected' : ''}>Only if previous answer has a value</option>
+                <option value="if_asked" ${condMode === 'if_asked' ? 'selected' : ''}>Only if previous question was asked on the call</option>
                 <option value="custom" ${condMode === 'custom' ? 'selected' : ''}>Custom rule (in Advanced)</option>
               </select>
             </label>
@@ -1234,17 +1237,6 @@
     return Array.from(document.querySelectorAll('.question-card')).map(collectFromCard);
   }
 
-  function missingContactFields(questions) {
-    const present = new Set();
-    questions.forEach(q => {
-      if (!q.active) return;
-      (q.extract_fields || []).forEach(f => present.add(f));
-    });
-    return Object.entries(CONTACT_FIELDS)
-      .filter(([k]) => !present.has(k))
-      .map(([, label]) => label);
-  }
-
   function scoringPointsTotal(questions) {
     return questions.reduce((sum, q) => {
       if (q.scoring && q.scoring.enabled) return sum + (q.scoring.max_points || 0);
@@ -1252,13 +1244,89 @@
     }, 0);
   }
 
-  function countMissingSpanishQuestionOverrides(questions) {
-    return questions.filter(q =>
-      q &&
-      q.active !== false &&
-      q.answer_type !== 'language_choice' &&
-      !String((((q.locales || {}).es || {}).question || '')).trim()
-    ).length;
+  let warningsDebounceTimer = null;
+  let lastQuestionAnalysis = null;
+
+  async function fetchQuestionAnalysis(questions) {
+    const r = await fetch('/api/settings/questions/warnings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ questions }),
+    });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      throw new Error(formatApiError(e, r.statusText));
+    }
+    return r.json();
+  }
+
+  function renderLiveWarnings(data) {
+    const valErr = document.getElementById('liveValidationError');
+    if (valErr) {
+      const runtimeErr = (data.runtime_errors || []).join(' ');
+      if (data.validation_error) {
+        valErr.style.display = 'block';
+        valErr.textContent = data.validation_error;
+      } else if (runtimeErr) {
+        valErr.style.display = 'block';
+        valErr.textContent = runtimeErr;
+      } else {
+        valErr.style.display = 'none';
+        valErr.textContent = '';
+      }
+    }
+    const list = document.getElementById('liveWarningsList');
+    if (!list) return;
+    list.innerHTML = '';
+    (data.warnings || []).forEach((w) => {
+      const div = document.createElement('div');
+      div.className = 'banner banner-warn live-warn-item';
+      div.style.cssText = 'padding:10px 12px;font-size:13px;';
+      if (w.includes('Spanish')) {
+        div.innerHTML = esc(w) + ' <button type="button" class="btn btn-secondary btn-sm" style="margin-left:8px;">Show questions</button>';
+        const btn = div.querySelector('button');
+        if (btn) btn.onclick = () => highlightMissingSpanishOverrides();
+      } else {
+        div.textContent = w;
+      }
+      list.appendChild(div);
+    });
+  }
+
+  function updateLiveWarnings() {
+    const questions = collectQuestions();
+    const total = scoringPointsTotal(questions);
+    const scoringEl = document.getElementById('scoringTotal');
+    if (scoringEl) scoringEl.textContent = String(total);
+    clearTimeout(warningsDebounceTimer);
+    warningsDebounceTimer = setTimeout(async () => {
+      try {
+        const data = await fetchQuestionAnalysis(questions);
+        lastQuestionAnalysis = data;
+        renderLiveWarnings(data);
+      } catch (e) {
+        console.warn('Question warnings check failed:', e);
+      }
+    }, 300);
+  }
+
+  async function confirmSaveWarnings(questions) {
+    let data = lastQuestionAnalysis;
+    try {
+      data = await fetchQuestionAnalysis(questions);
+      lastQuestionAnalysis = data;
+      renderLiveWarnings(data);
+    } catch (e) {
+      showMessage(e.message, true);
+      return false;
+    }
+    if (data.validation_error) {
+      showMessage(data.validation_error, true);
+      return false;
+    }
+    const notes = data.warnings || [];
+    if (!notes.length) return true;
+    return confirm('Save anyway?\n\n' + notes.join('\n\n'));
   }
 
   function questionMissingSpanishOverride(meta) {
@@ -1295,55 +1363,6 @@
     }, 3500);
   }
 
-  function updateLiveWarnings() {
-    const questions = collectQuestions();
-    const total = scoringPointsTotal(questions);
-    const scoringEl = document.getElementById('scoringTotal');
-    if (scoringEl) scoringEl.textContent = String(total);
-    const scoreWarn = document.getElementById('liveScoringWarn');
-    if (scoreWarn) {
-      if (total > 100) {
-        scoreWarn.style.display = 'block';
-        scoreWarn.textContent = 'Warning: Enabled scoring points total ' + total + ' exceeds 100; scores are normalized at runtime.';
-      } else {
-        scoreWarn.style.display = 'none';
-      }
-    }
-    const missing = missingContactFields(questions);
-    const idWarn = document.getElementById('liveIdentityWarn');
-    if (idWarn) {
-      if (missing.length) {
-        idWarn.style.display = 'block';
-        idWarn.textContent = 'Warning: No active question collects ' + missing.join(', ') + '. Result emails and CRM may lack contact info.';
-      } else {
-        idWarn.style.display = 'none';
-      }
-    }
-    const localeWarn = document.getElementById('liveLocaleWarn');
-    if (localeWarn) {
-      const missingEs = countMissingSpanishQuestionOverrides(questions);
-      if (missingEs > 0) {
-        localeWarn.style.display = 'block';
-        localeWarn.innerHTML = `${missingEs} active question${missingEs === 1 ? '' : 's'} still using English fallback in Spanish calls. <button type="button" id="showMissingSpanishBtn" class="btn btn-secondary btn-sm" style="margin-left:8px;">Show questions</button>`;
-        const btn = document.getElementById('showMissingSpanishBtn');
-        if (btn) btn.onclick = () => highlightMissingSpanishOverrides();
-      } else {
-        localeWarn.style.display = 'none';
-        localeWarn.innerHTML = '';
-      }
-    }
-  }
-
-  function confirmSaveWarnings(questions) {
-    const missing = missingContactFields(questions);
-    const total = scoringPointsTotal(questions);
-    const notes = [];
-    if (missing.length) notes.push('Missing contact fields: ' + missing.join(', ') + '.');
-    if (total > 100) notes.push('Scoring points total is ' + total + ' (above 100).');
-    if (!notes.length) return true;
-    return confirm('Save anyway?\n\n' + notes.join('\n'));
-  }
-
   function formatApiError(payload, fallback) {
     const detail = payload && payload.detail;
     if (!detail) return fallback || 'Request failed';
@@ -1365,7 +1384,7 @@
 
   async function saveAllQuestions() {
     const questions = collectQuestions();
-    if (!confirmSaveWarnings(questions)) return;
+    if (!(await confirmSaveWarnings(questions))) return;
     try {
       const r = await fetch('/api/settings/questions', {
         method: 'PUT',
@@ -1379,7 +1398,10 @@
       const data = await r.json().catch(() => ({}));
       let msg = 'Questions saved.';
       if (data.warnings && data.warnings.length) msg += ' Note: ' + data.warnings.join(' ');
-      showMessage(msg);
+      if (data.runtime_errors && data.runtime_errors.length) {
+        msg += ' Warning: live calls may not use these questions until fixed.';
+      }
+      showMessage(msg, !!(data.warnings && data.warnings.length) || !!(data.runtime_errors && data.runtime_errors.length));
       setTimeout(() => location.reload(), 1200);
     } catch (e) { showMessage(e.message, true); }
   }

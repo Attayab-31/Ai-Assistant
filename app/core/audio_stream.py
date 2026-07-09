@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import io
 import logging
 import re
@@ -23,18 +24,21 @@ from fastapi import WebSocket, WebSocketDisconnect
 
 from app.core import call_handler
 from app.core.call_logging import Phase, vdebug, verror, vinfo, vwarn
-from app.core.call_settings import CallProviderBundle
+from app.core.call_settings import stt_model_for_provider
 from app.core.conversation import (
     STT_EMPTY_STRIKE_LIMIT,
     ConversationSession,
+    capture_turn_snapshot,
+    handle_hangup_cancelled_turn,
+    handle_turn_timeout,
     is_echo_of_agent,
     mark_recovery_played,
-    plan_turn_timeout_recovery,
     reset_turn_streaming,
     should_suppress_silence_nudge,
     turn_budget_seconds,
 )
-from app.core.streaming_stt import DeepgramStreamingSession
+from app.core.streaming_stt import DeepgramStreamingSession, StreamingSttRelay
+from app.core.voice_language import deepgram_stt_language
 from app.utils.audio import (
     any_audio_to_mulaw,
     chunk_audio,
@@ -46,6 +50,39 @@ from app.utils.audio import (
 from config import settings
 
 logger = logging.getLogger(__name__)
+
+
+async def _await_turn_or_hangup(
+    turn_task: asyncio.Task,
+    stop_event: asyncio.Event,
+    *,
+    session: ConversationSession,
+) -> tuple[str, list[bytes], bool] | None:
+    """Wait for an in-flight turn, or cancel it when hangup sets ``stop_event``.
+
+    Returns the turn result, or ``None`` when hangup ended the turn early.
+    Raises ``asyncio.CancelledError`` when barge-in cancels the task.
+    """
+    hangup_watch = asyncio.create_task(stop_event.wait())
+    try:
+        finished, _ = await asyncio.wait(
+            {turn_task, hangup_watch},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if turn_task.done() and not turn_task.cancelled():
+            return await turn_task
+        if hangup_watch in finished or stop_event.is_set():
+            if not turn_task.done():
+                call_handler.interrupt_turn_tts(session)
+                turn_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await turn_task
+            return None
+        return await turn_task
+    finally:
+        hangup_watch.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await hangup_watch
 
 
 def _json_default(obj):
@@ -105,6 +142,61 @@ UtteranceItem = tuple[str, bytes]
 # Streaming STT: finalized transcript strings from Deepgram live endpointing
 TranscriptItem = str
 
+# One reconnect attempt before degrading live Deepgram to batch transcription.
+STREAMING_STT_RECONNECT_TIMEOUT_S = 2.0
+STT_STREAM_RECONNECT_FLAG = "stt_stream_reconnects"
+# Keep only a bounded recent window of caller audio for live->batch handoff.
+STREAMING_TO_BATCH_CARRYOVER_MAX_BYTES = MAX_BUFFER_BYTES
+
+
+def agent_turn_in_progress(
+    *,
+    ai_speaking: bool,
+    outbound_pending: bool,
+    turn_task_active: bool,
+) -> bool:
+    """True while agent audio or the in-flight LLM/TTS turn is still active."""
+    return ai_speaking or outbound_pending or turn_task_active
+
+
+def should_drop_streaming_transcript(
+    *,
+    transcript: str,
+    listen_active: bool,
+    caller_speech_pending: bool,
+    agent_turn_in_progress: bool,
+) -> bool:
+    """Drop stray echo finalizations during agent speech unless capture opened."""
+    if not (transcript or "").strip():
+        return False
+    if listen_active or caller_speech_pending:
+        return False
+    return agent_turn_in_progress
+
+
+def should_preserve_pending_transcripts(
+    *,
+    caller_speech_pending: bool,
+    queued_transcripts: int,
+) -> bool:
+    """Keep queued STT turns when caller speech arrived during an agent turn."""
+    return caller_speech_pending or queued_transcripts > 0
+
+
+def append_streaming_carryover_audio(
+    buffer: bytearray,
+    chunk: bytes,
+    *,
+    max_bytes: int = STREAMING_TO_BATCH_CARRYOVER_MAX_BYTES,
+) -> None:
+    """Append recent caller audio for potential live->batch STT failover."""
+    if not chunk:
+        return
+    buffer.extend(chunk)
+    overflow = len(buffer) - max_bytes
+    if overflow > 0:
+        del buffer[:overflow]
+
 _groq_stt_fallback = None
 
 
@@ -163,28 +255,15 @@ async def transcribe_buffer(
     audio_bytes: bytes,
     *,
     input_format: str = "mulaw",
-    session: ConversationSession | None = None,
+    session: ConversationSession,
 ) -> str:
     """Transcribe audio using the call's STT provider (+ Groq fallback)."""
     from app.core.call_handler import get_call_providers
-    from config import provider_registry
 
     if not audio_bytes:
         return ""
 
-    if session is not None:
-        providers = get_call_providers(session)
-    else:
-        providers = CallProviderBundle(
-            llm=provider_registry.llm,
-            stt=provider_registry.stt,
-            tts=provider_registry.tts,
-            llm_name=provider_registry.llm_name,
-            stt_name=provider_registry.stt_name,
-            tts_name=provider_registry.tts_name,
-            auto_fallback_enabled=provider_registry.auto_fallback_enabled,
-            stt_fallback_provider=provider_registry.stt_fallback_provider,
-        )
+    providers = get_call_providers(session)
 
     duration_sec = audio_duration_seconds(audio_bytes, input_format)
     timeout = stt_timeout_for_duration(duration_sec)
@@ -268,9 +347,10 @@ async def transcribe_buffer(
         from app.providers.stt.groq_stt import GroqSTTProvider
 
         primary_is_groq = isinstance(providers.stt, GroqSTTProvider)
-        groq_ok = not primary_is_groq and bool(settings.groq_api_key)
-        deepgram_ok = not isinstance(providers.stt, DeepgramSTTProvider) and bool(
-            settings.deepgram_api_key
+        api_keys = providers.api_keys
+        groq_ok = not primary_is_groq and api_keys.configured("groq")
+        deepgram_ok = not isinstance(providers.stt, DeepgramSTTProvider) and api_keys.configured(
+            "deepgram"
         )
 
         if pref == "groq" and groq_ok:
@@ -291,9 +371,27 @@ async def transcribe_buffer(
                 else any_audio_to_mulaw(audio_bytes)
             )
             if chosen == "groq":
-                fallback_stt = _get_groq_stt_fallback()
+                from app.core.voice_language import groq_stt_language
+
+                lang = groq_stt_language(
+                    session.call_language if session is not None else "en"
+                )
+                fallback_stt = GroqSTTProvider(
+                    model=stt_model_for_provider(providers, "groq"),
+                    language=lang,
+                    api_key=api_keys.groq,
+                )
             else:
-                fallback_stt = DeepgramSTTProvider(model=settings.deepgram_model)
+                from app.core.voice_language import deepgram_stt_language
+
+                lang = deepgram_stt_language(
+                    session.call_language if session is not None else "en"
+                )
+                fallback_stt = DeepgramSTTProvider(
+                    model=stt_model_for_provider(providers, "deepgram"),
+                    language=lang,
+                    api_key=api_keys.deepgram,
+                )
             transcript = await asyncio.wait_for(
                 fallback_stt.transcribe_chunk(mulaw),
                 timeout=timeout,
@@ -332,6 +430,75 @@ async def transcribe_buffer(
     return ""
 
 
+STT_EMPTY_RETRY_TEXT_EN = (
+    "Sorry, I didn't catch that. Could you repeat that for me?"
+)
+STT_EMPTY_RETRY_TEXT_ES = (
+    "Perdon, no escuche bien. Podria repetirlo, por favor?"
+)
+# Back-compat alias for tests and any external imports.
+STT_EMPTY_RETRY_TEXT = STT_EMPTY_RETRY_TEXT_EN
+
+
+def stt_empty_retry_text(session: ConversationSession) -> str:
+    """Localized retry when STT returns no words (matches silence-nudge language)."""
+    if str(getattr(session, "call_language", "en")).strip().lower().startswith("es"):
+        return STT_EMPTY_RETRY_TEXT_ES
+    return STT_EMPTY_RETRY_TEXT_EN
+
+
+async def handle_stt_empty_transcript(
+    session: ConversationSession,
+    *,
+    call_id: str,
+    log_detail: str = "",
+    emit_response: Callable[[str], Awaitable[None]] | None = None,
+    enqueue_retry: Callable[[list[bytes]], Awaitable[None]] | None = None,
+    await_playback_done: Callable[[], Awaitable[None]] | None = None,
+) -> tuple[bool, bool]:
+    """Shared empty-STT handling for live streaming and batch paths.
+
+    Returns (should_end_call, retry_audio_queued).
+    """
+    if log_detail:
+        logger.info("[%s] STT empty %s", call_id, log_detail)
+    else:
+        logger.info("[%s] STT empty", call_id)
+
+    session.stt_empty_strikes += 1
+    if session.stt_empty_strikes >= STT_EMPTY_STRIKE_LIMIT:
+        fail_text, fail_parts, is_complete = (
+            await call_handler.end_call_for_provider_failure(
+                session,
+                "stt",
+                (
+                    f"{session.stt_empty_strikes} consecutive "
+                    "empty transcriptions"
+                ),
+            )
+        )
+        if fail_text and emit_response is not None:
+            await emit_response(fail_text)
+        if fail_parts and enqueue_retry is not None:
+            await enqueue_retry(fail_parts)
+        if is_complete and await_playback_done is not None:
+            await await_playback_done()
+        return True, False
+
+    retry_text = stt_empty_retry_text(session)
+    session.add_transcript("AI", retry_text)
+    if emit_response is not None:
+        await emit_response(retry_text)
+    retry_audio = await call_handler.synthesize_with_fallback(
+        retry_text, session
+    )
+    retry_queued = False
+    if retry_audio and enqueue_retry is not None:
+        await enqueue_retry([retry_audio])
+        retry_queued = True
+    return False, retry_queued
+
+
 async def run_bidirectional_audio_stream(
     websocket: WebSocket,
     call_id: str,
@@ -361,13 +528,17 @@ async def run_bidirectional_audio_stream(
     utterance_queue: asyncio.Queue[UtteranceItem] = asyncio.Queue(maxsize=8)
     transcript_queue: asyncio.Queue[TranscriptItem | None] = asyncio.Queue(maxsize=8)
     audio_feed_queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=512)
+    # Recent caller audio captured while live STT is active. If live STT fails
+    # and we switch to batch mode, we replay this window so failover does not
+    # drop in-flight speech around the handoff boundary.
+    streaming_carryover_buffer = bytearray()
     outbound_queue: asyncio.Queue[OutboundItem | bytes] = asyncio.Queue()
     ai_speaking = asyncio.Event()
     tenant_may_speak = asyncio.Event()
     listen_active = asyncio.Event()
     stop_event = asyncio.Event()
-    turn_in_progress = asyncio.Event()
     current_turn_task: list[asyncio.Task | None] = [None]
+    enqueue_tasks: set[asyncio.Task] = set()
     call_handler.register_stream_stop(call_id, stop_event)
     # A hangup may have landed while this WebSocket was still connecting (before
     # the stop_event existed). If so, wind down immediately instead of running a
@@ -375,7 +546,14 @@ async def run_bidirectional_audio_stream(
     if getattr(session, "pending_hangup", False):
         logger.info("[%s] Hangup arrived before stream start — stopping", call_id)
         stop_event.set()
-    streaming_stt: DeepgramStreamingSession | None = None
+    elif await call_handler.check_stream_stop_signal(call_id):
+        logger.info(
+            "[%s] Cross-worker hangup stop detected at stream start — stopping",
+            call_id,
+        )
+        session.pending_hangup = True
+        stop_event.set()
+    streaming_stt: DeepgramStreamingSession | StreamingSttRelay | None = None
     # Set by the reader on a real barge-in so the sender aborts mid-utterance.
     interrupt_event = asyncio.Event()
     # Transcript-gated barge-in: ignore speech detected within this monotonic
@@ -478,6 +656,17 @@ async def run_bidirectional_audio_stream(
             logger.debug("[%s] Dropped %s stale input item(s)", call_id, dropped)
         return dropped
 
+    def _agent_turn_active() -> bool:
+        task = current_turn_task[0]
+        return agent_turn_in_progress(
+            ai_speaking=ai_speaking.is_set(),
+            outbound_pending=not outbound_queue.empty(),
+            turn_task_active=task is not None and not task.done(),
+        )
+
+    def _caller_has_listen_floor() -> bool:
+        return listen_active.is_set() and not _agent_turn_active()
+
     def _apply_barge_in() -> None:
         """Stop current playback and hand the turn back to the caller.
 
@@ -487,6 +676,8 @@ async def run_bidirectional_audio_stream(
         or drop the caller's input: doing so created a re-ask feedback loop and
         swallowed real answers.
         """
+        session.caller_speech_pending = True
+        call_handler.interrupt_turn_tts(session)
         interrupt_event.set()
         listen_active.set()
         while not outbound_queue.empty():
@@ -517,26 +708,173 @@ async def run_bidirectional_audio_stream(
         except Exception as e:
             logger.debug("[%s] debug emit failed: %s", call_id, e)
 
+    def _streaming_is_lost() -> bool:
+        relay = streaming_stt
+        if relay is None:
+            return True
+        return bool(getattr(relay, "lost", False))
+
+    def _drain_transcript_queue() -> int:
+        dropped = 0
+        while not transcript_queue.empty():
+            try:
+                transcript_queue.get_nowait()
+                dropped += 1
+            except asyncio.QueueEmpty:
+                break
+        return dropped
+
+    def _enqueue_audio_feed_chunk(chunk: bytes) -> None:
+        """Best-effort enqueue for live STT without silently losing newest audio."""
+        try:
+            audio_feed_queue.put_nowait(chunk)
+            return
+        except asyncio.QueueFull:
+            pass
+        # Drop one oldest chunk to preserve current speech (newest audio is
+        # usually more relevant for turn-finalization than stale buffered audio).
+        try:
+            audio_feed_queue.get_nowait()
+        except asyncio.QueueEmpty:
+            return
+        try:
+            audio_feed_queue.put_nowait(chunk)
+        except asyncio.QueueFull:
+            logger.warning(
+                "[%s] audio feed queue saturated, dropping chunk after eviction",
+                call_id,
+            )
+
+    async def _try_recover_streaming_stt() -> bool:
+        """Try one live-socket restart; returns True when streaming is healthy again."""
+        nonlocal streaming_stt
+        if streaming_stt is None:
+            return False
+        attempts = int(session.control_flags.get(STT_STREAM_RECONNECT_FLAG, 0) or 0)
+        if attempts >= 1:
+            return False
+        session.control_flags[STT_STREAM_RECONNECT_FLAG] = attempts + 1
+        try:
+            await asyncio.wait_for(
+                streaming_stt.restart(),
+                timeout=STREAMING_STT_RECONNECT_TIMEOUT_S,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[%s] Streaming STT reconnect failed: %s",
+                call_id,
+                exc,
+            )
+            return False
+        if _streaming_is_lost():
+            return False
+        session.add_provider_event(
+            service="stt",
+            provider=session.stt_provider or "deepgram",
+            role="primary",
+            outcome="recovered",
+            detail="Live streaming STT restarted after disconnect",
+        )
+        logger.info("[%s] Streaming STT reconnected — resuming live mode", call_id)
+        return True
+
+    async def _degrade_to_batch_stt(*, reason: str) -> None:
+        """Stop live Deepgram and use buffered batch transcription for this call."""
+        nonlocal streaming_stt_enabled, streaming_stt
+        if not streaming_stt_enabled:
+            return
+        streaming_stt_enabled = False
+        session.add_error("stt_streaming_lost", reason)
+        session.add_provider_event(
+            service="stt",
+            provider=session.stt_provider or "deepgram",
+            role="primary",
+            outcome="degraded",
+            detail="Falling back to batch transcription for remainder of call",
+        )
+        logger.warning(
+            "[%s] Streaming STT lost — switching to batch transcription: %s",
+            call_id,
+            reason,
+        )
+        while not audio_feed_queue.empty():
+            try:
+                pending = audio_feed_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            if pending:
+                append_streaming_carryover_audio(streaming_carryover_buffer, pending)
+        try:
+            audio_feed_queue.put_nowait(None)
+        except asyncio.QueueFull:
+            pass
+        if len(streaming_carryover_buffer) >= MIN_UTTERANCE_BYTES:
+            carryover = bytes(streaming_carryover_buffer)
+            streaming_carryover_buffer.clear()
+            await _enqueue_utterance(utterance_queue, carryover, call_id)
+            if emit_debug_events:
+                await _emit(
+                    "debug",
+                    message=(
+                        f"Recovered {len(carryover)} bytes of in-flight audio "
+                        "after live STT disconnect"
+                    ),
+                )
+        relay = streaming_stt
+        streaming_stt = None
+        session.streaming_stt_relay = None
+        if relay is not None:
+            try:
+                await relay.close()
+            except Exception as exc:
+                logger.debug("[%s] streaming STT close after degrade: %s", call_id, exc)
+        # Preserve already-finalized caller turns collected during the failure
+        # window; the worker should process them after we switch to batch mode.
+
+    async def _handle_streaming_stt_failure(*, reason: str) -> None:
+        """Reconnect live STT once, else degrade to batch mode for the rest of the call."""
+        if await _try_recover_streaming_stt():
+            return
+        await _degrade_to_batch_stt(reason=reason)
+
     async def _on_speech_started(text: str) -> None:
         """Transcript-gated barge-in: Deepgram heard real words from the caller.
 
-        This replaces raw audio-energy VAD for streaming sessions. Because the
-        speech model only emits words for actual speech (not HVAC, clicks, or
-        silence), this all but eliminates the false barge-ins that energy VAD
-        produced on noisy / hands-free setups.
+        Capture and interrupt are split: caller words during an agent turn always
+        open capture (so stt_bridge won't drop the finalize), while playback is
+        only stopped when the speech is not agent echo.
         """
         nonlocal barge_in_cooldown_until
-        if not ai_speaking.is_set():
+        if _caller_has_listen_floor():
             return
-        if time.monotonic() < barge_in_cooldown_until:
-            return
-        # Guard against the agent's own (echoed) speech being transcribed back
-        # as a "caller" interruption on speakerphone / hands-free setups.
+
+        session.caller_speech_pending = True
+        listen_active.set()
+
         if is_echo_of_agent(text, session):
             logger.debug(
-                "[%s] Ignoring agent echo for barge-in: %r", call_id, text[:40]
+                "[%s] Caller speech captured; skipping barge-in (echo): %r",
+                call_id,
+                text[:40],
             )
+            session.caller_speech_pending = False
+            listen_active.clear()
             return
+
+        if not _agent_turn_active():
+            if time.monotonic() < barge_in_cooldown_until:
+                return
+            return
+
+        # Cooldown only blocks echo tails after the agent finished — never during
+        # active TTS or while more outbound audio is still queued.
+        if (
+            not ai_speaking.is_set()
+            and outbound_queue.empty()
+            and time.monotonic() < barge_in_cooldown_until
+        ):
+            return
+
         session.interruption_count += 1
         logger.info(
             "[%s] Barge-in (speech detected: %r, interruption #%s)",
@@ -588,7 +926,7 @@ async def run_bidirectional_audio_stream(
                     # streaming STT is active (the normal case) barge-in is
                     # transcript-gated in _on_speech_started instead, which does
                     # not false-trigger on noise / echo / silence.
-                    if not streaming_stt_enabled and ai_speaking.is_set():
+                    if not streaming_stt_enabled and _agent_turn_active():
                         if chunk_is_silence:
                             barge_in_speech_chunks = max(0, barge_in_speech_chunks - 1)
                             continue
@@ -605,13 +943,10 @@ async def run_bidirectional_audio_stream(
                         barge_in_speech_chunks = 0
 
                     if streaming_stt_enabled:
-                        try:
-                            audio_feed_queue.put_nowait(chunk)
-                        except asyncio.QueueFull:
-                            logger.warning(
-                                "[%s] audio feed queue full, dropping chunk",
-                                call_id,
-                            )
+                        append_streaming_carryover_audio(
+                            streaming_carryover_buffer, chunk
+                        )
+                        _enqueue_audio_feed_chunk(chunk)
                         continue
 
                     audio_buffer.extend(chunk)
@@ -641,9 +976,11 @@ async def run_bidirectional_audio_stream(
                             logger.info(
                                 f"[{call_id}] Utterance detected ({buf_len} bytes)"
                             )
-                            asyncio.create_task(
+                            task = asyncio.create_task(
                                 _enqueue_utterance(utterance_queue, utterance, call_id)
                             )
+                            enqueue_tasks.add(task)
+                            task.add_done_callback(enqueue_tasks.discard)
                             if emit_debug_events:
                                 await _emit(
                                     "debug",
@@ -701,12 +1038,14 @@ async def run_bidirectional_audio_stream(
                 if stop_event.is_set():
                     break
                 # We feed Deepgram continuously (incl. while the agent speaks)
-                # so transcript-gated barge-in works. But a turn finalized while
-                # the agent is still speaking and the listen gate is closed is
-                # almost always echo/cross-talk — a genuine interruption already
-                # opened the mic via _on_speech_started. Drop those stray turns
-                # so they can't be replayed later as a stale "answer".
-                if transcript and ai_speaking.is_set() and not listen_active.is_set():
+                # so transcript-gated barge-in works. Drop stray echo finals only
+                # when the agent still owns the turn and capture was not opened.
+                if should_drop_streaming_transcript(
+                    transcript=transcript,
+                    listen_active=listen_active.is_set(),
+                    caller_speech_pending=session.caller_speech_pending,
+                    agent_turn_in_progress=_agent_turn_active(),
+                ):
                     logger.debug(
                         "[%s] Dropping turn finalized during agent speech: %r",
                         call_id,
@@ -729,15 +1068,18 @@ async def run_bidirectional_audio_stream(
         async def _on_interim(text: str) -> None:
             await _emit("debug", message=f"…{text[-40:]}" if len(text) > 40 else text)
 
-        streaming_stt = DeepgramStreamingSession(
+        streaming_stt = StreamingSttRelay(
             model=_model,
             encoding=_stt_encoding,
             sample_rate=8000,
+            language=deepgram_stt_language(session.call_language),
             endpointing_ms=int(getattr(session, "deepgram_endpointing_ms", 900) or 900),
             utterance_end_ms=int(getattr(session, "deepgram_utterance_end_ms", 1000) or 1000),
             on_interim=_on_interim if emit_debug_events else None,
             on_speech_started=_on_speech_started,
+            api_key=_providers.api_keys.deepgram,
         )
+        session.streaming_stt_relay = streaming_stt
         try:
             await streaming_stt.start()
         except Exception as e:
@@ -756,6 +1098,7 @@ async def run_bidirectional_audio_stream(
             )
             streaming_stt_enabled = False
             streaming_stt = None
+            session.streaming_stt_relay = None
         else:
             session.stt_provider = _providers.stt_name
             vinfo(
@@ -852,6 +1195,12 @@ async def run_bidirectional_audio_stream(
                         )
                         tenant_may_speak.set()
                         continue
+                    if streaming_stt_enabled and _streaming_is_lost():
+                        await _handle_streaming_stt_failure(
+                            reason="Deepgram live session stopped producing transcripts",
+                        )
+                        tenant_may_speak.set()
+                        continue
                     logger.info(f"[{call_id}] No speech within {listen_timeout}s")
                     if should_suppress_silence_nudge(session):
                         logger.debug(
@@ -884,22 +1233,18 @@ async def run_bidirectional_audio_stream(
 
                 listen_active.clear()
                 session.silence_count = 0
-                session.stt_empty_strikes = 0
+                stt_ms = 0.0
+
+                if streaming_stt_enabled and (transcript or "").strip():
+                    session.caller_speech_pending = False
+                    streaming_carryover_buffer.clear()
 
                 if streaming_stt_enabled:
                     if transcript is None:
                         if stop_event.is_set():
                             break
-                        # Deepgram live socket closed (error or hangup). Do not
-                        # end the call abruptly — fall through to silence
-                        # timeouts until the stream stop event fires.
-                        session.add_error(
-                            "stt_streaming_lost",
-                            "Deepgram live session ended unexpectedly",
-                        )
-                        logger.warning(
-                            "[%s] Streaming STT session ended — using silence handling",
-                            call_id,
+                        await _handle_streaming_stt_failure(
+                            reason="Deepgram live session ended unexpectedly",
                         )
                         tenant_may_speak.set()
                         continue
@@ -911,62 +1256,46 @@ async def run_bidirectional_audio_stream(
                         utterance, input_format=audio_format, session=session
                     )
                     stt_ms = (time.monotonic() - t0) * 1000
-                    if not transcript.strip():
+                    if (transcript or "").strip():
                         logger.info(
-                            f"[{call_id}] STT empty "
-                            f"({len(utterance)} bytes {audio_format}, {stt_ms:.0f}ms)"
+                            "[%s] STT %.0fms: %r", call_id, stt_ms, transcript[:60]
                         )
-                        session.stt_empty_strikes += 1
-                        if session.stt_empty_strikes >= STT_EMPTY_STRIKE_LIMIT:
-                            (
-                                fail_text,
-                                fail_parts,
-                                is_complete,
-                            ) = await call_handler.end_call_for_provider_failure(
-                                session,
-                                "stt",
-                                (
-                                    f"{session.stt_empty_strikes} consecutive "
-                                    "empty transcriptions"
-                                ),
-                            )
-                            if fail_text:
-                                await _emit(
-                                    "response",
-                                    text=fail_text,
-                                    speaker="AI",
-                                    session=session.to_dict(),
-                                )
-                            if fail_parts:
-                                await enqueue_audio(fail_parts, turn_end=True)
-                            if is_complete:
-                                await _await_outbound_playback_done()
-                                stop_event.set()
-                                break
-                            continue
-                        retry_text = (
-                            "Sorry, I didn't catch that. Could you repeat that for me?"
-                        )
-                        session.add_transcript("AI", retry_text)
+
+                if not (transcript or "").strip():
+                    log_detail = (
+                        f"({len(utterance)} bytes {audio_format}, {stt_ms:.0f}ms)"
+                        if not streaming_stt_enabled
+                        else "(streaming)"
+                    )
+
+                    async def _emit_stt_response(text: str) -> None:
                         await _emit(
                             "response",
-                            text=retry_text,
+                            text=text,
                             speaker="AI",
                             session=session.to_dict(),
                         )
-                        retry_audio = await call_handler.synthesize_with_fallback(
-                            retry_text, session
-                        )
-                        if retry_audio:
-                            await enqueue_audio([retry_audio], turn_end=True)
-                        else:
-                            tenant_may_speak.set()
-                        continue
-                    logger.info("[%s] STT %.0fms: %r", call_id, stt_ms, transcript[:60])
 
-                if not (transcript or "").strip():
-                    tenant_may_speak.set()
+                    async def _enqueue_stt_retry(parts: list[bytes]) -> None:
+                        await enqueue_audio(parts, turn_end=True)
+
+                    should_end, retry_queued = await handle_stt_empty_transcript(
+                        session,
+                        call_id=call_id,
+                        log_detail=log_detail,
+                        emit_response=_emit_stt_response if emit_debug_events else None,
+                        enqueue_retry=_enqueue_stt_retry,
+                        await_playback_done=_await_outbound_playback_done,
+                    )
+                    if should_end:
+                        stop_event.set()
+                        break
+                    if not retry_queued:
+                        tenant_may_speak.set()
                     continue
+
+                session.stt_empty_strikes = 0
+                session.control_flags.pop(STT_STREAM_RECONNECT_FLAG, None)
 
                 vinfo(
                     logger,
@@ -1015,6 +1344,7 @@ async def run_bidirectional_audio_stream(
                         phase=Phase.ECHO,
                         reason="agent_echo",
                     )
+                    session.caller_speech_pending = False
                     await _emit("debug", message="Still listening…")
                     tenant_may_speak.set()
                     continue
@@ -1027,6 +1357,7 @@ async def run_bidirectional_audio_stream(
                 pre_state = session.current_state
                 pre_data_keys = len(session.extracted_data)
                 pre_pending = session.pending_confirmation is not None
+                turn_snapshot = capture_turn_snapshot(session)
                 turn_llm_before = session.llm_latency_ms_total
                 turn_tts_before = session.tts_latency_ms_total
 
@@ -1039,6 +1370,8 @@ async def run_bidirectional_audio_stream(
                     audio: bytes, is_last: bool, _turn_start: float = t1
                 ) -> None:
                     nonlocal first_audio_ms, audio_streamed, stream_turn_end_sent
+                    if session.turn_interrupted:
+                        return
                     if first_audio_ms is None:
                         first_audio_ms = (time.monotonic() - _turn_start) * 1000
                     audio_streamed = True
@@ -1080,7 +1413,6 @@ async def run_bidirectional_audio_stream(
                 # the entire 15s outer guard on deep fallback chains.
                 turn_budget = turn_budget_seconds(session)
                 session.turn_deadline_monotonic = t1 + turn_budget
-                turn_in_progress.set()
                 _drain_pending_input()
                 current_turn_task[0] = asyncio.create_task(
                     asyncio.wait_for(
@@ -1094,19 +1426,46 @@ async def run_bidirectional_audio_stream(
                     )
                 )
                 try:
+                    turn_result = await _await_turn_or_hangup(
+                        current_turn_task[0],
+                        stop_event,
+                        session=session,
+                    )
+                    if turn_result is None:
+                        vinfo(
+                            logger,
+                            "Turn cancelled — caller hung up",
+                            session=session,
+                            call_id=call_id,
+                            phase=Phase.CALL_END,
+                            reason="hangup_mid_turn",
+                        )
+                        handle_hangup_cancelled_turn(session, turn_snapshot)
+                        await call_handler.drain_turn_tts_tasks(session)
+                        break
                     (
                         response_text,
                         audio_parts,
                         is_complete,
-                    ) = await current_turn_task[0]
+                    ) = turn_result
                 except asyncio.CancelledError:
                     vinfo(
                         logger,
-                        "Turn cancelled (barge-in or hangup)",
+                        "Turn cancelled (barge-in)",
                         session=session,
                         call_id=call_id,
                         phase=Phase.BARGE_IN,
                     )
+                    # Repair history so the cancelled turn doesn't leave a
+                    # dangling user message (no matching assistant) or a
+                    # half-written streaming AI transcript line.
+                    session.reconcile_interrupted_turn()
+                    await call_handler.drain_turn_tts_tasks(session)
+                    if stop_event.is_set() or getattr(
+                        session, "pending_hangup", False
+                    ):
+                        handle_hangup_cancelled_turn(session, turn_snapshot)
+                        break
                     tenant_may_speak.set()
                     continue
                 except TimeoutError:
@@ -1122,11 +1481,13 @@ async def run_bidirectional_audio_stream(
                     )
                     task = current_turn_task[0]
                     if task is not None and not task.done():
+                        call_handler.interrupt_turn_tts(session)
                         task.cancel()
                         try:
                             await task
                         except asyncio.CancelledError:
                             pass
+                    await call_handler.drain_turn_tts_tasks(session)
                     session.add_error(
                         "turn_timeout",
                         f"Exceeded {turn_budget:.0f}s turn budget",
@@ -1144,7 +1505,9 @@ async def run_bidirectional_audio_stream(
                             "timed_out": True,
                         }
                     )
-                    retry_text = plan_turn_timeout_recovery(session, transcript)
+                    retry_text = handle_turn_timeout(
+                        session, transcript, turn_snapshot
+                    )
                     vinfo(
                         logger,
                         f"Turn timeout recovery: {retry_text[:80]!r}",
@@ -1179,7 +1542,6 @@ async def run_bidirectional_audio_stream(
                         tenant_may_speak.set()
                     continue
                 finally:
-                    turn_in_progress.clear()
                     current_turn_task[0] = None
                     session.turn_deadline_monotonic = None
                 turn_ms = (time.monotonic() - t1) * 1000
@@ -1268,10 +1630,12 @@ async def run_bidirectional_audio_stream(
                     logger.debug("[%s] Response text empty but has audio", call_id)
                     await _emit("debug", message="Processing response…")
 
-                # The next question is about to play — discard any audio that
-                # arrived during the turn we just processed (split-answer tails,
-                # echoes) so it can't be applied to the upcoming question.
-                if not is_complete:
+                # The next question is about to play — discard stale input unless
+                # caller speech arrived during this agent turn (incl. TTS gaps).
+                if not is_complete and not should_preserve_pending_transcripts(
+                    caller_speech_pending=session.caller_speech_pending,
+                    queued_transcripts=transcript_queue.qsize(),
+                ):
                     _drain_pending()
 
                 if stop_event.is_set():
@@ -1342,6 +1706,7 @@ async def run_bidirectional_audio_stream(
         except Exception as e:
             logger.error("[%s] worker error: %s", call_id, e, exc_info=True)
             session.add_error("ws_worker_error", str(e))
+            stop_event.set()
         finally:
             await outbound_queue.put(b"")
 
@@ -1365,6 +1730,14 @@ async def run_bidirectional_audio_stream(
                         tenant_may_speak.set()
                         logger.debug("[%s] Agent turn complete — listening", call_id)
                         if emit_debug_events:
+                            # Browser queue may have live-streamed chunks tagged
+                            # turn_end=false; signal completion without extra audio.
+                            await _emit(
+                                "play_wav",
+                                audio_wav_b64="",
+                                duration_ms=0,
+                                turn_end=True,
+                            )
                             await _emit("agent_done")
                     continue
 
@@ -1455,19 +1828,26 @@ async def run_bidirectional_audio_stream(
         await stop_event.wait()
     finally:
         call_handler.unregister_stream_stop(call_id)
-        from app.core.redis_client import clear_stream_stop_signal
-
-        await clear_stream_stop_signal(call_id)
+        await call_handler.clear_stream_stop_signals(call_id)
         try:
             audio_feed_queue.put_nowait(None)
         except asyncio.QueueFull:
             pass
         if streaming_stt is not None:
             await streaming_stt.close()
+        session.streaming_stt_relay = None
         for t in tasks:
             if not t.done():
                 t.cancel()
         for t in tasks:
+            try:
+                await t
+            except (asyncio.CancelledError, Exception):
+                pass
+        for t in list(enqueue_tasks):
+            if not t.done():
+                t.cancel()
+        for t in list(enqueue_tasks):
             try:
                 await t
             except (asyncio.CancelledError, Exception):

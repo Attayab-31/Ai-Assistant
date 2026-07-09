@@ -146,6 +146,7 @@
     });
     const {
       enqueueAgentAudio,
+      markAgentTurnEnding,
       stopAgentPlayback,
       clearPendingUnmute,
     } = playback;
@@ -180,6 +181,7 @@
         ws = new WebSocket(data.ws_url);
 
         ws.onopen = async () => {
+          VoiceCall.unlockAudioPlayback("audioPlayer", 0.9);
           ws.send(JSON.stringify({ event: "start" }));
           try {
             voiceMic = new VoiceCall.VoiceStreamingMic(ws);
@@ -193,10 +195,16 @@
 
         ws.onmessage = (ev) => {
           let msg; try { msg = JSON.parse(ev.data); } catch (_) { return; }
-          if (msg.event === "play_wav" && msg.audio_wav_b64) {
-            enqueueAgentAudio(msg.audio_wav_b64, msg.turn_end);
+          if (msg.event === "play_wav") {
+            if (msg.audio_wav_b64) {
+              enqueueAgentAudio(msg.audio_wav_b64, msg.turn_end);
+            } else if (msg.turn_end) {
+              markAgentTurnEnding();
+            }
           } else if (msg.event === "interrupt") {
             stopAgentPlayback();
+          } else if (msg.event === "agent_done") {
+            markAgentTurnEnding();
           } else if (msg.event === "transcript") {
             if (phase === "live") $("caption").textContent = "…";
           } else if (msg.event === "complete") {

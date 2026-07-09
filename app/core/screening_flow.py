@@ -1258,6 +1258,19 @@ _META_STATE_TRANSITIONS = {
 }
 
 
+_INVALID_STATE_TRANSITION_COUNT = 0
+
+
+def invalid_state_transition_count() -> int:
+    """Observability counter for unexpected state-machine jumps (tests/metrics)."""
+    return _INVALID_STATE_TRANSITION_COUNT
+
+
+def reset_invalid_state_transition_count() -> None:
+    global _INVALID_STATE_TRANSITION_COUNT
+    _INVALID_STATE_TRANSITION_COUNT = 0
+
+
 def validate_state_transition(
     from_state: str,
     to_state: str,
@@ -1302,7 +1315,15 @@ def log_state_transition(
     )
 
     if not is_valid:
+        global _INVALID_STATE_TRANSITION_COUNT
+        _INVALID_STATE_TRANSITION_COUNT += 1
         logger.warning(
             f"[{call_id}] INVALID STATE TRANSITION DETECTED: "
-            f"{from_state} → {to_state}"
+            f"{from_state} → {to_state}",
+            extra={
+                "invalid_state_transition": True,
+                "from_state": from_state,
+                "to_state": to_state,
+                "reason": reason,
+            },
         )

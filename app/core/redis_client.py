@@ -154,6 +154,34 @@ async def clear_stream_stop_signal(call_id: str) -> None:
     await cache_delete(f"stream:stop:{call_id}")
 
 
+async def set_finalize_inflight(call_id: str, ttl_seconds: int = 60) -> None:
+    """Mark that a worker is finalizing this call (cross-process hangup guard)."""
+    r = get_redis()
+    if r is None:
+        return
+    try:
+        await r.setex(f"finalize:inflight:{call_id}", ttl_seconds, "1")
+    except Exception as e:
+        logger.debug("set_finalize_inflight(%s) failed: %s", call_id, e)
+
+
+async def is_finalize_inflight(call_id: str) -> bool:
+    """True when another worker is actively finalizing this call."""
+    r = get_redis()
+    if r is None:
+        return False
+    try:
+        return bool(await r.get(f"finalize:inflight:{call_id}"))
+    except Exception as e:
+        logger.debug("is_finalize_inflight(%s) failed: %s", call_id, e)
+        return False
+
+
+async def clear_finalize_inflight(call_id: str) -> None:
+    """Remove finalize-inflight marker after finalize completes."""
+    await cache_delete(f"finalize:inflight:{call_id}")
+
+
 async def revoke_token(token: str, ttl_seconds: int) -> None:
     """Denylist a JWT until it expires (logout / forced sign-out)."""
     r = get_redis()
@@ -170,10 +198,10 @@ async def is_token_revoked(token: str) -> bool:
     """True when the token was explicitly revoked before expiry."""
     r = get_redis()
     if r is None or not token:
-        return False
+        return bool(token) and settings.is_production
     digest = hashlib.sha256(token.encode()).hexdigest()
     try:
         return bool(await r.get(f"auth:revoked:{digest}"))
     except Exception as e:
         logger.debug("is_token_revoked failed: %s", e)
-        return False
+        return settings.is_production

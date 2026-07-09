@@ -48,6 +48,7 @@
           <option value="true" {% if settings.get('email_notifications_enabled', 'true')|string|lower == 'true' %}selected{% endif %}>Yes — notify me</option>
           <option value="false" {% if settings.get('email_notifications_enabled', 'true')|string|lower != 'true' %}selected{% endif %}>No — don't email me</option>
         </select>
+        <p class="text-muted">Turning off email does not stop CRM delivery if CRM notifications are enabled under General settings.</p>
       </div>
       <div class="form-group">
         <label>Which results?</label>

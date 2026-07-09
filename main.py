@@ -13,9 +13,11 @@ import logging
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from slowapi import _rate_limit_exceeded_handler
@@ -43,6 +45,28 @@ logger = logging.getLogger(__name__)
 # ──────────────────────────────────────────────────────────────────────────────
 
 APP_START_TIME = time.time()
+_TZ_REFRESH_INTERVAL_SECONDS = 20.0
+_next_tz_refresh_at = 0.0
+
+
+async def _refresh_display_timezone_if_due() -> None:
+    """Keep per-worker display timezone aligned with shared settings."""
+    global _next_tz_refresh_at
+    now = time.monotonic()
+    if now < _next_tz_refresh_at:
+        return
+    _next_tz_refresh_at = now + _TZ_REFRESH_INTERVAL_SECONDS
+    try:
+        from app.core.call_settings import load_call_settings_snapshot
+        from app.db.database import AsyncSessionLocal
+        from app.utils.helpers import set_display_timezone
+
+        async with AsyncSessionLocal() as db:
+            snapshot = await load_call_settings_snapshot(db)
+            set_display_timezone(snapshot.timezone)
+    except Exception:
+        # Never fail requests on timezone refresh misses.
+        pass
 
 
 @asynccontextmanager
@@ -156,7 +180,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 # Middleware
 # ──────────────────────────────────────────────────────────────────────────────
 
-_CSRF_PROTECTED_PREFIXES = ("/admin/api/", "/api/settings/")
+_CSRF_PROTECTED_PREFIXES = ("/admin/api/", "/api/settings/", "/test/api/")
 _CSRF_PROTECTED_PATHS = frozenset({"/auth/logout"})
 
 # With cookie-based auth we need credentialed CORS, which browsers reject
@@ -169,6 +193,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+if settings.is_production:
+    app_host = (urlparse(settings.app_url).hostname or "").strip()
+    allowed_hosts = [h for h in (app_host, "localhost", "127.0.0.1") if h]
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
 
 
 @app.middleware("http")
@@ -200,6 +228,18 @@ async def security_headers_middleware(request: Request, call_next):
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["X-XSS-Protection"] = "1; mode=block"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data: https:; "
+        "media-src 'self' blob: data:; "
+        "connect-src 'self' wss: https:; "
+        "font-src 'self' data:; "
+        "frame-ancestors 'none'; "
+        "base-uri 'self'; "
+        "form-action 'self'"
+    )
     if settings.is_production:
         response.headers[
             "Strict-Transport-Security"
@@ -210,6 +250,7 @@ async def security_headers_middleware(request: Request, call_next):
 @app.middleware("http")
 async def request_logging_middleware(request: Request, call_next):
     """Log all incoming requests with timing."""
+    await _refresh_display_timezone_if_due()
     start = time.time()
     response = await call_next(request)
     duration_ms = (time.time() - start) * 1000
@@ -257,6 +298,7 @@ async def health_check():
     uptime = time.time() - APP_START_TIME
     db_ok = False
     redis_ok = False
+    celery_health = {"ok": False, "workers": 0, "broker": False, "detail": "Unavailable"}
 
     # Check DB
     try:
@@ -276,6 +318,13 @@ async def health_check():
     except Exception as e:
         logger.warning("Redis health check failed: %s", e)
 
+    try:
+        from app.services.celery_health import check_celery_health
+
+        celery_health = await check_celery_health()
+    except Exception as e:
+        logger.warning("Celery health check failed: %s", e)
+
     providers = provider_registry.get_status()
 
     # The database is the only hard dependency for serving requests, so a DB
@@ -291,6 +340,7 @@ async def health_check():
             "uptime_seconds": round(uptime, 1),
             "database": "connected" if db_ok else "disconnected",
             "redis": "connected" if redis_ok else "disconnected",
+            "celery": celery_health,
             "providers": providers,
         },
         status_code=200 if healthy else 503,

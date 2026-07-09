@@ -19,8 +19,12 @@ async function patchCall(path, body) {
 
 async function resendEmail() {
   try {
-    await apiFetch('/admin/api/calls/' + window._reviewerCallId + '/resend-email', { method: 'POST' });
-    showMessage('Result email queued — it will arrive shortly.');
+    const data = await apiFetch('/admin/api/calls/' + window._reviewerCallId + '/resend-email', { method: 'POST' });
+    let msg = 'Result email queued — it will arrive shortly.';
+    if (data && data.used_live_settings) {
+      msg += ' Using today\'s email settings (no snapshot saved for this call).';
+    }
+    showMessage(msg, !!(data && data.used_live_settings));
   } catch (e) { showMessage(e.message, true); }
 }
 
@@ -57,8 +61,16 @@ async function deleteCall() {
       danger: true,
     });
     if (!ok) return;
-    await apiFetch('/admin/api/calls/' + window._reviewerCallId, { method: 'DELETE' });
-    showMessage('Call deleted. Redirecting…');
+    const data = await apiFetch('/admin/api/calls/' + window._reviewerCallId, { method: 'DELETE' });
+    if (data.recording_delete_failed) {
+      showMessage(
+        (data.warnings && data.warnings[0]) ||
+          'Call deleted, but the recording could not be removed from storage.',
+        true
+      );
+    } else {
+      showMessage('Call deleted. Redirecting…');
+    }
     setTimeout(() => { location.href = '/admin/calls'; }, 1200);
   } catch (e) { showMessage(e.message, true); }
 }

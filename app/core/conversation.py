@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 import time
@@ -10,11 +11,13 @@ from datetime import UTC, date, datetime
 from enum import Enum
 from typing import Any
 
+from app.core.call_settings import NotificationSettingsSnapshot
 from app.core.question_flow import (
     active_extract_fields,
     build_field_maps,
     build_question_slot_config,
     confirm_field_for_question,
+    ConditionalFlowContext,
     count_active_questions,
     count_answered_questions,
     field_answer_types_from_questions,
@@ -22,8 +25,10 @@ from app.core.question_flow import (
     inactive_flow_states,
     localized_question_text,
     next_unanswered_state,
+    needs_readback_confirmation,
     normalize_questions,
     prompt_fields_catalog,
+    readback_prompt_for_state,
     prompt_flow_stats,
     prompt_screening_flow_outline,
     questions_index,
@@ -112,6 +117,14 @@ class ConversationSession:
     provider_failure_message: str = ""
     # Caller-selected language for spoken responses. Defaults to English.
     call_language: str = "en"
+    # Frozen per-call TTS voices for English / Spanish switching.
+    tts_voice_en: str = ""
+    tts_voice_es: str = ""
+    tts_voice_deepgram_es: str = ""
+    tts_voice_google_es: str = ""
+    tts_voices_en_by_provider: dict = field(default_factory=dict)
+    # Set by the live audio stream when Deepgram streaming STT is active.
+    streaming_stt_relay: Any = None
     # Admin-tunable LLM behavior. 0 tokens = use the per-turn tuned default.
     llm_temperature: float = 0.3
     llm_max_tokens: int = 0
@@ -158,6 +171,8 @@ class ConversationSession:
     primary_llm_provider: str = ""
     primary_tts_provider: str = ""
 
+    # Frozen at call start — post-call email/CRM use these, not live admin settings.
+    notification_settings: NotificationSettingsSnapshot | None = None
     call_providers: Any = None
     silence_timeout_seconds: int = 12
     max_call_duration_seconds: int = 600
@@ -171,10 +186,16 @@ class ConversationSession:
     deepgram_endpointing_ms: int = 900
     deepgram_utterance_end_ms: int = 1000
     latency_alert_turn_p95_ms: int = 1200
+    latency_alert_turn_p95_crit_ms: int = 1800
     latency_alert_timeout_rate_pct: float = 2.0
+    latency_alert_timeout_rate_crit_pct: float = 5.0
 
     errors: list[dict] = field(default_factory=list)
     interruption_count: int = 0
+    # Set when Deepgram hears caller words while the agent still owns the turn
+    # (incl. streaming TTS gaps). Keeps finalized transcripts out of the bridge
+    # drop path until the worker consumes them.
+    caller_speech_pending: bool = False
     # Consecutive empty STT results before graceful provider-failure shutdown.
     stt_empty_strikes: int = 0
     # Real LLM token accounting for this call, summed across every LLM call
@@ -220,6 +241,10 @@ class ConversationSession:
     tts_confirm_priority: bool = False
     # True while LLM streaming sentences are updating the last AI transcript line.
     streaming_ai_open: bool = False
+    # Set on barge-in so in-flight TTS skips enqueueing stale audio.
+    turn_interrupted: bool = False
+    # Parallel/pipelined TTS tasks for the current caller turn (cleared each turn).
+    turn_tts_tasks: list = field(default_factory=list, repr=False)
 
     def __post_init__(self) -> None:
         self.questions = normalize_questions(self.questions)
@@ -236,12 +261,23 @@ class ConversationSession:
                 return question
         return questions_index(self.questions).get(self.current_state)
 
+    def conditional_flow_context(self) -> ConditionalFlowContext:
+        return ConditionalFlowContext(
+            answered_states=frozenset(self.answered_states or []),
+            refused_states=frozenset(self.refused_states or []),
+            completed_states=frozenset(self.completed_states or set()),
+            questions=tuple(self.questions or []),
+        )
+
     def next_state(self) -> str:
+        flow_ctx = self.conditional_flow_context()
         next_st = next_unanswered_state(
             self.extracted_data,
             self.skip_states,
             questions=self.questions,
             confirmed_fields=self.confirmed_fields,
+            flow_context=flow_ctx,
+            raw_answers=self.raw_answers,
         )
         if next_st:
             self.current_state = next_st
@@ -266,11 +302,14 @@ class ConversationSession:
         )
 
     def refresh_progress(self) -> None:
+        flow_ctx = self.conditional_flow_context()
         self.questions_answered = count_answered_questions(
             self.extracted_data,
             self.skip_states,
             questions=self.questions,
             confirmed_fields=self.confirmed_fields,
+            flow_context=flow_ctx,
+            raw_answers=self.raw_answers,
         )
         for state in flow_states_in_order(self.questions):
             from app.core.question_flow import (
@@ -281,13 +320,17 @@ class ConversationSession:
             if state in self.refused_states:
                 continue
             q = questions_index(self.questions).get(state)
-            if not q or should_skip_question(q, self.extracted_data):
+            if not q or should_skip_question(
+                q, self.extracted_data, flow_context=flow_ctx
+            ):
                 continue
             if is_question_answered_for_def(
                 q,
                 self.extracted_data,
                 self.skip_states,
                 confirmed_fields=self.confirmed_fields,
+                flow_context=flow_ctx,
+                raw_answers=self.raw_answers,
             ):
                 self.mark_answered(state)
 
@@ -311,7 +354,41 @@ class ConversationSession:
             self.completed_states.add(state_value)
         self.refresh_progress()
 
-    def merge_extracted_data(self, data: dict[str, Any], *, raw_text: str = "") -> None:
+    def reopen_question_after_failed_confirmation(
+        self,
+        state: str | CallState,
+        field: str | None = None,
+    ) -> None:
+        """Re-ask an admin-configured question after read-back repair.
+
+        Clears skip markers so ``next_unanswered_state`` can reach this step again.
+        Admin question flags (required, requires_confirmation) remain the source of truth.
+        """
+        state_value = state.value if isinstance(state, CallState) else str(state)
+        self.pending_confirmation = None
+        if field:
+            self.extracted_data.pop(field, None)
+        self.completed_states.discard(state_value)
+        if state_value in self.answered_states:
+            self.answered_states.remove(state_value)
+        self.current_state = state_value
+        self.retry_count = 0
+        self.refresh_progress()
+
+    def merge_extracted_data(
+        self,
+        data: dict[str, Any],
+        *,
+        raw_text: str = "",
+        allow_overwrite: frozenset[str] | None = None,
+    ) -> None:
+        """Merge LLM-extracted values allowed by the admin question snapshot.
+
+        Fields in ``confirmed_fields`` (read-back confirmed) are skipped unless
+        their key is listed in *allow_overwrite* (explicit caller correction).
+        Works for any admin-defined extract field — not hardcoded to built-ins.
+        """
+        overwrite = allow_overwrite or frozenset()
         clean: dict[str, Any] = {}
         for key, value in filter_extracted_to_allowed_fields(data, self.questions).items():
             value = _unwrap_confidence(value)
@@ -320,7 +397,14 @@ class ConversationSession:
         clean = normalize_extracted_fields(clean, questions=self.questions)
         if not clean:
             return
-        self.extracted_data.update(clean)
+        to_apply: dict[str, Any] = {}
+        for key, value in clean.items():
+            if key in self.confirmed_fields and key not in overwrite:
+                continue
+            to_apply[key] = value
+        if not to_apply:
+            return
+        self.extracted_data.update(to_apply)
         if raw_text and is_question_state(self.current_state, self.questions):
             self.raw_answers[self.current_state] = raw_text
         self.refresh_progress()
@@ -332,7 +416,12 @@ class ConversationSession:
 
     def is_screening_complete(self) -> bool:
         return screening_complete(
-            self.extracted_data, self.skip_states, questions=self.questions
+            self.extracted_data,
+            self.skip_states,
+            questions=self.questions,
+            confirmed_fields=self.confirmed_fields,
+            flow_context=self.conditional_flow_context(),
+            raw_answers=self.raw_answers,
         )
 
     def active_question_count(self) -> int:
@@ -393,6 +482,51 @@ class ConversationSession:
         # substantially on longer calls without losing intelligence.
         if len(self.messages) > 12:
             self.messages = self.messages[-12:]
+
+    def reconcile_interrupted_turn(self) -> None:
+        """Repair conversation history after a turn is cancelled mid-flight.
+
+        A caller turn appends the ``user`` message and ``Tenant`` transcript line
+        up front (before the LLM runs), and streaming may open a partial ``AI``
+        transcript line. When barge-in cancels the turn before ``finish_turn``
+        commits the matching ``assistant`` message, the history is left
+        inconsistent: a dangling user turn and possibly a half-written AI line.
+
+        This reconciles both logs so the next LLM call and the saved transcript
+        stay coherent:
+
+        - If the agent actually streamed speech, finalize the open AI line to
+          that partial text and pair the user turn with a matching assistant
+          message (nothing spoken is fabricated — only what was streamed).
+        - If the agent produced no speech at all, drop the empty AI line and the
+          unanswered trailing user turn so no orphan user message survives.
+
+        Screening data is untouched on barge-in when the LLM never ran. Turn
+        timeout uses :func:`handle_turn_timeout` to restore a pre-turn snapshot
+        after reconcile when the turn did not finish cleanly.
+        """
+        partial = (self.streamed_speakable_prefix or "").strip()
+
+        if self.streaming_ai_open:
+            if partial:
+                self.close_streaming_ai_transcript(partial)
+            else:
+                if self.transcript and self.transcript[-1].speaker == "AI":
+                    self.transcript.pop()
+                self.streaming_ai_open = False
+
+        if self.messages and self.messages[-1].get("role") == "user":
+            if partial:
+                self.messages.append({"role": "assistant", "content": partial})
+            else:
+                self.messages.pop()
+                if self.transcript and self.transcript[-1].speaker == "Tenant":
+                    self.transcript.pop()
+
+        self.streamed_speakable_prefix = ""
+        self.streamed_audio_sent_during_turn = False
+        self.llm_streamed_during_turn = False
+        self.streaming_ai_open = False
 
     def get_full_transcript(self) -> str:
         text = "\n".join(
@@ -623,7 +757,7 @@ _ECHO_PHRASES = frozenset(
     }
 )
 
-_LIVENESS_ACKS = frozenset(
+_LIVENESS_ACKS_EN = frozenset(
     {
         "yes",
         "yeah",
@@ -643,6 +777,50 @@ _LIVENESS_ACKS = frozenset(
         "yes i am",
         "yes im here",
     }
+)
+
+_LIVENESS_ACKS_ES = frozenset(
+    {
+        "si",
+        "sí",
+        "aqui",
+        "aquí",
+        "estoy aqui",
+        "estoy aquí",
+        "sigo aqui",
+        "aqui estoy",
+        "aquí estoy",
+        "presente",
+        "listo",
+        "lista",
+        "vale",
+        "bueno",
+        "adelante",
+        "hola",
+        "continua",
+        "continúe",
+        "si estoy",
+        "sí estoy",
+        "sigo",
+        "estoy",
+        "ok",
+        "okay",
+    }
+)
+
+# Back-compat alias (English set).
+_LIVENESS_ACKS = _LIVENESS_ACKS_EN
+
+_LIVENESS_ACK_RE_EN = re.compile(
+    r"\b(still here|i'?m here|yes i'?m|here yes|i am)\b",
+    re.I,
+)
+_LIVENESS_ACK_RE_ES = re.compile(
+    r"\b("
+    r"estoy aqui|estoy aquí|sigo aqui|aqui estoy|aquí estoy|si estoy|sí estoy|"
+    r"presente|aqui sigo"
+    r")\b",
+    re.I,
 )
 
 
@@ -725,6 +903,40 @@ def navigation_repeat_text(session: ConversationSession) -> str:
     )
 
 
+def soft_callback_redirect_text(session: ConversationSession) -> str:
+    """First callback redirect: note callback, then repeat the current step.
+
+    When read-back confirmation is in progress, repeats the read-back instead of
+    dropping ``pending_confirmation`` and re-asking the original question.
+    """
+    is_es = str(session.call_language).lower().startswith("es")
+    pause = (
+        "No hay problema, podemos dar seguimiento despues. "
+        if is_es
+        else "No problem — we can follow up later. "
+    )
+    if session.pending_confirmation:
+        follow_up = navigation_repeat_text(session)
+        if follow_up:
+            session.control_flags["callback_soft_noted"] = True
+            return f"{pause}{follow_up}"
+
+    question_cfg = session.get_current_question()
+    q_text = localized_question_text(
+        question_cfg,
+        language_code=session.call_language,
+        key="question",
+    )
+    if q_text:
+        before = "Antes de irse," if is_es else "Before you go,"
+        return f"{pause}{before} {q_text}"
+    return pause + (
+        "Necesita algo mas ahora?"
+        if is_es
+        else "Is there anything else you need right now?"
+    )
+
+
 def needs_extended_turn_budget(session: ConversationSession) -> bool:
     """Read-back confirm in progress needs more wall time than a simple extract+ack."""
     return session.pending_confirmation is not None
@@ -748,43 +960,162 @@ def turn_timeout_recovery_text(
     return polite_redirect(session, "unclear")
 
 
+def try_open_readback_confirmation(
+    session: ConversationSession,
+    state_value: str,
+    *,
+    require_caller_spoke: bool = False,
+    transcript: str = "",
+) -> str | None:
+    """Open ``pending_confirmation`` when admin read-back is due for ``state_value``.
+
+    Single entry for normal question advance and turn-timeout recovery.
+    Returns the read-back prompt to speak, or ``None`` when confirmation is
+    not needed or already open.
+    """
+    if session.pending_confirmation:
+        return None
+    if require_caller_spoke and not (transcript or "").strip():
+        return None
+    if not needs_readback_confirmation(
+        str(state_value),
+        session.extracted_data,
+        session.questions,
+        session.confirmed_fields,
+    ):
+        return None
+
+    q = questions_index(session.questions).get(str(state_value))
+    field = confirm_field_for_question(q) if q else None
+    if not field:
+        return None
+
+    value = session.extracted_data.get(field)
+    if value in (None, ""):
+        return None
+
+    if field == "email":
+        from app.core.screening_flow import sanitize_stored_email
+
+        validated = sanitize_stored_email(str(value))
+        if not validated:
+            session.extracted_data.pop(field, None)
+            return None
+        value = validated
+        session.extracted_data[field] = validated
+
+    session.pending_confirmation = {
+        "field": field,
+        "state": str(state_value),
+        "value": str(value),
+        "attempts": 1,
+    }
+    return readback_prompt_for_state(
+        str(state_value),
+        str(value),
+        session.questions,
+        language_code=session.call_language,
+    )
+
+
+@dataclass(frozen=True)
+class TurnStateSnapshot:
+    """Screening state captured before one caller turn begins."""
+
+    current_state: str
+    extracted_data: dict[str, Any]
+    raw_answers: dict[str, Any]
+    pending_confirmation: dict[str, Any] | None
+    confirmed_fields: frozenset[str]
+    retry_count: int
+    answered_states: tuple[str, ...]
+    refused_states: tuple[str, ...]
+    completed_states: frozenset[str]
+    questions_answered: int
+
+
+def capture_turn_snapshot(session: ConversationSession) -> TurnStateSnapshot:
+    """Snapshot screening state before ``process_tenant_speech`` mutates it."""
+    pending = session.pending_confirmation
+    return TurnStateSnapshot(
+        current_state=str(session.current_state),
+        extracted_data=copy.deepcopy(session.extracted_data),
+        raw_answers=copy.deepcopy(session.raw_answers),
+        pending_confirmation=copy.deepcopy(pending) if pending else None,
+        confirmed_fields=frozenset(session.confirmed_fields),
+        retry_count=int(session.retry_count),
+        answered_states=tuple(session.answered_states or []),
+        refused_states=tuple(session.refused_states or []),
+        completed_states=frozenset(session.completed_states or set()),
+        questions_answered=int(session.questions_answered),
+    )
+
+
+def restore_turn_snapshot(
+    session: ConversationSession, snapshot: TurnStateSnapshot
+) -> None:
+    """Restore screening fields from a pre-turn snapshot."""
+    session.current_state = snapshot.current_state
+    session.extracted_data = copy.deepcopy(snapshot.extracted_data)
+    session.raw_answers = copy.deepcopy(snapshot.raw_answers)
+    session.pending_confirmation = (
+        copy.deepcopy(snapshot.pending_confirmation)
+        if snapshot.pending_confirmation
+        else None
+    )
+    session.confirmed_fields = set(snapshot.confirmed_fields)
+    session.retry_count = snapshot.retry_count
+    session.answered_states = list(snapshot.answered_states)
+    session.refused_states = list(snapshot.refused_states)
+    session.completed_states = set(snapshot.completed_states)
+    session.questions_answered = snapshot.questions_answered
+    session.refresh_progress()
+
+
+def handle_turn_timeout(
+    session: ConversationSession,
+    transcript: str,
+    snapshot: TurnStateSnapshot,
+) -> str:
+    """Repair history and roll back partial turn work after a turn budget expires."""
+    session.reconcile_interrupted_turn()
+    restore_turn_snapshot(session, snapshot)
+    return plan_turn_timeout_recovery(
+        session,
+        transcript,
+        answered_state=snapshot.current_state,
+    )
+
+
+def handle_hangup_cancelled_turn(
+    session: ConversationSession,
+    snapshot: TurnStateSnapshot,
+) -> None:
+    """Undo partial turn work when the caller hung up before the turn finished."""
+    session.reconcile_interrupted_turn()
+    restore_turn_snapshot(session, snapshot)
+
+
 def plan_turn_timeout_recovery(
-    session: ConversationSession, transcript: str
+    session: ConversationSession,
+    transcript: str,
+    *,
+    answered_state: str | None = None,
 ) -> str:
     """Pick recovery speech after timeout; resume read-back when data was already captured."""
-    from app.core.question_flow import readback_prompt_for_state
-
     prefix = (session.streamed_speakable_prefix or "").strip()
     if prefix:
         session.close_streaming_ai_transcript(prefix)
 
-    state = session.current_state
-    heard = (transcript or "").strip()
-    q = questions_index(session.questions).get(state)
-    field = confirm_field_for_question(q) if q else None
-    if (
-        field
-        and field in session.extracted_data
-        and field not in session.confirmed_fields
-        and heard
-        and not session.pending_confirmation
-    ):
-        value = session.extracted_data.get(field)
-        if value not in (None, ""):
-            session.pending_confirmation = {
-                "field": field,
-                "state": state,
-                "value": str(value),
-                "attempts": 1,
-            }
-            read_back = readback_prompt_for_state(
-                state,
-                str(value),
-                session.questions,
-                language_code=session.call_language,
-            )
-            if read_back:
-                return read_back
+    recovery_state = str(answered_state or session.current_state)
+    read_back = try_open_readback_confirmation(
+        session,
+        recovery_state,
+        require_caller_spoke=True,
+        transcript=transcript,
+    )
+    if read_back:
+        return read_back
 
     return turn_timeout_recovery_text(session, transcript)
 
@@ -840,16 +1171,25 @@ def should_suppress_silence_nudge(session: ConversationSession, *, now: float | 
     return (ts - last) < 4.0
 
 
-def is_liveness_acknowledgment(transcript: str) -> bool:
+def is_liveness_acknowledgment(
+    transcript: str,
+    *,
+    language_code: str = "en",
+) -> bool:
     """Short reply to a silence nudge — not an answer to the screening question."""
     norm = _normalize_speech(transcript)
     if not norm:
         return False
-    if norm in _LIVENESS_ACKS:
+    is_es = str(language_code or "en").strip().lower().startswith("es")
+    if is_es:
+        if norm in _LIVENESS_ACKS_ES or norm in _LIVENESS_ACKS_EN:
+            return True
+        if len(norm) <= 32 and _LIVENESS_ACK_RE_ES.search(norm):
+            return True
+        return False
+    if norm in _LIVENESS_ACKS_EN:
         return True
-    if len(norm) <= 24 and re.search(
-        r"\b(still here|i'?m here|yes i'?m|here yes|i am)\b", norm
-    ):
+    if len(norm) <= 24 and _LIVENESS_ACK_RE_EN.search(norm):
         return True
     return False
 
@@ -891,7 +1231,11 @@ def polite_redirect(session: ConversationSession, kind: str) -> str:
         return "No problem. Please continue when you are ready."
 
     retry_count = session.retry_count
-    prompt = retry_prompt_for_count(question_cfg, retry_count)
+    prompt = retry_prompt_for_count(
+        question_cfg,
+        retry_count,
+        language_code=session.call_language,
+    )
     if not prompt:
         prompt = localized_question_text(
             question_cfg, language_code=session.call_language, key="question"
@@ -1464,6 +1808,12 @@ def build_system_prompt(
     )
     flow_stats = prompt_flow_stats(session.questions)
     slot_examples = slot_fill_examples_for_question(question)
+    confirmed_line = ""
+    if session.confirmed_fields:
+        confirmed_line = (
+            "\n- Confirmed (do not change unless caller explicitly corrects): "
+            + ", ".join(sorted(session.confirmed_fields))
+        )
     yes_no_fields = [
         field
         for field, answer_type in field_answer_types_from_questions(session.questions).items()
@@ -1623,7 +1973,7 @@ relevance: on_topic|off_topic|unclear. corrected_fields: earlier fields they cha
 - Slots this question:
 {slots_block}
 - Captured so far: {extracted_json}
-- Caller: "{caller_line}"{retry_note}
+- Caller: "{caller_line}"{retry_note}{confirmed_line}
 {slot_examples}
 
 {faq_section}"""

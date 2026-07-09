@@ -26,8 +26,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.call_logging import Phase, vdebug, verror, vinfo, vwarn
 from app.core.call_settings import (
     CallProviderBundle,
+    NotificationSettingsSnapshot,
     build_call_provider_bundle,
+    capture_provider_api_keys,
+    crm_notifications_active,
     load_call_settings_snapshot,
+    load_notification_settings_from_db,
+    notification_settings_email_dict,
+    notification_settings_persist_dict,
+    NOTIFICATION_SETTINGS_PERSIST_KEY,
 )
 from app.core.conversation import (
     CallState,
@@ -46,6 +53,7 @@ from app.core.conversation import (
     is_meta_navigation_request,
     navigation_repeat_text,
     normalize_speech_parts,
+    soft_callback_redirect_text,
     parse_corrected_fields,
     parse_issue,
     parse_question_complete,
@@ -56,12 +64,12 @@ from app.core.conversation import (
     reset_turn_streaming,
     streamed_audio_complete,
     strip_upcoming_question_from_ack,
+    try_open_readback_confirmation,
     validate_llm_response,
 )
 from app.core.data_extractor import extract_tenant_data
 from app.core.qualifier import calculate_qualification_score
 from app.core.question_flow import (
-    build_confirm_field_map,
     canonical_language_code,
     first_active_question_state,
     is_question_answered,
@@ -84,9 +92,17 @@ from app.core.screening_flow import (
     build_greeting_intro,
     log_state_transition,
     normalize_extracted_fields,
+    validate_state_transition,
 )
 from app.core.tenant_sanitize import sanitize_tenant_payload
-from config import provider_registry, settings
+from app.core.voice_language import (
+    deepgram_stt_language,
+    deepgram_tts_voice,
+    google_tts_language_code,
+    google_tts_voice,
+    groq_stt_language,
+)
+from config import settings
 
 # Session/audit-only keys kept in memory for scoring, email, and the CRM webhook
 # but never written to the tenant row. The full transcript on the call record is
@@ -104,6 +120,37 @@ _AUDIT_ONLY_FIELDS = frozenset(
 
 logger = logging.getLogger(__name__)
 
+
+def _apply_guarded_state_transition(
+    session: ConversationSession,
+    to_state: str,
+    reason: str,
+    *,
+    retry_count: int = 0,
+) -> bool:
+    """Apply a state transition only when it passes flow validation."""
+    from_state = session.current_state
+    if from_state == to_state:
+        return True
+    is_valid = validate_state_transition(from_state, to_state, session.questions)
+    # Always log for observability/counters.
+    log_state_transition(
+        session.call_id,
+        from_state,
+        to_state,
+        reason,
+        retry_count,
+        questions=session.questions,
+    )
+    if not is_valid:
+        session.add_error(
+            "invalid_state_transition_blocked",
+            f"{from_state} -> {to_state} ({reason})",
+        )
+        return False
+    session.current_state = to_state
+    return True
+
 # Cached fallback provider instances (avoid per-utterance construction).
 _llm_fallbacks: dict = {}
 _tts_fallbacks: dict = {}
@@ -118,8 +165,166 @@ TTS_MIN_ATTEMPT_BUDGET_SECONDS = 1.2
 TTS_CONFIRM_MIN_BUDGET_SECONDS = 3.5
 VOICE_TURN_INTERNAL_BUFFER_SECONDS = 0.6
 
-# In-memory health hints to prioritize proven-fast backups.
+# In-memory health hints to prioritize proven-fast LLM backups (per worker).
+# Shared across calls on the same worker — affects fallback order/skip only,
+# never caller data. Counters decay so one bad spell does not last forever.
 _llm_health_hints: dict[str, dict[str, float]] = {}
+LLM_HEALTH_WINDOW_S = 300.0
+LLM_HEALTH_SKIP_FAIL_THRESHOLD = 3
+LLM_HEALTH_PROBE_COOLDOWN_S = 120.0
+LLM_HEALTH_REDIS_TTL_S = int(LLM_HEALTH_WINDOW_S + LLM_HEALTH_PROBE_COOLDOWN_S + 120.0)
+
+
+def _llm_health_cache_key(provider_name: str) -> str:
+    return f"llm:health_hint:{provider_name}"
+
+
+def _llm_health_now() -> float:
+    """Wall-clock seconds for health-hint windows.
+
+    Health hints are persisted to Redis and read by other workers, so the
+    timestamps must be comparable across processes. ``time.monotonic()`` is
+    process-local and would make cross-worker deltas meaningless (providers
+    skipped forever or probed too early), so we use wall-clock time here. These
+    hints only influence fallback ordering/skip — never caller data — so the
+    rare backwards NTP adjustment is harmless.
+    """
+    return time.time()
+
+
+def _normalize_llm_health_hint(hint: dict[str, float], now: float) -> None:
+    """Drop stale ok/fail counts outside the health window."""
+    last_fail = float(hint.get("last_fail_at", 0.0))
+    last_ok = float(hint.get("last_ok_at", 0.0))
+    if last_fail and now - last_fail > LLM_HEALTH_WINDOW_S:
+        hint["fail"] = 0.0
+    if last_ok and now - last_ok > LLM_HEALTH_WINDOW_S:
+        hint["ok"] = 0.0
+
+
+def _record_llm_health_success(provider_name: str, latency_ms: float) -> None:
+    now = _llm_health_now()
+    hint = _llm_health_hints.setdefault(provider_name, {})
+    _normalize_llm_health_hint(hint, now)
+    hint["ok"] = hint.get("ok", 0.0) + 1.0
+    hint["fail"] = 0.0
+    hint["last_ok_at"] = now
+    hint["latency_ms"] = latency_ms
+
+
+def _record_llm_health_failure(provider_name: str) -> None:
+    now = _llm_health_now()
+    hint = _llm_health_hints.setdefault(provider_name, {})
+    _normalize_llm_health_hint(hint, now)
+    hint["fail"] = hint.get("fail", 0.0) + 1.0
+    hint["last_fail_at"] = now
+
+
+async def _record_llm_health_success_shared(provider_name: str, latency_ms: float) -> None:
+    """Record health hints in-process and in Redis for cross-worker consistency."""
+    _record_llm_health_success(provider_name, latency_ms)
+    from app.core.redis_client import cache_get_json, cache_set_json
+
+    try:
+        now = _llm_health_now()
+        hint = await cache_get_json(_llm_health_cache_key(provider_name)) or {}
+        if not isinstance(hint, dict):
+            hint = {}
+        _normalize_llm_health_hint(hint, now)
+        hint["ok"] = float(hint.get("ok", 0.0)) + 1.0
+        hint["fail"] = 0.0
+        hint["last_ok_at"] = now
+        hint["latency_ms"] = float(latency_ms)
+        await cache_set_json(_llm_health_cache_key(provider_name), hint, LLM_HEALTH_REDIS_TTL_S)
+    except Exception:
+        pass
+
+
+async def _record_llm_health_failure_shared(provider_name: str) -> None:
+    """Record fallback failures in-process and in Redis for all workers."""
+    _record_llm_health_failure(provider_name)
+    from app.core.redis_client import cache_get_json, cache_set_json
+
+    try:
+        now = _llm_health_now()
+        hint = await cache_get_json(_llm_health_cache_key(provider_name)) or {}
+        if not isinstance(hint, dict):
+            hint = {}
+        _normalize_llm_health_hint(hint, now)
+        hint["fail"] = float(hint.get("fail", 0.0)) + 1.0
+        hint["last_fail_at"] = now
+        await cache_set_json(_llm_health_cache_key(provider_name), hint, LLM_HEALTH_REDIS_TTL_S)
+    except Exception:
+        pass
+
+
+async def _load_llm_health_hint_shared(provider_name: str) -> dict[str, float]:
+    """Best-effort shared hint view; falls back to in-process state."""
+    hint = dict(_llm_health_hints.get(provider_name, {}))
+    from app.core.redis_client import cache_get_json
+
+    try:
+        shared = await cache_get_json(_llm_health_cache_key(provider_name))
+        if isinstance(shared, dict):
+            hint.update(shared)
+    except Exception:
+        pass
+    now = _llm_health_now()
+    _normalize_llm_health_hint(hint, now)
+    return hint
+
+
+async def _llm_health_rank_shared(name: str) -> tuple[float, float]:
+    hint = await _load_llm_health_hint_shared(name)
+    ok = float(hint.get("ok", 0.0))
+    fail = float(hint.get("fail", 0.0))
+    success_score = ok / max(1.0, ok + fail)
+    latency = float(hint.get("latency_ms", 999999.0))
+    return (-success_score, latency)
+
+
+async def _llm_provider_healthy_for_fallback_shared(name: str) -> bool:
+    """Skip only providers with repeated recent failures across workers."""
+    hint = await _load_llm_health_hint_shared(name)
+    now = _llm_health_now()
+    ok = float(hint.get("ok", 0.0))
+    fail = float(hint.get("fail", 0.0))
+    if fail < LLM_HEALTH_SKIP_FAIL_THRESHOLD:
+        return True
+    if ok > 0:
+        return True
+    last_fail = float(hint.get("last_fail_at", 0.0))
+    if last_fail and now - last_fail >= LLM_HEALTH_PROBE_COOLDOWN_S:
+        return True
+    return False
+
+
+def _llm_health_rank(name: str) -> tuple[float, float]:
+    now = _llm_health_now()
+    hint = _llm_health_hints.setdefault(name, {})
+    _normalize_llm_health_hint(hint, now)
+    ok = float(hint.get("ok", 0.0))
+    fail = float(hint.get("fail", 0.0))
+    success_score = ok / max(1.0, ok + fail)
+    latency = float(hint.get("latency_ms", 999999.0))
+    return (-success_score, latency)
+
+
+def _llm_provider_healthy_for_fallback(name: str) -> bool:
+    """Skip only recent repeated failures; allow probe retry after cooldown."""
+    now = _llm_health_now()
+    hint = _llm_health_hints.setdefault(name, {})
+    _normalize_llm_health_hint(hint, now)
+    ok = float(hint.get("ok", 0.0))
+    fail = float(hint.get("fail", 0.0))
+    if fail < LLM_HEALTH_SKIP_FAIL_THRESHOLD:
+        return True
+    if ok > 0:
+        return True
+    last_fail = float(hint.get("last_fail_at", 0.0))
+    if last_fail and now - last_fail >= LLM_HEALTH_PROBE_COOLDOWN_S:
+        return True
+    return False
 
 
 def _is_spanish(session: ConversationSession) -> bool:
@@ -130,18 +335,143 @@ def _localize(session: ConversationSession, en: str, es: str) -> str:
     return es if _is_spanish(session) else en
 
 
-def _apply_session_language(session: ConversationSession, lang: str | None) -> None:
+def _plausibility_clarify_fallback(session: ConversationSession) -> str:
+    return _localize(
+        session,
+        "Just to make sure I have that right — could you confirm that detail?",
+        "Solo para confirmar — ¿podría repetir ese dato?",
+    )
+
+
+def _begin_turn_tts(session: ConversationSession) -> None:
+    session.turn_interrupted = False
+    session.turn_tts_tasks.clear()
+
+
+def _turn_tts_suppressed(session: ConversationSession) -> bool:
+    return bool(getattr(session, "turn_interrupted", False))
+
+
+def _register_turn_tts_task(session: ConversationSession, task: asyncio.Task) -> None:
+    session.turn_tts_tasks.append(task)
+
+    def _discard(done: asyncio.Task) -> None:
+        try:
+            session.turn_tts_tasks.remove(done)
+        except ValueError:
+            pass
+
+    task.add_done_callback(_discard)
+
+
+def _track_turn_tts_task(
+    session: ConversationSession, coro: Awaitable[bytes]
+) -> asyncio.Task:
+    task = asyncio.create_task(coro)
+    _register_turn_tts_task(session, task)
+    return task
+
+
+def interrupt_turn_tts(session: ConversationSession) -> None:
+    """Stop enqueueing TTS for the current turn (sync-safe for barge-in)."""
+    session.turn_interrupted = True
+    for task in list(session.turn_tts_tasks):
+        if not task.done():
+            task.cancel()
+
+
+async def drain_turn_tts_tasks(session: ConversationSession) -> None:
+    """Wait for in-flight turn TTS tasks after cancellation."""
+    tasks = list(session.turn_tts_tasks)
+    if not tasks:
+        return
+    await asyncio.gather(*tasks, return_exceptions=True)
+    session.turn_tts_tasks.clear()
+
+
+def _apply_tts_voices_for_language(session: ConversationSession, language_code: str) -> None:
+    """Switch active and backup TTS voices to match call language."""
+    providers = get_call_providers(session)
+
+    from app.providers.tts.deepgram_tts import DeepgramTTSProvider
+    from app.providers.tts.google_tts import GoogleTTSProvider
+
+    for name, tts_obj in providers.tts_by_name.items():
+        en_voice = str(session.tts_voices_en_by_provider.get(name) or session.tts_voice_en or "")
+        if isinstance(tts_obj, DeepgramTTSProvider):
+            es_voice = session.tts_voice_deepgram_es or session.tts_voice_es
+            tts_obj.voice = DeepgramTTSProvider._normalize_voice(
+                deepgram_tts_voice(
+                    language_code=language_code,
+                    english_voice=en_voice or tts_obj.voice,
+                    spanish_voice=es_voice,
+                )
+            )
+        elif isinstance(tts_obj, GoogleTTSProvider):
+            es_voice = session.tts_voice_google_es or session.tts_voice_es
+            tts_obj.language_code = google_tts_language_code(language_code)
+            tts_obj.voice = google_tts_voice(
+                language_code=language_code,
+                english_voice=en_voice or tts_obj.voice,
+                spanish_voice=es_voice,
+            )
+
+
+async def _sync_streaming_stt_language(
+    session: ConversationSession, language_code: str
+) -> bool:
+    """Reconnect live Deepgram STT before TTS switches; keep prior socket on failure."""
+    relay = getattr(session, "streaming_stt_relay", None)
+    if relay is None:
+        return True
+    from app.core.streaming_stt import STREAMING_STT_RECONNECT_TIMEOUT_S
+
+    try:
+        await asyncio.wait_for(
+            relay.reconnect(language=deepgram_stt_language(language_code)),
+            timeout=STREAMING_STT_RECONNECT_TIMEOUT_S,
+        )
+    except Exception as exc:
+        logger.warning(
+            "[%s] Streaming STT language reconnect failed: %s",
+            session.call_id,
+            exc,
+        )
+        return False
+    if relay.lost:
+        logger.warning(
+            "[%s] Streaming STT language reconnect left relay lost",
+            session.call_id,
+        )
+        return False
+    return True
+
+
+def _apply_batch_stt_language(session: ConversationSession, language_code: str) -> None:
+    """Point buffered/batch STT at the caller's language."""
+    providers = get_call_providers(session)
+    stt_obj = getattr(providers, "stt", None)
+    from app.providers.stt.groq_stt import GroqSTTProvider
+
+    if isinstance(stt_obj, GroqSTTProvider):
+        stt_obj.language = groq_stt_language(language_code)
+    elif stt_obj is not None and hasattr(stt_obj, "language"):
+        stt_obj.language = deepgram_stt_language(language_code)
+
+
+async def _apply_session_language(session: ConversationSession, lang: str | None) -> None:
     resolved = canonical_language_code(lang)
     if not resolved or resolved == session.call_language:
         return
+    if not await _sync_streaming_stt_language(session, resolved):
+        session.add_error(
+            "stt_language_sync_failed",
+            f"Could not switch listening to {resolved}; keeping {session.call_language}",
+        )
+        return
     session.call_language = resolved
-    providers = get_call_providers(session)
-    stt_obj = getattr(providers, "stt", None)
-    if stt_obj is not None and hasattr(stt_obj, "language"):
-        setattr(stt_obj, "language", "es" if resolved == "es" else "en-US")
-    tts_obj = getattr(providers, "tts", None)
-    if tts_obj is not None and hasattr(tts_obj, "language_code"):
-        setattr(tts_obj, "language_code", "es-US" if resolved == "es" else "en-US")
+    _apply_batch_stt_language(session, resolved)
+    _apply_tts_voices_for_language(session, resolved)
     logger.info("[%s] Session language set to %s", session.call_id, resolved)
 
 
@@ -191,15 +521,20 @@ def human_ack(session: ConversationSession) -> str:
     return base
 
 
-def _asks_for_more(text: str) -> bool:
-    """True when the agent's own reply is a follow-up question to the caller.
+def question_advance_ready(
+    *,
+    question_complete: bool,
+    deterministic_done: bool,
+    understood: bool,
+) -> bool:
+    """Whether the current admin question is finished and the flow may advance.
 
-    This lets the LLM veto a premature advance: if it answered with a question
-    (e.g. "What's the exact date?") we must stay on the current question, even
-    when a deterministic slot already holds a rough value (e.g. move_in_raw).
+    Honors the LLM ``question_complete`` flag when the caller was understood.
+    A deterministic slot fill alone does not advance while the model still
+    considers the current question open (e.g. vague date → ask for exact date).
     """
-    t = (text or "").strip()
-    return t.endswith("?") or "? " in t
+    llm_wants_more = understood and not question_complete
+    return (question_complete or deterministic_done) and not llm_wants_more
 
 
 def tts_timeout_for_text(text: str) -> float:
@@ -318,17 +653,9 @@ def get_call_providers(session: ConversationSession) -> CallProviderBundle:
     """Return providers frozen at call start (never the live registry mid-call)."""
     if session.call_providers is not None:
         return session.call_providers
-    return CallProviderBundle(
-        llm=provider_registry.llm,
-        stt=provider_registry.stt,
-        tts=provider_registry.tts,
-        llm_name=provider_registry.llm_name,
-        stt_name=provider_registry.stt_name,
-        tts_name=provider_registry.tts_name,
-        auto_fallback_enabled=provider_registry.auto_fallback_enabled,
-        llm_fallback_provider=provider_registry.llm_fallback_provider,
-        stt_fallback_provider=provider_registry.stt_fallback_provider,
-        tts_fallback_provider=provider_registry.tts_fallback_provider,
+    raise RuntimeError(
+        f"Call {session.call_id} has no frozen provider bundle — "
+        "use create_session() so STT/LLM/TTS match settings captured at call start"
     )
 
 
@@ -350,31 +677,90 @@ def unregister_stream_stop(call_id: str) -> None:
     _stream_stop_events.pop(call_id, None)
 
 
+async def _persist_stream_stop_request(call_id: str) -> None:
+    """Write a DB hangup stop when the live stream is on another worker."""
+    from app.db.crud import persist_stream_stop_request
+    from app.db.database import AsyncSessionLocal
+
+    try:
+        async with AsyncSessionLocal() as db:
+            if await persist_stream_stop_request(db, call_id):
+                logger.info(
+                    "[%s] Persisted DB stream-stop (cross-worker hangup)",
+                    call_id,
+                )
+    except Exception as exc:
+        logger.warning(
+            "[%s] DB stream-stop persist failed: %s",
+            call_id,
+            exc,
+        )
+
+
+async def _is_stream_stop_requested_db(call_id: str) -> bool:
+    from app.db.crud import is_stream_stop_requested
+    from app.db.database import AsyncSessionLocal
+
+    try:
+        async with AsyncSessionLocal() as db:
+            return await is_stream_stop_requested(db, call_id)
+    except Exception as exc:
+        logger.debug("[%s] DB stream-stop check failed: %s", call_id, exc)
+        return False
+
+
 async def request_stream_stop(call_id: str) -> bool:
-    """Signal the audio stream to stop (local event + cross-process Redis).
+    """Signal the audio stream to stop (local event + Redis + DB fallback).
 
     Returns True when a stream on this worker was registered.
     """
     stop = _stream_stop_events.get(call_id)
+    local = False
     if stop is not None:
         stop.set()
-        return True
-    from app.core.redis_client import set_stream_stop_signal
+        local = True
+    from app.core.redis_client import ping, set_stream_stop_signal
 
-    await set_stream_stop_signal(call_id)
-    return False
+    if await ping():
+        await set_stream_stop_signal(call_id)
+    if not local:
+        await _persist_stream_stop_request(call_id)
+    return local
 
 
 async def check_stream_stop_signal(call_id: str) -> bool:
-    """Poll Redis for a cross-process hangup stop request."""
+    """Poll Redis/DB for a cross-process hangup stop request."""
     from app.core.redis_client import is_stream_stop_signaled
 
-    if await is_stream_stop_signaled(call_id):
+    signaled = await is_stream_stop_signaled(call_id)
+    if not signaled:
+        # Redis signal is the fast path; DB remains the durable source of truth
+        # for cross-worker hangup requests and can still be set even when Redis
+        # is reachable but missed/evicted.
+        signaled = await _is_stream_stop_requested_db(call_id)
+    if signaled:
         stop = _stream_stop_events.get(call_id)
         if stop is not None:
             stop.set()
+        session = get_session(call_id)
+        if session is not None:
+            session.pending_hangup = True
         return True
     return False
+
+
+async def clear_stream_stop_signals(call_id: str) -> None:
+    """Clear Redis and DB hangup stop markers after the stream ends."""
+    from app.core.redis_client import clear_stream_stop_signal
+    from app.db.crud import clear_stream_stop_request
+    from app.db.database import AsyncSessionLocal
+
+    await clear_stream_stop_signal(call_id)
+    try:
+        async with AsyncSessionLocal() as db:
+            await clear_stream_stop_request(db, call_id)
+    except Exception as exc:
+        logger.debug("[%s] DB stream-stop clear failed: %s", call_id, exc)
 
 
 async def finalize_active_session_background(call_id: str) -> None:
@@ -438,25 +824,122 @@ async def finalize_after_stream_timeout(
     async with AsyncSessionLocal() as db:
         call = await get_call_by_call_id(db, call_id)
         if call and call.status == "in_progress":
-            logger.warning(
-                "[%s] Hangup with no local session — marking abandoned after %.0fs",
-                call_id,
-                timeout,
-            )
-            from app.db.crud import update_call
+            from app.core.redis_client import is_finalize_inflight
 
-            await update_call(
-                db,
+            if await is_finalize_inflight(call_id):
+                logger.info(
+                    "[%s] Skipping abandon — finalize in progress on another worker",
+                    call_id,
+                )
+                return
+            # A missing local session here often means stream/finalize is running
+            # on another worker and just hasn't published inflight yet. Marking
+            # abandoned can race with a late successful finalize and cause that
+            # finalize to skip persistence. Leave the call in_progress and let the
+            # owning worker finalize, with stale-call cleanup as a backstop.
+            logger.warning(
+                "[%s] Hangup timeout with no local session — preserving in_progress "
+                "(waiting for owning worker finalize / stale-call backstop)",
                 call_id,
-                status="abandoned",
-                ended_at=datetime.now(UTC),
-                error_log={"hangup_no_session": "No worker held session at finalize"},
             )
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Session Management
 # ──────────────────────────────────────────────────────────────────────────────
+
+STREAM_CALL_ROW_WAIT_S = 3.0
+
+
+def apply_call_phone_to_session(
+    session: ConversationSession,
+    call: Any | None,
+) -> bool:
+    """Copy phone from the DB call row when the in-memory session phone is blank."""
+    if (session.phone_number or "").strip():
+        return False
+    if call is None:
+        return False
+    db_phone = (getattr(call, "phone_number", None) or "").strip()
+    if not db_phone:
+        return False
+    session.phone_number = db_phone
+    return True
+
+
+async def sync_session_phone_from_db(
+    session: ConversationSession,
+    db: AsyncSession,
+    call: Any | None = None,
+) -> bool:
+    """Backfill ``session.phone_number`` from the DB when the session is blank."""
+    if (session.phone_number or "").strip():
+        return False
+    if call is None:
+        from app.db.crud import get_call_by_call_id
+
+        call = await get_call_by_call_id(db, session.call_id)
+    if apply_call_phone_to_session(session, call):
+        logger.info(
+            "[%s] Backfilled session phone from DB call row",
+            session.call_id,
+        )
+        return True
+    return False
+
+
+async def ensure_stream_session(call_id: str) -> ConversationSession | None:
+    """
+    Get or create the in-memory session for a Telnyx media WebSocket.
+
+    Polls the DB briefly when the call row is not ready yet (``call.initiated``
+    may still be in flight on another worker).
+    """
+    from app.db.crud import wait_for_call_by_call_id
+    from app.db.database import AsyncSessionLocal
+
+    session = get_session(call_id)
+    if session is None:
+        session = await wait_for_session(call_id, timeout=1.0)
+
+    try:
+        async with AsyncSessionLocal() as db:
+            if session is None:
+                call = await wait_for_call_by_call_id(
+                    db,
+                    call_id,
+                    timeout=STREAM_CALL_ROW_WAIT_S,
+                )
+                if call is None:
+                    logger.warning(
+                        "No call row for %s after %.1fs at stream start — "
+                        "proceeding with unknown phone",
+                        call_id,
+                        STREAM_CALL_ROW_WAIT_S,
+                    )
+                phone_number = (call.phone_number if call else "") or ""
+                session = await create_session(
+                    call_id=call_id,
+                    phone_number=phone_number,
+                    db=db,
+                )
+            elif not (session.phone_number or "").strip():
+                call = await wait_for_call_by_call_id(
+                    db,
+                    call_id,
+                    timeout=STREAM_CALL_ROW_WAIT_S,
+                )
+                await sync_session_phone_from_db(session, db, call=call)
+    except Exception as e:
+        logger.error(
+            "Failed to ensure stream session for %s: %s",
+            call_id,
+            e,
+            exc_info=True,
+        )
+        return None
+
+    return session
 
 
 async def create_session(
@@ -468,14 +951,27 @@ async def create_session(
     max_retries: int | None = None,
 ) -> ConversationSession:
     """Create and register a new call session (idempotent, race-safe)."""
+    existing = _active_sessions.get(call_id)
+    if existing:
+        new_phone = (phone_number or "").strip()
+        if new_phone and not (existing.phone_number or "").strip():
+            existing.phone_number = new_phone
+        return existing
+
     snapshot = await load_call_settings_snapshot(db)
-    providers = build_call_provider_bundle(snapshot)
+    providers = build_call_provider_bundle(
+        snapshot,
+        api_keys=await capture_provider_api_keys(db),
+    )
     _prewarm_fallback_clients(providers)
 
     async with _sessions_lock:
         existing = _active_sessions.get(call_id)
         if existing:
             logger.info("Session already exists for %s, reusing", call_id)
+            new_phone = (phone_number or "").strip()
+            if new_phone and not (existing.phone_number or "").strip():
+                existing.phone_number = new_phone
             return existing
 
         session = ConversationSession(
@@ -489,7 +985,9 @@ async def create_session(
             llm_max_tokens=snapshot.llm_max_tokens,
             qualified_score_threshold=snapshot.qualified_score_threshold,
             review_score_threshold=snapshot.review_score_threshold,
-            questions=questions or snapshot.questions,
+            questions=questions
+            if questions is not None
+            else snapshot.questions,
             faqs=snapshot.faqs,
             max_retries=max_retries
             if max_retries is not None
@@ -512,8 +1010,26 @@ async def create_session(
             deepgram_endpointing_ms=int(snapshot.deepgram_endpointing_ms),
             deepgram_utterance_end_ms=int(snapshot.deepgram_utterance_end_ms),
             latency_alert_turn_p95_ms=int(snapshot.latency_alert_turn_p95_ms),
+            latency_alert_turn_p95_crit_ms=int(snapshot.latency_alert_turn_p95_crit_ms),
             latency_alert_timeout_rate_pct=float(snapshot.latency_alert_timeout_rate_pct),
+            latency_alert_timeout_rate_crit_pct=float(
+                snapshot.latency_alert_timeout_rate_crit_pct
+            ),
+            tts_voice_en=snapshot.tts_voice,
+            tts_voice_es=(
+                snapshot.tts_voice_deepgram_es
+                if snapshot.tts_provider == "deepgram"
+                else snapshot.tts_voice_google_es
+            ),
+            tts_voice_deepgram_es=snapshot.tts_voice_deepgram_es,
+            tts_voice_google_es=snapshot.tts_voice_google_es,
+            tts_voices_en_by_provider=dict(snapshot.tts_voices_by_provider),
+            notification_settings=snapshot.notification_settings,
         )
+        if snapshot.questions_runtime_fallback and questions is None:
+            session.control_flags["questions_config_blocked"] = (
+                snapshot.questions_runtime_fallback
+            )
         _active_sessions[call_id] = session
         event = _session_ready_events.setdefault(call_id, asyncio.Event())
         event.set()
@@ -632,6 +1148,22 @@ async def handle_call_answered(session: ConversationSession) -> list[bytes]:
     Returns:
         Audio bytes for the greeting message
     """
+    blocked = session.control_flags.get("questions_config_blocked")
+    if blocked:
+        reason = str(blocked)
+        session.control_flags["questions_config_fallback"] = reason
+        session.add_error("questions_config_blocked", reason)
+        session.control_flags["provider_failure"] = {
+            "service": "questions",
+            "detail": reason,
+        }
+        session.current_state = CallState.ENDED.value
+        message = provider_failure_message_for_session(session)
+        session.add_transcript("AI", message)
+        session.add_message("assistant", message)
+        parts = await synthesize_speech_parts(message, "", session, combine=True)
+        return list(parts) if parts else []
+
     if session.current_state != CallState.IDLE.value:
         logger.debug(f"Session {session.call_id} already past IDLE — skipping greeting")
         return b""
@@ -680,6 +1212,19 @@ AudioPartCallback = Callable[[bytes, bool], Awaitable[None]]
 SpeakableCallback = Callable[[str], Awaitable[None]]
 
 
+async def _maybe_deliver_audio_part(
+    session: ConversationSession,
+    on_part_ready: AudioPartCallback | None,
+    audio: bytes,
+    is_last: bool,
+) -> bool:
+    if not audio or _turn_tts_suppressed(session):
+        return False
+    if on_part_ready:
+        await on_part_ready(audio, is_last)
+    return True
+
+
 async def process_tenant_speech(
     session: ConversationSession,
     transcript: str,
@@ -720,6 +1265,8 @@ async def process_tenant_speech(
         logger.info("[%s] Ignoring agent echo: %r", session.call_id, transcript)
         return "", [], False
 
+    _begin_turn_tts(session)
+
     vinfo(
         logger,
         f"Tenant: {transcript}",
@@ -759,7 +1306,7 @@ async def process_tenant_speech(
 
     async def _on_speakable_during_llm(sentence: str) -> None:
         sentence = (sentence or "").strip()
-        if not sentence:
+        if not sentence or _turn_tts_suppressed(session):
             return
         combined = session.append_streaming_ai_transcript(sentence)
         vinfo(
@@ -773,11 +1320,15 @@ async def process_tenant_speech(
         if on_stream_text:
             await on_stream_text(combined)
         if on_audio_part:
-            audio = await synthesize_with_fallback(
-                sentence,
+            synth_task = _track_turn_tts_task(
                 session,
-                budget_remaining_s=_remaining_turn_budget_s(session),
+                synthesize_with_fallback(
+                    sentence,
+                    session,
+                    budget_remaining_s=_remaining_turn_budget_s(session),
+                ),
             )
+            audio = await synth_task
             if audio:
                 session.streamed_audio_sent_during_turn = True
                 vinfo(
@@ -790,7 +1341,7 @@ async def process_tenant_speech(
                     bytes=len(audio),
                     detail=f"sentence={sentence[:60]!r}",
                 )
-                await on_audio_part(audio, False)
+                await _maybe_deliver_audio_part(session, on_audio_part, audio, False)
             else:
                 vwarn(
                     logger,
@@ -810,6 +1361,8 @@ async def process_tenant_speech(
         combine_audio: bool = False,
         require_speech: bool = False,
     ) -> tuple[str, list[bytes], bool]:
+        if getattr(session, "pending_hangup", False):
+            return "", [], False
         if require_speech:
             session.tts_confirm_priority = True
             await _release_buffered_speakables(discard=True)
@@ -971,19 +1524,25 @@ async def process_tenant_speech(
             session.skip_states,
             questions=session.questions,
             confirmed_fields=session.confirmed_fields,
+            flow_context=session.conditional_flow_context(),
+            raw_answers=session.raw_answers,
         )
-        session.current_state = next_state or CallState.WRAP_UP.value
-        log_state_transition(
-            session.call_id,
-            prior_state_val,
-            session.current_state,
+        target_state = next_state or CallState.WRAP_UP.value
+        if not _apply_guarded_state_transition(
+            session,
+            target_state,
             "Answered (confirmed)",
-            0,
-            questions=session.questions,
-        )
+            retry_count=0,
+        ):
+            session.current_state = CallState.WRAP_UP.value
         session.refresh_progress()
         if screening_complete(
-            session.extracted_data, session.skip_states, questions=session.questions
+            session.extracted_data,
+            session.skip_states,
+            questions=session.questions,
+            confirmed_fields=session.confirmed_fields,
+            flow_context=session.conditional_flow_context(),
+            raw_answers=session.raw_answers,
         ):
             session.current_state = CallState.WRAP_UP.value
             session.refresh_progress()
@@ -1012,38 +1571,16 @@ async def process_tenant_speech(
         Returns a finished turn (the read-back question) when confirmation is
         needed, or None when the field isn't high-stakes / has no value.
         """
-        state_value = answered_state
-        confirm_map = build_confirm_field_map(session.questions)
-        field = confirm_map.get(state_value)
-        if not field:
+        read_back = try_open_readback_confirmation(session, answered_state)
+        if not read_back:
             return None
-        if field in session.confirmed_fields:
-            return None
-        value = session.extracted_data.get(field)
-        if not value:
-            return None
-        if field == "email":
-            from app.core.screening_flow import sanitize_stored_email
-
-            validated = sanitize_stored_email(str(value))
-            if not validated:
-                session.extracted_data.pop(field, None)
-                return None
-            value = validated
-            session.extracted_data[field] = validated
-        session.pending_confirmation = {
-            "field": field,
-            "state": state_value,
-            "value": str(value),
-            "attempts": 1,
-        }
-        read_back = readback_prompt_for_state(
-            state_value,
-            str(value),
-            session.questions,
-            language_code=session.call_language,
+        pending = session.pending_confirmation or {}
+        logger.info(
+            "[%s] Read-back confirm %s=%r",
+            session.call_id,
+            pending.get("field"),
+            pending.get("value"),
         )
-        logger.info("[%s] Read-back confirm %s=%r", session.call_id, field, value)
         return await finish_turn(
             read_back, ack=read_back, follow_up="", require_speech=True
         )
@@ -1053,10 +1590,7 @@ async def process_tenant_speech(
         field: str,
     ) -> tuple[str, list[bytes], bool]:
         """Clear a failed read-back and re-ask the owning question."""
-        session.pending_confirmation = None
-        session.extracted_data.pop(field, None)
-        session.current_state = state_obj
-        session.retry_count = 0
+        session.reopen_question_after_failed_confirmation(state_obj, field)
         prompt = repair_prompt_for_state(
             state_obj,
             session.questions,
@@ -1096,6 +1630,34 @@ async def process_tenant_speech(
             follow_up="",
             require_speech=bool(session.pending_confirmation),
         )
+
+    # Liveness ack right after a silence nudge — re-ask before the LLM so short
+    # replies (e.g. Spanish "si") are not mis-extracted as screening answers.
+    if session.silence_nudge_active:
+        session.silence_nudge_active = False
+        if is_liveness_acknowledgment(
+            transcript, language_code=session.call_language
+        ):
+            logger.info(
+                "[%s] Liveness ack after silence nudge — re-asking %s",
+                session.call_id,
+                prior_state,
+            )
+            question = session.get_current_question()
+            prompt = localized_question_text(
+                question,
+                language_code=session.call_language,
+                key="question",
+            ) or _localize(
+                session,
+                "Please go ahead when you're ready.",
+                "Adelante cuando este listo.",
+            )
+            return await finish_turn(
+                prompt,
+                ack=_localize(session, "Great, thanks.", "Perfecto, gracias."),
+                follow_up=prompt,
+            )
 
     # ── The single LLM brain ────────────────────────────────────────────────
     # ONE call resolves intent, FAQ answering, field extraction, and the spoken
@@ -1206,7 +1768,11 @@ async def process_tenant_speech(
                 re_changed[f] = str(nv)
 
         if re_changed:
-            session.merge_extracted_data(re_changed, raw_text=transcript)
+            session.merge_extracted_data(
+                re_changed,
+                raw_text=transcript,
+                allow_overwrite=frozenset(re_changed),
+            )
             for c in cfields:
                 if c["field"] in re_changed:
                     c["value"] = str(
@@ -1239,10 +1805,10 @@ async def process_tenant_speech(
             )
             return await _reask_current(ack_text=response_text or None)
 
-        if intent_kind in ("human", "callback", "stop"):
-            # Hand off to the call-control handling below.
+        if intent_kind in ("human", "stop"):
+            # Hard end clears read-back; soft callback may preserve it below.
             session.pending_confirmation = None
-        else:
+        elif intent_kind != "callback":
             # Refusal / unclear — re-read the correction, then return to the question.
             pending["attempts"] = pending.get("attempts", 1) + 1
             if pending["attempts"] > confirmation_attempt_limit(session):
@@ -1251,6 +1817,7 @@ async def process_tenant_speech(
                 return await _reask_current()
             again = response_text or build_correction_readback(cfields, session=session)
             return await finish_turn(again, ack=again, follow_up="", require_speech=True)
+        # callback: hand off to soft redirect without clearing pending read-back.
 
     # ── Pending read-back confirmation ──────────────────────────────────────
     # The previous turn read a high-stakes field (name/phone/email) back to the
@@ -1302,10 +1869,7 @@ async def process_tenant_speech(
 
         if intent_kind == "refusal":
             logger.info("[%s] Caller rejected %s; repairing", session.call_id, field)
-            session.pending_confirmation = None
-            session.extracted_data.pop(field, None)
-            session.current_state = state_obj
-            session.retry_count = 0
+            session.reopen_question_after_failed_confirmation(state_obj, field)
             prompt = response_text or repair_prompt_for_state(
                 pending["state"],
                 session.questions,
@@ -1345,36 +1909,17 @@ async def process_tenant_speech(
             "callback_redirect_offered"
         ):
             session.control_flags["callback_redirect_offered"] = True
-            session.pending_confirmation = None
-            question = session.get_current_question()
-            q_text = localized_question_text(
-                question,
-                language_code=session.call_language,
-                key="question",
-            )
-            if q_text:
-                response_text = (
-                    _localize(
-                        session,
-                        "No problem — we can follow up later. ",
-                        "No hay problema, podemos dar seguimiento despues. ",
-                    )
-                    + f"{_localize(session, 'Before you go,', 'Antes de irse,')} {q_text}"
-                )
-            else:
-                response_text = (
-                    _localize(
-                        session,
-                        "No problem — we can follow up later. Is there anything else you need right now?",
-                        "No hay problema, podemos dar seguimiento despues. Necesita algo mas ahora?",
-                    )
-                )
+            response_text = soft_callback_redirect_text(session)
             logger.info(
                 "[%s] Callback redirect (soft) — staying on %s",
                 session.call_id,
                 session.current_state,
             )
-            return await finish_turn(response_text, complete=False)
+            return await finish_turn(
+                response_text,
+                complete=False,
+                require_speech=bool(session.pending_confirmation),
+            )
 
         session.control_flags[control_intent] = True
         session.merge_extracted_data(
@@ -1382,14 +1927,11 @@ async def process_tenant_speech(
             raw_text=transcript,
         )
         prior_state_val = session.current_state
-        session.current_state = CallState.ENDED.value
-        log_state_transition(
-            session.call_id,
-            prior_state_val,
+        _apply_guarded_state_transition(
+            session,
             CallState.ENDED.value,
             f"Control intent: {control_intent}",
-            session.retry_count,
-            questions=session.questions,
+            retry_count=session.retry_count,
         )
         if control_intent == "human_requested":
             response_text = response_text or (
@@ -1417,29 +1959,6 @@ async def process_tenant_speech(
             )
         return await finish_turn(response_text, complete=True)
 
-    # Liveness ack right after a silence nudge — re-ask, don't treat as an answer.
-    if session.silence_nudge_active:
-        session.silence_nudge_active = False
-        if is_liveness_acknowledgment(transcript):
-            logger.info(
-                "[%s] Liveness ack after silence nudge — re-asking %s",
-                session.call_id,
-                prior_state,
-            )
-            question = session.get_current_question()
-            prompt = (question or {}).get(
-                "question"
-            ) or _localize(
-                session,
-                "Please go ahead when you're ready.",
-                "Adelante cuando este listo.",
-            )
-            return await finish_turn(
-                prompt,
-                ack=_localize(session, "Great, thanks.", "Perfecto, gracias."),
-                follow_up=prompt,
-            )
-
     # ── Relevance gate: off-topic or unintelligible replies ─────────────────
     # Two distinct cases, handled differently:
     #   off_topic  → caller said something unrelated ("I want to go swimming").
@@ -1457,15 +1976,16 @@ async def process_tenant_speech(
             prior_state_val = session.current_state
             session.mark_refused(session.current_state, transcript)
             session.next_state()
-            log_state_transition(
-                session.call_id,
-                prior_state_val,
-                session.current_state,
+            target_state = session.current_state
+            session.current_state = prior_state_val
+            if not _apply_guarded_state_transition(
+                session,
+                target_state,
                 f"Relevance limit reached (relevance={relevance})",
-                session.retry_count,
-                questions=session.questions,
-            )
-            text = brief_transition(session.questions_answered)
+                retry_count=session.retry_count,
+            ):
+                session.current_state = prior_state_val
+            text = human_ack(session)
             ack, follow_up = compose_agent_response(session, text, prior_state)
             text = " ".join(part for part in (ack, follow_up) if part).strip()
             is_complete = session.current_state in (
@@ -1496,10 +2016,20 @@ async def process_tenant_speech(
     # The LLM is the sole authority on extraction. Store its values; regex only
     # normalizes formats afterwards (see normalize_extracted_fields).
     if extracted:
-        session.merge_extracted_data(extracted, raw_text=transcript)
+        if getattr(session, "pending_hangup", False):
+            logger.info(
+                "[%s] Ignoring LLM extraction — hangup in progress",
+                session.call_id,
+            )
+            return "", [], False
+        session.merge_extracted_data(
+            extracted,
+            raw_text=transcript,
+            allow_overwrite=frozenset(corrected_fields),
+        )
         for key in ("preferred_language", "language", "call_language"):
             if key in session.extracted_data:
-                _apply_session_language(session, session.extracted_data.get(key))
+                await _apply_session_language(session, session.extracted_data.get(key))
                 break
         logger.info(
             "[%s] Extracted fields merged: %s", session.call_id, sorted(extracted)
@@ -1528,7 +2058,7 @@ async def process_tenant_speech(
                 "return_state": prior_state,
                 "attempts": 1,
             }
-            read_back = build_correction_readback(to_confirm)
+            read_back = build_correction_readback(to_confirm, session=session)
             logger.info(
                 "[%s] Caller corrected earlier field(s): %s",
                 session.call_id,
@@ -1549,9 +2079,7 @@ async def process_tenant_speech(
         clarified_key = f"{issue_kind}_clarified_{prior_state}"
         if not session.control_flags.get(clarified_key):
             session.control_flags[clarified_key] = True
-            clarify = response_text or (
-                "Just to make sure I have that right — could you confirm that detail?"
-            )
+            clarify = response_text or _plausibility_clarify_fallback(session)
             logger.info(
                 "[%s] %s issue on %s: %s",
                 session.call_id,
@@ -1567,16 +2095,18 @@ async def process_tenant_speech(
         session.skip_states,
         questions=session.questions,
         confirmed_fields=session.confirmed_fields,
+        flow_context=session.conditional_flow_context(),
+        raw_answers=session.raw_answers,
     )
-    # The LLM is the brain: if it understood the caller but deliberately asked a
-    # follow-up (question_complete=false AND its reply is a question), honor that
-    # and DO NOT advance — even when a deterministic slot already has a rough
-    # value. This is what stops "What's the exact date?" from being glued to the
-    # next question. question_complete=true always wins and advances.
-    llm_wants_more = (
-        understood and not question_complete and _asks_for_more(response_text)
+    # The LLM is the brain: when it understood the caller but still marks the
+    # current question incomplete, stay — even if a rough slot is already filled
+    # (e.g. move_in_raw without an exact date). question_complete=true always
+    # advances; punctuation in response_text is not consulted.
+    done = question_advance_ready(
+        question_complete=question_complete,
+        deterministic_done=deterministic_done,
+        understood=understood,
     )
-    done = (question_complete or deterministic_done) and not llm_wants_more
 
     async def _finish_advance(
         ack_text: str | None = None,
@@ -1595,17 +2125,17 @@ async def process_tenant_speech(
             session.skip_states,
             questions=session.questions,
             confirmed_fields=session.confirmed_fields,
+            flow_context=session.conditional_flow_context(),
+            raw_answers=session.raw_answers,
         )
         new_state = next_st or CallState.WRAP_UP.value
-        session.current_state = new_state
-        log_state_transition(
-            session.call_id,
-            prior_state_val,
+        if not _apply_guarded_state_transition(
+            session,
             new_state,
             reason,
-            0,
-            questions=session.questions,
-        )
+            retry_count=0,
+        ):
+            session.current_state = CallState.WRAP_UP.value
         session.refresh_progress()
         text = strip_upcoming_question_from_ack(
             session, (ack_text or response_text or "").strip() or human_ack(session)
@@ -1613,7 +2143,12 @@ async def process_tenant_speech(
         ack, follow_up = compose_agent_response(session, text, prior_state)
         spoken = " ".join(part for part in (ack, follow_up) if part).strip()
         if screening_complete(
-            session.extracted_data, session.skip_states, questions=session.questions
+            session.extracted_data,
+            session.skip_states,
+            questions=session.questions,
+            confirmed_fields=session.confirmed_fields,
+            flow_context=session.conditional_flow_context(),
+            raw_answers=session.raw_answers,
         ):
             session.current_state = CallState.WRAP_UP.value
             session.refresh_progress()
@@ -1637,15 +2172,16 @@ async def process_tenant_speech(
         prior_state_val = session.current_state
         session.mark_refused(session.current_state, transcript)
         session.next_state()
-        log_state_transition(
-            session.call_id,
-            prior_state_val,
-            session.current_state,
+        target_state = session.current_state
+        session.current_state = prior_state_val
+        if not _apply_guarded_state_transition(
+            session,
+            target_state,
             reason,
-            session.retry_count,
-            questions=session.questions,
-        )
-        text = brief_transition(session.questions_answered)
+            retry_count=session.retry_count,
+        ):
+            session.current_state = prior_state_val
+        text = human_ack(session)
         ack, follow_up = compose_agent_response(session, text, prior_state)
         spoken = " ".join(part for part in (ack, follow_up) if part).strip()
         is_complete = session.current_state in (
@@ -1744,6 +2280,8 @@ async def process_tenant_speech(
             session.skip_states,
             questions=session.questions,
             confirmed_fields=session.confirmed_fields,
+            flow_context=session.conditional_flow_context(),
+            raw_answers=session.raw_answers,
         )
         if made_progress:
             if needs_readback_confirmation(
@@ -1784,7 +2322,11 @@ async def process_tenant_speech(
                 reason="Bounded follow-ups exhausted, accepting partial answer",
             )
         if not response_text:
-            response_text = "Thanks — I just need one more detail to go with that."
+            response_text = _localize(
+                session,
+                "Thanks — I just need one more detail to go with that.",
+                "Gracias. Solo me falta un detalle mas para completar eso.",
+            )
         return await finish_turn(response_text, ack=response_text, follow_up="")
 
     # Did not answer the current question (refusal or unclear) — escalate retries.
@@ -1827,15 +2369,11 @@ async def end_call_for_provider_failure(
         "detail": detail,
     }
     session.add_error("provider_failure", f"{service}: {detail}")
-    prior = session.current_state
-    session.current_state = CallState.ENDED.value
-    log_state_transition(
-        session.call_id,
-        prior,
+    _apply_guarded_state_transition(
+        session,
         CallState.ENDED.value,
         f"Provider failure: {service}",
-        session.retry_count,
-        questions=session.questions,
+        retry_count=session.retry_count,
     )
     message = provider_failure_message_for_session(session)
     session.add_transcript("AI", message)
@@ -1877,7 +2415,12 @@ async def handle_silence(session: ConversationSession) -> tuple[str, list[bytes]
         )
         session.add_transcript("AI", farewell)
         audio = await synthesize_with_fallback(farewell, session)
-        return farewell, [audio] if audio else [], True
+        if not audio:
+            # Avoid silent hangup when TTS is unavailable.
+            session.add_error("silence_goodbye_tts_failed", "No goodbye audio produced")
+            session.silence_count = max(0, len(prompts))
+            return farewell, [], False
+        return farewell, [audio], True
 
     prompt = prompts[session.silence_count - 1]
     session.silence_nudge_active = True
@@ -1912,6 +2455,21 @@ async def _collect_streamed_llm_raw(
     spoken_through = 0
     tts_tasks: list[asyncio.Task] = []
 
+    async def _drain_tts_tasks(*, cancel_pending: bool) -> None:
+        """Wait/cancel sentence-level TTS tasks so none leak past this turn."""
+        if not tts_tasks:
+            return
+        if cancel_pending:
+            for task in tts_tasks:
+                if not task.done():
+                    task.cancel()
+        results = await asyncio.gather(*tts_tasks, return_exceptions=True)
+        for item in results:
+            if isinstance(item, asyncio.CancelledError):
+                continue
+            if isinstance(item, Exception):
+                logger.warning("Streaming TTS task failed: %s", item)
+
     async def _consume() -> str:
         nonlocal buffer, spoken_through
         async for delta in stream_fn(
@@ -1931,15 +2489,16 @@ async def _collect_streamed_llm_raw(
 
     try:
         raw = await asyncio.wait_for(_consume(), timeout=attempt_timeout)
-        if tts_tasks:
-            results = await asyncio.gather(*tts_tasks, return_exceptions=True)
-            for item in results:
-                if isinstance(item, Exception):
-                    logger.warning("Streaming TTS task failed: %s", item)
+        await _drain_tts_tasks(cancel_pending=False)
         return raw
+    except asyncio.CancelledError:
+        await _drain_tts_tasks(cancel_pending=True)
+        raise
     except TimeoutError:
+        await _drain_tts_tasks(cancel_pending=True)
         raise
     except Exception:
+        await _drain_tts_tasks(cancel_pending=True)
         return None
 
 
@@ -2063,9 +2622,7 @@ async def get_llm_response_with_fallback(
                     session.llm_provider = provider_name
                     session.record_llm_usage(getattr(provider, "last_usage", None))
                     session.record_llm_latency(latency)
-                    hint = _llm_health_hints.setdefault(provider_name, {})
-                    hint["ok"] = hint.get("ok", 0.0) + 1.0
-                    hint["latency_ms"] = latency
+                    await _record_llm_health_success_shared(provider_name, latency)
                     if role == "fallback":
                         session.add_provider_event(
                             service="llm",
@@ -2114,8 +2671,7 @@ async def get_llm_response_with_fallback(
                     exc=e,
                 )
                 llm_attempt_log.append(info)
-                hint = _llm_health_hints.setdefault(provider_name, {})
-                hint["fail"] = hint.get("fail", 0.0) + 1.0
+                await _record_llm_health_failure_shared(provider_name)
             except json.JSONDecodeError as e:
                 vwarn(
                     logger,
@@ -2154,8 +2710,7 @@ async def get_llm_response_with_fallback(
                     exc=e,
                 )
                 llm_attempt_log.append(info)
-                hint = _llm_health_hints.setdefault(provider_name, {})
-                hint["fail"] = hint.get("fail", 0.0) + 1.0
+                await _record_llm_health_failure_shared(provider_name)
                 break  # Don't retry on auth/config errors
         return None
 
@@ -2207,15 +2762,16 @@ async def get_llm_response_with_fallback(
             else ""
         )
         # Candidate backups that are not the primary and have a configured key.
+        api_keys = providers.api_keys
         available = [
             name
-            for name, has_key in (
-                ("groq", bool(settings.groq_api_key)),
-                ("openai", bool(settings.openai_api_key)),
-                ("openrouter", bool(settings.openrouter_api_key)),
-                ("gemini", bool(settings.gemini_api_key)),
+            for name in (
+                "groq",
+                "openai",
+                "openrouter",
+                "gemini",
             )
-            if has_key and name != primary_kind
+            if api_keys.configured(name) and name != primary_kind
         ]
         # Admin choice: "none" disables, "auto" tries all available, a specific
         # provider is tried FIRST then the rest remain as a safety backstop.
@@ -2229,28 +2785,13 @@ async def get_llm_response_with_fallback(
 
         # Health-aware ordering: prefer providers with better recent success/failure
         # ratio and lower observed latency.
-        def _rank(name: str) -> tuple[float, float]:
-            hint = _llm_health_hints.get(name, {})
-            ok = float(hint.get("ok", 0.0))
-            fail = float(hint.get("fail", 0.0))
-            success_score = ok / max(1.0, ok + fail)
-            latency = float(hint.get("latency_ms", 999999.0))
-            return (-success_score, latency)
-
-        ordered = sorted(ordered, key=_rank)
-
-        def _provider_healthy(name: str) -> bool:
-            hint = _llm_health_hints.get(name, {})
-            ok = float(hint.get("ok", 0.0))
-            fail = float(hint.get("fail", 0.0))
-            # Skip providers that have failed repeatedly with no recent success
-            # (e.g. rate limits) so we don't burn turn budget on doomed attempts.
-            if fail >= 3.0 and ok == 0.0:
-                return False
-            return True
+        ranked: list[tuple[tuple[float, float], str]] = []
+        for _name in ordered:
+            ranked.append((await _llm_health_rank_shared(_name), _name))
+        ordered = [name for _, name in sorted(ranked, key=lambda item: item[0])]
 
         for name in ordered:
-            if not _provider_healthy(name):
+            if not await _llm_provider_healthy_for_fallback_shared(name):
                 vinfo(
                     logger,
                     f"Skipping unhealthy LLM fallback {name} (recent failures)",
@@ -2349,27 +2890,42 @@ async def _synthesize_chunks_pipelined(
     on_part_ready: AudioPartCallback | None = None,
 ) -> list[bytes]:
     """Synthesize sentence chunks with overlap: chunk 1 starts while chunk 0 plays."""
-    if not chunks:
+    if not chunks or _turn_tts_suppressed(session):
         return []
     parts: list[bytes] = []
     first = await synthesize_with_fallback(chunks[0], session)
-    if first:
+    if first and not _turn_tts_suppressed(session):
         parts.append(first)
-        if on_part_ready:
-            await on_part_ready(first, len(chunks) == 1)
-    if len(chunks) == 1:
+        await _maybe_deliver_audio_part(
+            session, on_part_ready, first, len(chunks) == 1
+        )
+    if len(chunks) == 1 or _turn_tts_suppressed(session):
         return parts
 
     tasks = [
-        asyncio.create_task(synthesize_with_fallback(chunk, session))
+        _track_turn_tts_task(session, synthesize_with_fallback(chunk, session))
         for chunk in chunks[1:]
     ]
-    for idx, task in enumerate(tasks):
-        audio = await task
-        if audio:
-            parts.append(audio)
-            if on_part_ready:
-                await on_part_ready(audio, idx == len(tasks) - 1)
+    try:
+        for idx, task in enumerate(tasks):
+            if _turn_tts_suppressed(session):
+                for pending in tasks[idx:]:
+                    if not pending.done():
+                        pending.cancel()
+                await asyncio.gather(*tasks[idx:], return_exceptions=True)
+                break
+            audio = await task
+            if audio:
+                parts.append(audio)
+                await _maybe_deliver_audio_part(
+                    session, on_part_ready, audio, idx == len(tasks) - 1
+                )
+    except asyncio.CancelledError:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
     return parts
 
 
@@ -2381,19 +2937,43 @@ async def _synthesize_ack_followup_parallel(
     on_part_ready: AudioPartCallback | None = None,
 ) -> list[bytes]:
     """Run ack and follow-up TTS in parallel; enqueue ack before follow-up."""
+    if _turn_tts_suppressed(session):
+        return []
     parts: list[bytes] = []
-    ack_task = asyncio.create_task(synthesize_with_fallback(ack, session))
-    follow_task = asyncio.create_task(synthesize_with_fallback(follow_up, session))
-    ack_audio = await ack_task
-    if ack_audio:
-        parts.append(ack_audio)
-        if on_part_ready:
-            await on_part_ready(ack_audio, False)
-    follow_audio = await follow_task
-    if follow_audio:
-        parts.append(follow_audio)
-        if on_part_ready:
-            await on_part_ready(follow_audio, True)
+    ack_task = _track_turn_tts_task(session, synthesize_with_fallback(ack, session))
+    follow_task = _track_turn_tts_task(
+        session, synthesize_with_fallback(follow_up, session)
+    )
+    try:
+        try:
+            ack_audio = await ack_task
+        except asyncio.CancelledError:
+            if not follow_task.done():
+                follow_task.cancel()
+            await asyncio.gather(follow_task, return_exceptions=True)
+            if _turn_tts_suppressed(session):
+                return parts
+            raise
+        if ack_audio and not _turn_tts_suppressed(session):
+            parts.append(ack_audio)
+            await _maybe_deliver_audio_part(session, on_part_ready, ack_audio, False)
+        if _turn_tts_suppressed(session):
+            if not follow_task.done():
+                follow_task.cancel()
+            await asyncio.gather(follow_task, return_exceptions=True)
+            return parts
+        follow_audio = await follow_task
+        if follow_audio and not _turn_tts_suppressed(session):
+            parts.append(follow_audio)
+            await _maybe_deliver_audio_part(
+                session, on_part_ready, follow_audio, True
+            )
+    except asyncio.CancelledError:
+        for task in (ack_task, follow_task):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(ack_task, follow_task, return_exceptions=True)
+        raise
     return parts
 
 
@@ -2439,8 +3019,7 @@ async def synthesize_speech_parts(
         combined = " ".join(part for part in (ack, follow_up) if part).strip()
         audio = await synthesize_with_fallback(combined, session)
         if audio:
-            if on_part_ready:
-                await on_part_ready(audio, True)
+            await _maybe_deliver_audio_part(session, on_part_ready, audio, True)
             return [audio]
         return parts
 
@@ -2455,8 +3034,7 @@ async def synthesize_speech_parts(
         audio = await synthesize_with_fallback(ack, session)
         if audio:
             parts.append(audio)
-            if on_part_ready:
-                await on_part_ready(audio, not follow_up)
+            await _maybe_deliver_audio_part(session, on_part_ready, audio, not follow_up)
     if follow_up:
         follow_chunks = _split_for_tts(follow_up)
         if len(follow_chunks) > 1:
@@ -2470,8 +3048,7 @@ async def synthesize_speech_parts(
             audio = await synthesize_with_fallback(follow_up, session)
             if audio:
                 parts.append(audio)
-                if on_part_ready:
-                    await on_part_ready(audio, True)
+                await _maybe_deliver_audio_part(session, on_part_ready, audio, True)
     return parts
 
 
@@ -2636,14 +3213,15 @@ async def synthesize_with_fallback(
         from app.providers.tts.deepgram_tts import DeepgramTTSProvider
         from app.providers.tts.google_tts import GoogleTTSProvider
 
+        api_keys = providers.api_keys
         # Which backup voices are usable and not the primary.
         deepgram_ok = (
             not isinstance(providers.tts, DeepgramTTSProvider)
-            and bool(settings.deepgram_api_key)
+            and api_keys.configured("deepgram")
         )
         google_ok = (
             not isinstance(providers.tts, GoogleTTSProvider)
-            and bool(settings.google_application_credentials)
+            and api_keys.configured("google")
         )
         available = [
             name
@@ -2825,6 +3403,176 @@ def _has_sufficient_extraction(
     return answered >= max(1, int(len(active) * 0.8))
 
 
+_FINALIZE_SIDE_EFFECTS_ENQUEUE_LOCK_TTL = 120
+
+
+async def _acquire_side_effects_enqueue_lock(call_uuid) -> bool:
+    """Short cross-worker lock while Celery tasks are being enqueued."""
+    from app.core.redis_client import acquire_once, ping
+
+    if not await ping():
+        return True
+    return await acquire_once(
+        f"finalize:sideeffects:enqueue:{call_uuid}",
+        _FINALIZE_SIDE_EFFECTS_ENQUEUE_LOCK_TTL,
+        fail_closed=True,
+    )
+
+
+async def _release_side_effects_enqueue_lock(call_uuid) -> None:
+    from app.core.redis_client import cache_delete
+
+    await cache_delete(f"finalize:sideeffects:enqueue:{call_uuid}")
+
+
+async def _enqueue_finalize_side_effect_channel(
+    db,
+    *,
+    tenant_id,
+    channel: str,
+    redis_enqueue_lock: bool,
+    enqueue,
+) -> None:
+    """Queue one side effect and claim only after Celery accepts the task."""
+    import uuid as uuid_module
+
+    from app.db.crud import (
+        claim_finalize_side_effect_channel,
+        is_finalize_side_effect_channel_claimed,
+        release_finalize_side_effect_channel,
+    )
+
+    tenant_uuid = (
+        tenant_id
+        if isinstance(tenant_id, uuid_module.UUID)
+        else uuid_module.UUID(str(tenant_id))
+    )
+    if await is_finalize_side_effect_channel_claimed(db, tenant_uuid, channel):
+        return
+
+    reserved = False
+    if not redis_enqueue_lock:
+        reserved = await claim_finalize_side_effect_channel(db, tenant_uuid, channel)
+        if not reserved:
+            return
+
+    try:
+        queued = await enqueue()
+    except Exception:
+        if reserved:
+            await release_finalize_side_effect_channel(db, tenant_uuid, channel)
+        raise
+
+    if not queued:
+        if reserved:
+            await release_finalize_side_effect_channel(db, tenant_uuid, channel)
+        return
+
+    if redis_enqueue_lock:
+        claimed = await claim_finalize_side_effect_channel(db, tenant_uuid, channel)
+        if not claimed:
+            logger.warning(
+                "Side-effect channel %s queued but claim lost race for tenant %s",
+                channel,
+                tenant_uuid,
+            )
+
+
+async def _dispatch_finalize_side_effects(
+    db,
+    *,
+    call_uuid,
+    tenant_id,
+    session: ConversationSession,
+    persist_phone: str,
+    merged: dict,
+    score: int,
+    status: str,
+    reasons: list,
+) -> None:
+    """Enqueue post-call email/CRM/latency tasks with per-channel idempotency."""
+    from app.core.redis_client import ping
+
+    lock_acquired = await _acquire_side_effects_enqueue_lock(call_uuid)
+    if not lock_acquired:
+        logger.warning(
+            "[%s] Skipping side effects — another worker is enqueueing",
+            session.call_id,
+        )
+        return
+
+    redis_enqueue_lock = await ping()
+    try:
+        notif = await _resolve_session_notification_settings(session, db)
+        email_settings = notification_settings_email_dict(notif)
+        call_id = str(call_uuid)
+
+        if notif.email_notifications_enabled:
+            await _enqueue_finalize_side_effect_channel(
+                db,
+                tenant_id=tenant_id,
+                channel="email",
+                redis_enqueue_lock=redis_enqueue_lock,
+                enqueue=lambda: _trigger_email_notification(
+                    db,
+                    call_id=call_id,
+                    phone_number=persist_phone,
+                    tenant_data=merged,
+                    score=score,
+                    status=status,
+                    reasons=reasons,
+                    transcript=session.get_full_transcript(),
+                    duration=session.duration_seconds,
+                    providers={
+                        "stt": session.stt_provider,
+                        "llm": session.llm_provider,
+                        "tts": session.tts_provider,
+                    },
+                    email_settings=email_settings,
+                ),
+            )
+
+        if crm_notifications_active(notif):
+            await _enqueue_finalize_side_effect_channel(
+                db,
+                tenant_id=tenant_id,
+                channel="crm",
+                redis_enqueue_lock=redis_enqueue_lock,
+                enqueue=lambda: _trigger_crm_webhook(
+                    db,
+                    crm_url=notif.crm_webhook_url,
+                    call_id=call_id,
+                    phone_number=persist_phone,
+                    status=status,
+                    score=score,
+                    tenant_data=merged,
+                    app_url=settings.app_url,
+                    email_settings=email_settings,
+                ),
+            )
+
+        if notif.email_notifications_enabled:
+            from app.services.latency_alerts import queue_latency_alert_if_needed
+
+            async def _enqueue_latency_alert() -> bool:
+                return queue_latency_alert_if_needed(
+                    session,
+                    call_id=session.call_id,
+                    email_settings=email_settings,
+                )
+
+            await _enqueue_finalize_side_effect_channel(
+                db,
+                tenant_id=tenant_id,
+                channel="latency",
+                redis_enqueue_lock=redis_enqueue_lock,
+                enqueue=_enqueue_latency_alert,
+            )
+    finally:
+        if lock_acquired:
+            await _release_side_effects_enqueue_lock(call_uuid)
+
+
 def _build_call_error_log(session: ConversationSession) -> dict | None:
     """Merge session errors and per-turn latency traces for persistence."""
     payload: dict = {}
@@ -2832,7 +3580,22 @@ def _build_call_error_log(session: ConversationSession) -> dict | None:
         payload["errors"] = session.errors
     if session.turn_traces:
         payload["turn_traces"] = session.turn_traces
+    fallback = session.control_flags.get("questions_config_fallback")
+    if fallback not in (None, ""):
+        payload["questions_config_fallback"] = str(fallback)
     return payload or None
+
+
+def _merge_call_error_log(
+    existing: dict | None, session_log: dict | None
+) -> dict | None:
+    """Preserve prior error_log keys (e.g. abandon metadata) when finalizing."""
+    if not existing and not session_log:
+        return None
+    merged = dict(existing or {})
+    if session_log:
+        merged.update(session_log)
+    return merged or None
 
 
 async def finalize_call(session: ConversationSession, db) -> dict:
@@ -2854,9 +3617,13 @@ async def finalize_call(session: ConversationSession, db) -> dict:
             return {"call_id": session.call_id, "status": "skipped"}
         _finalizing_calls.add(session.call_id)
 
+    from app.core.redis_client import clear_finalize_inflight, set_finalize_inflight
+
+    await set_finalize_inflight(session.call_id)
     try:
         return await _finalize_call_impl(session, db)
     finally:
+        await clear_finalize_inflight(session.call_id)
         async with _finalize_calls_lock:
             _finalizing_calls.discard(session.call_id)
 
@@ -2972,12 +3739,17 @@ async def _finalize_call_impl(session: ConversationSession, db) -> dict:
     from app.db.crud import (
         create_call,
         create_tenant,
-        get_all_settings,
         get_call_by_call_id,
         update_call,
+        wait_for_call_by_call_id,
     )
 
     call = await get_call_by_call_id(db, session.call_id)
+    if call is None and not (session.phone_number or "").strip():
+        call = await wait_for_call_by_call_id(db, session.call_id, timeout=1.0)
+    await sync_session_phone_from_db(session, db, call=call)
+    persist_phone = (session.phone_number or "").strip() or "unknown"
+
     db_persisted = False
     if call is None:
         # Production path expects call.initiated to create the row, but if that
@@ -2991,12 +3763,27 @@ async def _finalize_call_impl(session: ConversationSession, db) -> dict:
         call = await create_call(
             db,
             call_id=session.call_id,
-            phone_number=session.phone_number or "unknown",
+            phone_number=persist_phone,
             direction=direction,
             status="in_progress",
         )
     if call:
         from app.db.crud import get_tenant_by_call
+
+        if call.status == "abandoned":
+            logger.warning(
+                "[%s] Finalize skipped — call is already abandoned",
+                session.call_id,
+            )
+            return {
+                "call_id": session.call_id,
+                "status": "skipped",
+                "reason": "abandoned",
+                "score": score,
+                "reasons": reasons,
+                "tenant_data": merged,
+                "db_persisted": False,
+            }
 
         # Detect a re-finalize: a call already marked terminal, or one that
         # already has a tenant row, has had its side effects (email + CRM) fired
@@ -3005,7 +3792,8 @@ async def _finalize_call_impl(session: ConversationSession, db) -> dict:
         # duplicate email or fire the CRM webhook twice.
         existing_tenant = await get_tenant_by_call(db, call.id)
         already_finalized = (
-            call.status in ("completed", "failed") or existing_tenant is not None
+            call.status in ("completed", "failed", "abandoned")
+            or existing_tenant is not None
         )
 
         call_fields = {
@@ -3027,10 +3815,32 @@ async def _finalize_call_impl(session: ConversationSession, db) -> dict:
             "avg_turn_ms": session.avg_turn_latency_ms,
             "max_turn_ms": int(round(session.max_turn_latency_ms)),
             "turn_count": session.turn_latency_samples,
-            "error_log": _build_call_error_log(session),
+            "error_log": _merge_call_error_log(
+                call.error_log if isinstance(call.error_log, dict) else None,
+                _build_call_error_log(session),
+            ),
         }
 
-        await update_call(db, session.call_id, commit=False, **call_fields)
+        from app.db.crud import update_call_if_active
+
+        call_persisted = await update_call_if_active(
+            db, session.call_id, commit=False, **call_fields
+        )
+        if not call_persisted:
+            await db.rollback()
+            logger.warning(
+                "[%s] Finalize persist skipped — call is no longer active",
+                session.call_id,
+            )
+            return {
+                "call_id": session.call_id,
+                "status": "skipped",
+                "reason": "not_active",
+                "score": score,
+                "reasons": reasons,
+                "tenant_data": merged,
+                "db_persisted": False,
+            }
 
         db_persisted = True
         # Create tenant record (skip if one already exists for this call)
@@ -3061,10 +3871,14 @@ async def _finalize_call_impl(session: ConversationSession, db) -> dict:
 
             if custom_fields:
                 merged["custom_fields"] = custom_fields
+            finalize_notif = await _resolve_session_notification_settings(session, db)
             normalized_data: dict[str, Any] = {
                 "screening_questions": session.questions,
                 "qualified_score_threshold": session.qualified_score_threshold,
                 "review_score_threshold": session.review_score_threshold,
+                NOTIFICATION_SETTINGS_PERSIST_KEY: notification_settings_persist_dict(
+                    finalize_notif
+                ),
             }
             if custom_fields:
                 normalized_data["custom_fields"] = custom_fields
@@ -3092,7 +3906,7 @@ async def _finalize_call_impl(session: ConversationSession, db) -> dict:
                 await create_tenant(
                     db=db,
                     call_id=call.id,
-                    phone_number=session.phone_number,
+                    phone_number=persist_phone,
                     qualification_score=score,
                     qualification_status=status,
                     disqualify_reasons=reasons if reasons else None,
@@ -3124,64 +3938,26 @@ async def _finalize_call_impl(session: ConversationSession, db) -> dict:
         if tenant_row is None:
             tenant_row = await get_tenant_by_call(db, call.id)
 
-        # Side effects (email + CRM) fire exactly once, only when an applicant
-        # profile was saved. Beyond the per-worker DB check above, take a short
-        # cross-worker Redis lock so two workers finalizing simultaneously can't
-        # both send the email / fire the CRM webhook.
-        send_side_effects = not already_finalized and tenant_row is not None
-        if not already_finalized and tenant_row is None:
+        # Side effects (email + CRM) fire per channel, only when an applicant
+        # profile was saved. Per-channel DB claims are set only after Celery
+        # accepts each task so a queue failure can be retried on a later finalize.
+        if tenant_row is not None:
+            await _dispatch_finalize_side_effects(
+                db,
+                call_uuid=call.id,
+                tenant_id=tenant_row.id,
+                session=session,
+                persist_phone=persist_phone,
+                merged=merged,
+                score=score,
+                status=status,
+                reasons=reasons,
+            )
+        elif not already_finalized:
             logger.warning(
                 "[%s] Skipping email/CRM — no tenant profile saved for this call",
                 session.call_id,
             )
-        if send_side_effects:
-            from app.core.redis_client import acquire_once
-
-            send_side_effects = await acquire_once(
-                f"finalize:sideeffects:{call.id}", 86400
-            )
-
-        if send_side_effects:
-            all_settings = await get_all_settings(db)
-
-            # Send email notification (background task)
-            email_notifications = all_settings.get(
-                "email_notifications_enabled", "true"
-            )
-            if email_notifications.lower() == "true":
-                _trigger_email_notification(
-                    call_id=str(call.id),
-                    phone_number=session.phone_number,
-                    tenant_data=merged,
-                    score=score,
-                    status=status,
-                    reasons=reasons,
-                    transcript=session.get_full_transcript(),
-                    duration=session.duration_seconds,
-                    providers={
-                        "stt": session.stt_provider,
-                        "llm": session.llm_provider,
-                        "tts": session.tts_provider,
-                    },
-                )
-
-            # Fire CRM webhook if configured
-            crm_url = all_settings.get("crm_webhook_url", "")
-            if crm_url:
-                _trigger_crm_webhook(
-                    crm_url=crm_url,
-                    call_id=str(call.id),
-                    phone_number=session.phone_number,
-                    status=status,
-                    score=score,
-                    tenant_data=merged,
-                    app_url=settings.app_url,
-                )
-
-            if all_settings.get("email_notifications_enabled", "true").lower() == "true":
-                from app.services.latency_alerts import queue_latency_alert_if_needed
-
-                queue_latency_alert_if_needed(session, call_id=session.call_id)
 
     return {
         "call_id": session.call_id,
@@ -3193,7 +3969,23 @@ async def _finalize_call_impl(session: ConversationSession, db) -> dict:
     }
 
 
-def _trigger_email_notification(call_id: str, phone_number: str, **kwargs) -> None:
+async def _resolve_session_notification_settings(
+    session: ConversationSession, db: AsyncSession
+) -> NotificationSettingsSnapshot:
+    """Return notification settings frozen at call start, with a safe fallback."""
+    frozen = getattr(session, "notification_settings", None)
+    if frozen is not None:
+        return frozen
+    logger.warning(
+        "[%s] Missing frozen notification settings — loading live admin values",
+        session.call_id,
+    )
+    return await load_notification_settings_from_db(db)
+
+
+async def _trigger_email_notification(
+    db, call_id: str, phone_number: str, **kwargs
+) -> bool:
     """Fire Celery task for email notification (non-blocking)."""
     try:
         from app.services.email_service import send_screening_email_task
@@ -3203,54 +3995,27 @@ def _trigger_email_notification(call_id: str, phone_number: str, **kwargs) -> No
             phone_number=phone_number,
             **kwargs,
         )
+        return True
     except Exception as e:
         logger.error("Failed to queue email task: %s", e)
-        _record_side_effect_failure_sync(call_id, "email_queue", str(e))
+        from app.services.side_effect_errors import record_side_effect_queue_failure
+
+        await record_side_effect_queue_failure(db, call_id, "email_queue", str(e))
+        return False
 
 
-def _trigger_crm_webhook(crm_url: str, **kwargs) -> None:
+async def _trigger_crm_webhook(db, crm_url: str, **kwargs) -> bool:
     """Fire Celery task for CRM webhook (non-blocking)."""
     try:
         from app.services.email_service import fire_crm_webhook_task
 
         fire_crm_webhook_task.delay(webhook_url=crm_url, **kwargs)
+        return True
     except Exception as e:
         logger.error("Failed to queue CRM webhook task: %s", e)
         call_id = str(kwargs.get("call_id") or "")
         if call_id:
-            _record_side_effect_failure_sync(call_id, "crm_queue", str(e))
+            from app.services.side_effect_errors import record_side_effect_queue_failure
 
-
-def _record_side_effect_failure_sync(call_id: str, kind: str, detail: str) -> None:
-    """Persist queue failures on the call row for admin visibility."""
-    import asyncio
-    import uuid as uuid_module
-
-    from app.db.crud import get_call_by_call_id, get_call_by_uuid, update_call
-    from app.db.database import AsyncSessionLocal
-
-    async def _write() -> None:
-        async with AsyncSessionLocal() as db:
-            call = None
-            try:
-                call = await get_call_by_uuid(db, uuid_module.UUID(call_id))
-            except (TypeError, ValueError):
-                pass
-            if call is None:
-                call = await get_call_by_call_id(db, call_id)
-            if not call:
-                return
-            log = dict(call.error_log or {})
-            log[kind] = detail
-            await update_call(db, call.call_id, error_log=log)
-
-    try:
-        asyncio.run(_write())
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        try:
-            loop.run_until_complete(_write())
-        finally:
-            loop.close()
-    except Exception as exc:
-        logger.debug("Could not persist side-effect failure for %s: %s", call_id, exc)
+            await record_side_effect_queue_failure(db, call_id, "crm_queue", str(e))
+        return False

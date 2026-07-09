@@ -51,6 +51,13 @@ class Settings(BaseSettings):
     # Live call sessions are in-process; keep at 1 until Redis session store exists.
     web_workers: int = 1
     enable_test_console: bool = False
+    # Security default: unsigned Telnyx webhooks are rejected unless explicitly
+    # opted in for local development debugging.
+    allow_unsigned_webhooks_in_dev: bool = False
+    # Comma-separated peer IPs allowed to set X-Forwarded-For / X-Real-IP (e.g.
+    # loopback when TLS terminates on the same host). Empty = never trust those
+    # headers; rate limits and auth lockouts use the direct TCP peer only.
+    trusted_proxy_ips: str = ""
 
     @field_validator("debug", mode="before")
     @classmethod
@@ -157,8 +164,11 @@ class Settings(BaseSettings):
     active_openrouter_model: str = "meta-llama/llama-3.3-70b-instruct:free"
     active_gemini_model: str = "gemini-2.5-flash"
     deepgram_model: str = "nova-3"
+    groq_stt_model: str = "whisper-large-v3-turbo"
     tts_voice_google: str = "en-US-Wavenet-D"
     tts_voice_deepgram: str = "aura-2-thalia-en"
+    tts_voice_deepgram_es: str = "aura-2-estrella-es"
+    tts_voice_google_es: str = "es-US-Neural2-A"
     tts_speed: float = 1.0
 
     @field_validator("redis_url", "celery_broker_url", "celery_result_backend")
@@ -238,6 +248,18 @@ class Settings(BaseSettings):
             errors.append(
                 "WEB_WORKERS must be 1 in production until shared session "
                 "store is implemented (live calls use in-process state)"
+            )
+
+        if self.debug:
+            errors.append("DEBUG must be false in production")
+
+        if not (self.telnyx_api_key or "").strip():
+            errors.append(
+                "TELNYX_API_KEY must be set in production to place and control calls"
+            )
+        if self.enable_test_console:
+            errors.append(
+                "ENABLE_TEST_CONSOLE must be false in production"
             )
 
         for name, url in (
@@ -469,6 +491,13 @@ DEFAULT_SYSTEM_SETTINGS = [
         "is_sensitive": False,
     },
     {
+        "key": "crm_notifications_enabled",
+        "value": "false",
+        "value_type": "boolean",
+        "description": "Send post-call results to CRM webhook when URL is set",
+        "is_sensitive": False,
+    },
+    {
         "key": "crm_webhook_secret",
         "value": "",
         "value_type": "string",
@@ -549,6 +578,20 @@ DEFAULT_SYSTEM_SETTINGS = [
         "is_sensitive": False,
     },
     {
+        "key": "tts_voice_deepgram_es",
+        "value": settings.tts_voice_deepgram_es,
+        "value_type": "string",
+        "description": "Deepgram TTS voice for Spanish calls",
+        "is_sensitive": False,
+    },
+    {
+        "key": "tts_voice_google_es",
+        "value": settings.tts_voice_google_es,
+        "value_type": "string",
+        "description": "Google TTS voice for Spanish calls",
+        "is_sensitive": False,
+    },
+    {
         "key": "tts_speed",
         "value": str(settings.tts_speed),
         "value_type": "string",
@@ -560,6 +603,13 @@ DEFAULT_SYSTEM_SETTINGS = [
         "value": settings.deepgram_model,
         "value_type": "string",
         "description": "Deepgram STT model",
+        "is_sensitive": False,
+    },
+    {
+        "key": "groq_stt_model",
+        "value": settings.groq_stt_model,
+        "value_type": "string",
+        "description": "Groq STT model",
         "is_sensitive": False,
     },
     {
@@ -581,6 +631,34 @@ DEFAULT_SYSTEM_SETTINGS = [
         "value": "balanced",
         "value_type": "string",
         "description": "Voice latency preset: fast, balanced, or quality",
+        "is_sensitive": False,
+    },
+    {
+        "key": "latency_alert_turn_p95_ms",
+        "value": "1200",
+        "value_type": "integer",
+        "description": "Warning threshold for turn p95 latency in ms",
+        "is_sensitive": False,
+    },
+    {
+        "key": "latency_alert_turn_p95_crit_ms",
+        "value": "1800",
+        "value_type": "integer",
+        "description": "Critical threshold for turn p95 latency in ms",
+        "is_sensitive": False,
+    },
+    {
+        "key": "latency_alert_timeout_rate_pct",
+        "value": "2.0",
+        "value_type": "string",
+        "description": "Warning threshold for timed-out turns as percentage",
+        "is_sensitive": False,
+    },
+    {
+        "key": "latency_alert_timeout_rate_crit_pct",
+        "value": "5.0",
+        "value_type": "string",
+        "description": "Critical threshold for timed-out turns as percentage",
         "is_sensitive": False,
     },
     {
@@ -650,8 +728,11 @@ ENV_BACKED_SYSTEM_SETTING_KEYS = {
     "email_from_address",
     "tts_voice_google",
     "tts_voice_deepgram",
+    "tts_voice_deepgram_es",
+    "tts_voice_google_es",
     "tts_speed",
     "deepgram_model",
+    "groq_stt_model",
 }
 
 
@@ -667,6 +748,7 @@ _ENCRYPTED_KEY_MAP = {
     "gemini_api_key_encrypted": "gemini_api_key",
     "deepgram_api_key_encrypted": "deepgram_api_key",
 }
+_ENV_API_KEY_DEFAULTS = {attr: getattr(settings, attr, "") for attr in _ENCRYPTED_KEY_MAP.values()}
 
 
 def _apply_encrypted_api_keys(values: dict) -> None:
@@ -683,6 +765,9 @@ def _apply_encrypted_api_keys(values: dict) -> None:
     for enc_key, attr in _ENCRYPTED_KEY_MAP.items():
         raw = values.get(enc_key)
         if not raw:
+            # Setting removed/rolled back in DB: restore env-backed baseline so
+            # stale rotated keys do not linger in process memory.
+            setattr(settings, attr, _ENV_API_KEY_DEFAULTS.get(attr, ""))
             continue
         try:
             decrypted = decrypt_value(str(raw)).strip()
@@ -691,6 +776,8 @@ def _apply_encrypted_api_keys(values: dict) -> None:
             continue
         if decrypted:
             setattr(settings, attr, decrypted)
+        else:
+            setattr(settings, attr, _ENV_API_KEY_DEFAULTS.get(attr, ""))
 
 
 class ProviderRegistry:
@@ -755,6 +842,8 @@ class ProviderRegistry:
             "groq_stt_model",
             "tts_voice_google",
             "tts_voice_deepgram",
+            "tts_voice_deepgram_es",
+            "tts_voice_google_es",
             "auto_fallback_enabled",
             "llm_fallback_provider",
             "stt_fallback_provider",

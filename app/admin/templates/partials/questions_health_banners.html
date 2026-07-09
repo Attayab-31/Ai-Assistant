@@ -1,0 +1,29 @@
+{% if questions_runtime_errors %}
+<div class="banner banner-error" style="padding:10px 12px;font-size:13px;margin-bottom:16px;" role="alert">
+  <strong>Live screening calls are blocked.</strong>
+  {% if section == 'questions' %}
+  Callers will hear your failure message and the call will end until you fix this and save.
+  {% else %}
+  Callers will hear your failure message and the call will end until you fix this on the
+  <a href="/admin/settings/questions" style="color:inherit;font-weight:600;">Questions</a> page.
+  {% endif %}
+  {% for e in questions_runtime_errors %}
+  <div style="margin-top:6px;">{{ e }}</div>
+  {% endfor %}
+</div>
+{% endif %}
+
+{% if questions_spanish_warnings %}
+<div class="banner banner-warn" style="padding:10px 12px;font-size:13px;margin-bottom:16px;" role="status">
+  <strong>Spanish screening wording is incomplete.</strong>
+  {% if section == 'questions' %}
+  Add Spanish text under each question's "Spanish wording" section and save.
+  {% else %}
+  <a href="/admin/settings/questions" style="color:inherit;font-weight:600;">Questions</a>
+  page — fill in "Spanish wording" for each active question.
+  {% endif %}
+  {% for w in questions_spanish_warnings %}
+  <div style="margin-top:6px;">{{ w }}</div>
+  {% endfor %}
+</div>
+{% endif %}

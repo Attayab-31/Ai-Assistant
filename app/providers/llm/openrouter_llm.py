@@ -9,6 +9,7 @@ from app.providers.base import (
     BaseLLMProvider,
     complete_openai_chat,
     openai_chat_kwargs,
+    resolve_frozen_credential,
     stream_openai_chat,
 )
 from config import settings
@@ -30,18 +31,24 @@ class OpenRouterLLMProvider(BaseLLMProvider):
 
     provider_name = "openrouter"
 
-    def __init__(self, model: str = "meta-llama/llama-3.3-70b-instruct:free") -> None:
+    def __init__(
+        self, model: str = "meta-llama/llama-3.3-70b-instruct:free", *, api_key: str | None = None
+    ) -> None:
         self.model = model if model in AVAILABLE_MODELS else AVAILABLE_MODELS[0]
+        self._api_key = api_key
         self._client: AsyncOpenAI | None = None
         logger.info(f"OpenRouterLLMProvider initialized with model: {self.model}")
 
     @property
     def client(self) -> AsyncOpenAI:
         if self._client is None:
-            if not settings.openrouter_api_key:
+            key = resolve_frozen_credential(
+                self._api_key, settings_attr="openrouter_api_key"
+            )
+            if not key:
                 raise ValueError("OPENROUTER_API_KEY not set in environment")
             self._client = AsyncOpenAI(
-                api_key=settings.openrouter_api_key,
+                api_key=key,
                 base_url=OPENROUTER_BASE_URL,
                 default_headers={
                     "HTTP-Referer": settings.app_url,

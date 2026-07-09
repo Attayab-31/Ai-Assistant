@@ -21,6 +21,8 @@
       Use <strong>Resend result email</strong> below to try again, or check that Celery workers and Redis are running.
       {% elif alert.kind == 'crm' %}
       Check that Celery workers and Redis are running, then verify your CRM webhook URL in Settings.
+      {% elif alert.kind == 'questions' %}
+      Fix your <a href="/admin/settings/questions">screening questions</a> — saved config was invalid, so callers heard the built-in default flow.
       {% endif %}
     </p>
     {% endfor %}
@@ -97,6 +99,11 @@
     {% if using_legacy_question_config %}
     <p class="banner banner-warn" style="margin: 0 0 12px;">
       <strong>Note:</strong> This call has no frozen question snapshot. Screening flow and rescoring use <strong>today's</strong> question settings, which may differ from what was asked on the call.
+    </p>
+    {% endif %}
+    {% if using_legacy_notification_settings %}
+    <p class="banner banner-warn" style="margin: 0 0 12px;">
+      <strong>Note:</strong> This call has no frozen email settings snapshot. <strong>Resend result email</strong> uses <strong>today's</strong> email templates and recipient — not necessarily what was used when the call originally ended.
     </p>
     {% endif %}
     {% if tenant.control_flags and tenant.control_flags.get('qualification_status_overridden') %}

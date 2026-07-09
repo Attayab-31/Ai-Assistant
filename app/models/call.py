@@ -37,6 +37,7 @@ class Call(Base):
     duration_seconds: Mapped[int | None] = mapped_column(Integer)
     full_transcript: Mapped[str | None] = mapped_column(Text)
     recording_url: Mapped[str | None] = mapped_column(Text)
+    recording_requested: Mapped[bool] = mapped_column(Boolean, default=False)
     questions_answered: Mapped[int] = mapped_column(Integer, default=0)
     call_completed: Mapped[bool] = mapped_column(Boolean, default=False)
     stt_provider: Mapped[str | None] = mapped_column(String(50))

@@ -167,6 +167,20 @@
         <h3 style="margin-top: 0;">Send results to another system</h3>
         <p class="text-muted" style="margin-top: 0;">Optional — automatically send each finished screening to a CRM or other URL. Leave blank if you don't use one.</p>
         <div class="form-group">
+          <label>Send results to CRM after each call?</label>
+          {% set crm_url_configured = (settings.get('crm_webhook_url', '')|string|trim)|length > 0 %}
+          {% if settings.get('crm_notifications_enabled') is not none and settings.get('crm_notifications_enabled') != '' %}
+            {% set crm_enabled = settings.get('crm_notifications_enabled')|string|lower == 'true' %}
+          {% else %}
+            {% set crm_enabled = crm_url_configured %}
+          {% endif %}
+          <select id="crm_notifications_enabled">
+            <option value="true" {% if crm_enabled %}selected{% endif %}>Yes — send to CRM</option>
+            <option value="false" {% if not crm_enabled %}selected{% endif %}>No — don't send to CRM</option>
+          </select>
+          <p class="text-muted">Independent of email notifications. You can use CRM only, email only, or both.</p>
+        </div>
+        <div class="form-group">
           <label>Destination URL</label>
           <input type="text" id="crm_webhook_url" value="{{ settings.get('crm_webhook_url', '') }}" placeholder="https://your-crm.example.com/hooks/screening" />
         </div>
@@ -216,7 +230,7 @@
   }
 
   async function resetGeneralDefaults() {
-    if (!confirm('Reset general settings to built-in defaults? Blocked callers and AI provider settings are not changed.')) return;
+    if (!confirm('Reset general settings to built-in defaults? Blocked callers, API keys, and primary provider choices are not changed. Voice latency, streaming, and fallback preferences will reset.')) return;
     try {
       const r = await fetch('/api/settings/general/reset', { method: 'POST' });
       if (!r.ok) {
@@ -262,6 +276,7 @@
       retention_audit_days: intOr('retention_audit_days', 365),
       retention_soft_deleted_days: intOr('retention_soft_deleted_days', 30),
       retention_stale_call_hours: intOr('retention_stale_call_hours', 24),
+      crm_notifications_enabled: document.getElementById('crm_notifications_enabled').value === 'true',
       crm_webhook_url: document.getElementById('crm_webhook_url').value.trim(),
     };
     if (isNaN(data.llm_temperature)) delete data.llm_temperature;

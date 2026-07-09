@@ -16,8 +16,7 @@ from deepgram import (
     PrerecordedOptions,
 )
 
-from app.providers.base import BaseSTTProvider, http_api_ping
-from config import settings
+from app.providers.base import BaseSTTProvider, http_api_ping, resolve_frozen_credential
 
 logger = logging.getLogger(__name__)
 
@@ -30,9 +29,16 @@ class DeepgramSTTProvider(BaseSTTProvider):
 
     provider_name = "deepgram"
 
-    def __init__(self, model: str = "nova-3", language: str = "en-US") -> None:
+    def __init__(
+        self,
+        model: str = "nova-3",
+        language: str = "en-US",
+        *,
+        api_key: str | None = None,
+    ) -> None:
         self.model = model
         self.language = language
+        self._api_key = api_key
         self._client: DeepgramClient | None = None
         logger.info(f"DeepgramSTTProvider initialized: model={model}, lang={language}")
 
@@ -40,9 +46,12 @@ class DeepgramSTTProvider(BaseSTTProvider):
     def client(self) -> DeepgramClient:
         """Lazy-initialize Deepgram client."""
         if self._client is None:
-            if not settings.deepgram_api_key:
+            key = resolve_frozen_credential(
+                self._api_key, settings_attr="deepgram_api_key"
+            )
+            if not key:
                 raise ValueError("DEEPGRAM_API_KEY not set in environment")
-            self._client = DeepgramClient(settings.deepgram_api_key)
+            self._client = DeepgramClient(key)
         return self._client
 
     async def _transcribe_prerecorded(
@@ -106,9 +115,12 @@ class DeepgramSTTProvider(BaseSTTProvider):
 
     async def ping(self) -> tuple[bool, float]:
         """Verify the Deepgram API key and STT service are reachable."""
-        if not settings.deepgram_api_key:
+        key = resolve_frozen_credential(
+            self._api_key, settings_attr="deepgram_api_key"
+        )
+        if not key:
             return False, 0.0
         return await http_api_ping(
             "https://api.deepgram.com/v1/projects",
-            {"Authorization": f"Token {settings.deepgram_api_key}"},
+            {"Authorization": f"Token {key}"},
         )

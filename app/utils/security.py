@@ -3,6 +3,7 @@
 import base64
 import hashlib
 import ipaddress
+import logging
 import socket
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -13,6 +14,8 @@ from cryptography.fernet import Fernet
 from jose import JWTError, jwt
 
 from config import settings
+
+logger = logging.getLogger(__name__)
 
 ALGORITHM = "HS256"
 # 11 rounds (~2x faster than 12) keeps logins snappy while staying well above
@@ -89,10 +92,31 @@ def _fernet() -> Fernet:
         try:
             return Fernet(raw_key.encode())
         except ValueError:
-            pass
+            logger.error(
+                "ENCRYPTION_KEY is set but invalid — must be a Fernet urlsafe key"
+            )
+            if settings.is_production:
+                raise RuntimeError(
+                    "ENCRYPTION_KEY is invalid; fix the configured key"
+                ) from None
+            logger.warning(
+                "Falling back to secret_key-derived encryption key (dev only)"
+            )
 
     digest = hashlib.sha256(settings.secret_key.encode()).digest()
     return Fernet(base64.urlsafe_b64encode(digest))
+
+
+def is_encrypted_value(value: str) -> bool:
+    """True when ``value`` is ciphertext that decrypts with the active Fernet key."""
+    val = (value or "").strip()
+    if not val:
+        return False
+    try:
+        _fernet().decrypt(val.encode())
+        return True
+    except Exception:
+        return False
 
 
 def encrypt_value(value: str) -> str:

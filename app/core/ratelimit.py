@@ -20,22 +20,46 @@ from __future__ import annotations
 
 import time
 from collections import defaultdict, deque
+from functools import lru_cache
 from threading import Lock
 
 from fastapi import HTTPException, Request, status
 from slowapi import Limiter
 
 
+@lru_cache(maxsize=1)
+def _trusted_proxy_peers() -> frozenset[str]:
+    from config import settings
+
+    peers = {
+        part.strip()
+        for part in (settings.trusted_proxy_ips or "").split(",")
+        if part.strip()
+    }
+    return frozenset(peers)
+
+
 def client_ip(request: Request) -> str:
-    """Resolve the client IP, honoring reverse-proxy headers when present."""
-    forwarded = request.headers.get("x-forwarded-for", "")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    real_ip = request.headers.get("x-real-ip", "")
-    if real_ip:
-        return real_ip.strip()
+    """Resolve the client IP for rate limiting and auth lockouts.
+
+    ``X-Forwarded-For`` / ``X-Real-IP`` are honored only when the immediate TCP
+    peer is a configured trusted proxy. Otherwise any client could spoof those
+    headers and evade per-IP limits.
+    """
+    peer = ""
     if request.client and request.client.host:
-        return request.client.host
+        peer = request.client.host.strip()
+
+    if peer and peer in _trusted_proxy_peers():
+        forwarded = request.headers.get("x-forwarded-for", "")
+        if forwarded:
+            return forwarded.split(",")[0].strip()
+        real_ip = request.headers.get("x-real-ip", "")
+        if real_ip:
+            return real_ip.strip()
+
+    if peer:
+        return peer
     return "127.0.0.1"
 
 

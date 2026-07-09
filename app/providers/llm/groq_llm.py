@@ -14,9 +14,9 @@ from app.providers.base import (
     BaseLLMProvider,
     complete_openai_chat,
     openai_chat_kwargs,
+    resolve_frozen_credential,
     stream_openai_chat,
 )
-from config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -37,8 +37,11 @@ class GroqLLMProvider(BaseLLMProvider):
 
     provider_name = "groq"
 
-    def __init__(self, model: str = "llama-3.3-70b-versatile") -> None:
+    def __init__(
+        self, model: str = "llama-3.3-70b-versatile", *, api_key: str | None = None
+    ) -> None:
         self.model = model if model in AVAILABLE_MODELS else "llama-3.3-70b-versatile"
+        self._api_key = api_key
         self._client: AsyncGroq | None = None
         logger.info(f"GroqLLMProvider initialized with model: {self.model}")
 
@@ -46,9 +49,10 @@ class GroqLLMProvider(BaseLLMProvider):
     def client(self) -> AsyncGroq:
         """Lazy-initialize Groq client."""
         if self._client is None:
-            if not settings.groq_api_key:
+            key = resolve_frozen_credential(self._api_key, settings_attr="groq_api_key")
+            if not key:
                 raise ValueError("GROQ_API_KEY not set in environment")
-            self._client = AsyncGroq(api_key=settings.groq_api_key)
+            self._client = AsyncGroq(api_key=key)
         return self._client
 
     async def get_response(

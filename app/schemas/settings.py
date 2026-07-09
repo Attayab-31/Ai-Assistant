@@ -22,6 +22,7 @@ class STTProviderSwitch(BaseModel):
 class TTSProviderSwitch(BaseModel):
     provider: Literal["google", "deepgram"]
     voice: str | None = None
+    spanish_voice: str | None = None
     speed: float | None = Field(default=None, ge=0.75, le=1.25)
 
 
@@ -191,6 +192,7 @@ class GeneralSettingsUpdate(BaseModel):
     timezone: str | None = None
     crm_webhook_url: str | None = None
     crm_webhook_secret: str | None = None
+    crm_notifications_enabled: bool | None = None
     retention_enabled: bool | None = None
     retention_calls_days: int | None = None
     retention_recording_days: int | None = None
@@ -198,6 +200,10 @@ class GeneralSettingsUpdate(BaseModel):
     retention_soft_deleted_days: int | None = None
     retention_stale_call_hours: int | None = None
     voice_latency_profile: Literal["fast", "balanced", "quality"] | None = None
+    latency_alert_turn_p95_ms: int | None = None
+    latency_alert_turn_p95_crit_ms: int | None = None
+    latency_alert_timeout_rate_pct: float | None = None
+    latency_alert_timeout_rate_crit_pct: float | None = None
     llm_streaming_enabled: bool | None = None
 
     @field_validator("max_retries_per_question")
@@ -226,3 +232,17 @@ class GeneralSettingsUpdate(BaseModel):
         if not (60 <= int(value) <= 3600):
             raise ValueError("max_call_duration_seconds must be between 60 and 3600")
         return int(value)
+
+    @field_validator("timezone")
+    @classmethod
+    def validate_timezone(cls, value: str | None) -> str | None:
+        if value is None or not str(value).strip():
+            return value
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+        tz = str(value).strip()
+        try:
+            ZoneInfo(tz)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError(f"Unknown timezone: {tz}") from exc
+        return tz

@@ -16,9 +16,9 @@ from app.providers.base import (
     BaseLLMProvider,
     complete_openai_chat,
     openai_chat_kwargs,
+    resolve_frozen_credential,
     stream_openai_chat,
 )
-from config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -69,18 +69,20 @@ class GeminiLLMProvider(BaseLLMProvider):
 
     provider_name = "gemini"
 
-    def __init__(self, model: str = "gemini-2.5-flash") -> None:
+    def __init__(self, model: str = "gemini-2.5-flash", *, api_key: str | None = None) -> None:
         self.model = model if model in AVAILABLE_MODELS else AVAILABLE_MODELS[0]
+        self._api_key = api_key
         self._client: AsyncOpenAI | None = None
         logger.info(f"GeminiLLMProvider initialized with model: {self.model}")
 
     @property
     def client(self) -> AsyncOpenAI:
         if self._client is None:
-            if not settings.gemini_api_key:
+            key = resolve_frozen_credential(self._api_key, settings_attr="gemini_api_key")
+            if not key:
                 raise ValueError("GEMINI_API_KEY not set in environment")
             self._client = AsyncOpenAI(
-                api_key=settings.gemini_api_key,
+                api_key=key,
                 base_url=GEMINI_BASE_URL,
             )
         return self._client

@@ -12,12 +12,13 @@ import asyncio
 import json
 import logging
 import time
+from collections import deque
 from collections.abc import Awaitable, Callable
 
 from deepgram import DeepgramClient, LiveOptions, LiveTranscriptionEvents
 
 from app.core.voice_latency import DEEPGRAM_UTTERANCE_END_MIN_MS, clamp_utterance_end_ms
-from config import settings
+from app.providers.base import resolve_frozen_credential
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,15 @@ logger = logging.getLogger(__name__)
 # Deepgram's documented floor and gives a natural, not-rushed turn handoff.
 DEFAULT_ENDPOINTING_MS = 1000
 DEFAULT_UTTERANCE_END_MS = DEEPGRAM_UTTERANCE_END_MIN_MS
+
+# Keep a few seconds of phone audio while a live STT socket is being swapped
+# (language change / reconnect). Telnyx sends ~20ms frames, so 250 frames is
+# roughly 5 seconds and comfortably covers normal reconnect latency without
+# unbounded memory growth.
+RECONNECT_AUDIO_BUFFER_FRAMES = 250
+
+# Mid-call language swaps and recovery restarts share this budget.
+STREAMING_STT_RECONNECT_TIMEOUT_S = 3.0
 
 # Keyterm prompting (nova-3, English only) biases recognition toward known,
 # frequently-mangled vocabulary without hurting general accuracy. We boost the
@@ -79,6 +89,7 @@ class DeepgramStreamingSession:
         keyterms: tuple[str, ...] | None = DEFAULT_KEYTERMS,
         on_interim: OnInterim | None = None,
         on_speech_started: OnSpeechStarted | None = None,
+        api_key: str | None = None,
     ) -> None:
         self.model = model
         self.language = language
@@ -89,6 +100,7 @@ class DeepgramStreamingSession:
         self.keyterms = keyterms or ()
         self.on_interim = on_interim
         self.on_speech_started = on_speech_started
+        self._api_key = api_key
 
         self._client: DeepgramClient | None = None
         self._connection = None
@@ -96,6 +108,7 @@ class DeepgramStreamingSession:
         self._transcript_queue: asyncio.Queue[str | None] = asyncio.Queue()
         self._started = False
         self._closed = False
+        self._lost = False
         self._last_emitted = ""
         self._last_emit_at = 0.0
         self._last_feed_at = 0.0
@@ -104,14 +117,32 @@ class DeepgramStreamingSession:
         self._speech_started_fired = False
         self._keepalive_task: asyncio.Task | None = None
         self._turn_emit_task: asyncio.Task | None = None
+        self._lost_signaled = False
+
+    @property
+    def lost(self) -> bool:
+        """True after an unrecoverable live-socket error."""
+        return self._lost or self._closed
+
+    async def _mark_connection_lost(self, reason: str) -> None:
+        """Mark the live socket dead and end the transcript stream."""
+        if self._lost or self._closed:
+            return
+        self._lost = True
+        self._connection = None
+        logger.warning("Deepgram streaming STT connection lost: %s", reason)
+        if not self._lost_signaled:
+            self._lost_signaled = True
+            await self._transcript_queue.put(None)
 
     async def start(self) -> None:
         if self._started:
             return
-        if not settings.deepgram_api_key:
+        key = resolve_frozen_credential(self._api_key, settings_attr="deepgram_api_key")
+        if not key:
             raise ValueError("DEEPGRAM_API_KEY not set")
 
-        self._client = DeepgramClient(settings.deepgram_api_key)
+        self._client = DeepgramClient(key)
         options = LiveOptions(
             model=self.model,
             language=self.language,
@@ -175,7 +206,7 @@ class DeepgramStreamingSession:
 
         async def on_error(_conn, *, error, **_kwargs) -> None:
             logger.error("Deepgram streaming error: %s", error)
-            await self._transcript_queue.put(None)
+            await self._mark_connection_lost(f"provider error: {error}")
 
         connection.on(LiveTranscriptionEvents.Transcript, on_transcript)
         connection.on(LiveTranscriptionEvents.UtteranceEnd, on_utterance_end)
@@ -189,22 +220,23 @@ class DeepgramStreamingSession:
         # text message keeps the live session open between caller turns.
         self._keepalive_task = asyncio.create_task(self._keepalive_loop())
         logger.info(
-            "Deepgram streaming STT started (model=%s, encoding=%s, "
+            "Deepgram streaming STT started (model=%s, language=%s, encoding=%s, "
             "endpointing=%sms, utterance_end=%sms)",
             self.model,
+            self.language,
             self.encoding,
             self.endpointing_ms,
             self.utterance_end_ms,
         )
 
     async def feed(self, chunk: bytes) -> None:
-        if not chunk or self._closed or not self._connection:
+        if not chunk or self._closed or self._lost or not self._connection:
             return
         self._last_feed_at = time.monotonic()
         try:
             await self._connection.send(chunk)
         except Exception as exc:
-            logger.warning("Deepgram feed error: %s", exc)
+            await self._mark_connection_lost(f"feed send failed: {exc}")
 
     async def _keepalive_loop(self) -> None:
         """Send KeepAlive pings while the caller isn't actively speaking."""
@@ -219,7 +251,10 @@ class DeepgramStreamingSession:
                     try:
                         await self._connection.send(json.dumps({"type": "KeepAlive"}))
                     except Exception as exc:
-                        logger.debug("KeepAlive send failed: %s", exc)
+                        await self._mark_connection_lost(
+                            f"KeepAlive send failed: {exc}"
+                        )
+                        break
         except asyncio.CancelledError:
             pass
 
@@ -277,4 +312,209 @@ class DeepgramStreamingSession:
             item = await self._transcript_queue.get()
             if item is None:
                 break
+            yield item
+
+
+class StreamingSttRelay:
+    """Hot-swappable Deepgram live STT — reconnects when call language changes."""
+
+    def __init__(
+        self,
+        *,
+        model: str,
+        encoding: str,
+        sample_rate: int = 8000,
+        endpointing_ms: int = DEFAULT_ENDPOINTING_MS,
+        utterance_end_ms: int = DEFAULT_UTTERANCE_END_MS,
+        language: str = "en-US",
+        on_interim: OnInterim | None = None,
+        on_speech_started: OnSpeechStarted | None = None,
+        api_key: str | None = None,
+    ) -> None:
+        self._session_kwargs = {
+            "model": model,
+            "encoding": encoding,
+            "sample_rate": sample_rate,
+            "endpointing_ms": endpointing_ms,
+            "utterance_end_ms": utterance_end_ms,
+            "on_interim": on_interim,
+            "on_speech_started": on_speech_started,
+            "api_key": api_key,
+        }
+        self._language = language
+        self._current: DeepgramStreamingSession | None = None
+        self._transcript_queue: asyncio.Queue[str | None] = asyncio.Queue()
+        self._closed = False
+        self._connect_lock = asyncio.Lock()
+        self._relay_task: asyncio.Task | None = None
+        self._buffering_reconnect = False
+        self._pending_audio: deque[bytes] = deque(maxlen=RECONNECT_AUDIO_BUFFER_FRAMES)
+        self._relay_lost_signaled = False
+
+    def _ensure_relay_task(self) -> None:
+        if self._closed:
+            return
+        if self._relay_task is None or self._relay_task.done():
+            self._relay_task = asyncio.create_task(self._relay_loop())
+
+    def _keyterms_for_language(self, language: str) -> tuple[str, ...]:
+        if language.startswith("en"):
+            return DEFAULT_KEYTERMS
+        return ()
+
+    def _build_session(self, *, language: str) -> DeepgramStreamingSession:
+        return DeepgramStreamingSession(
+            **self._session_kwargs,
+            language=language,
+            keyterms=self._keyterms_for_language(language),
+        )
+
+    async def start(self) -> None:
+        async with self._connect_lock:
+            self._current = self._build_session(language=self._language)
+            await self._current.start()
+        self._ensure_relay_task()
+
+    async def reconnect(self, *, language: str) -> None:
+        if self._closed:
+            return
+        current = self._current
+        if (
+            language == self._language
+            and current is not None
+            and not current.lost
+        ):
+            return
+        self._language = language
+        async with self._connect_lock:
+            self._buffering_reconnect = True
+            try:
+                replacement = self._build_session(language=language)
+                await replacement.start()
+                if self._closed:
+                    await replacement.close()
+                    return
+                old = self._current
+                self._current = replacement
+                self._relay_lost_signaled = False
+                self._ensure_relay_task()
+                if old is not None:
+                    await old.close()
+                await self._flush_pending_audio(replacement)
+                logger.info(
+                    "Deepgram streaming STT reconnected (language=%s)", language
+                )
+            finally:
+                self._buffering_reconnect = False
+
+    async def restart(self) -> None:
+        """Open a fresh live socket (same language) after a mid-call disconnect."""
+        if self._closed:
+            raise RuntimeError("StreamingSttRelay is closed")
+        async with self._connect_lock:
+            self._buffering_reconnect = True
+            try:
+                replacement = self._build_session(language=self._language)
+                await replacement.start()
+                if self._closed:
+                    await replacement.close()
+                    return
+                old = self._current
+                self._current = replacement
+                self._relay_lost_signaled = False
+                self._ensure_relay_task()
+                if old is not None:
+                    await old.close()
+                await self._flush_pending_audio(replacement)
+                logger.info(
+                    "Deepgram streaming STT restarted (language=%s)", self._language
+                )
+            finally:
+                self._buffering_reconnect = False
+
+    @property
+    def lost(self) -> bool:
+        """True when the active live session is gone or reported an error."""
+        if self._closed:
+            return True
+        current = self._current
+        if current is None:
+            return True
+        return current.lost
+
+    async def _signal_relay_lost(self) -> None:
+        """Wake transcript consumers when the inner live socket dies."""
+        if self._closed or self._relay_lost_signaled:
+            return
+        self._relay_lost_signaled = True
+        await self._transcript_queue.put(None)
+
+    async def _relay_loop(self) -> None:
+        while not self._closed:
+            current = self._current
+            if current is None:
+                await asyncio.sleep(0.05)
+                continue
+            if current.lost:
+                await self._signal_relay_lost()
+                while not self._closed and current is self._current:
+                    await asyncio.sleep(0.05)
+                continue
+            try:
+                async for transcript in current.transcripts():
+                    if self._closed:
+                        return
+                    if current is not self._current:
+                        break
+                    await self._transcript_queue.put(transcript)
+            except Exception as exc:
+                logger.warning("Streaming STT relay error: %s", exc)
+            if self._closed:
+                break
+            if current is self._current and current.lost:
+                await self._signal_relay_lost()
+                while not self._closed and current is self._current:
+                    await asyncio.sleep(0.05)
+            await asyncio.sleep(0.02)
+
+    async def feed(self, chunk: bytes) -> None:
+        current = self._current
+        if self._buffering_reconnect or current is None:
+            if chunk:
+                self._pending_audio.append(chunk)
+            return
+        if current is not None:
+            await current.feed(chunk)
+            if current.lost:
+                await self._signal_relay_lost()
+
+    async def _flush_pending_audio(self, target: DeepgramStreamingSession) -> None:
+        """Replay audio captured while no live socket was ready."""
+        while self._pending_audio and not self._closed:
+            await target.feed(self._pending_audio.popleft())
+
+    async def close(self) -> None:
+        self._closed = True
+        if self._relay_task is not None:
+            self._relay_task.cancel()
+            try:
+                await self._relay_task
+            except asyncio.CancelledError:
+                pass
+        async with self._connect_lock:
+            if self._current is not None:
+                await self._current.close()
+                self._current = None
+            self._pending_audio.clear()
+            self._buffering_reconnect = False
+        await self._transcript_queue.put(None)
+
+    async def transcripts(self):
+        while True:
+            item = await self._transcript_queue.get()
+            if item is None:
+                if self._closed:
+                    break
+                yield None
+                continue
             yield item

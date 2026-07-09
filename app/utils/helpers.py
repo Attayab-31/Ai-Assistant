@@ -607,4 +607,33 @@ def side_effect_alerts_from_error_log(error_log: dict | None) -> list[dict[str, 
                 "detail": str(crm_err),
             }
         )
+    side_failures = log.get("side_effect_failures")
+    if isinstance(side_failures, dict):
+        email_fail = side_failures.get("email_delivery")
+        if email_fail not in (None, ""):
+            alerts.append(
+                {
+                    "kind": "email",
+                    "title": "Result email permanently failed",
+                    "detail": str(email_fail),
+                }
+            )
+        crm_fail = side_failures.get("crm_webhook")
+        if crm_fail not in (None, ""):
+            alerts.append(
+                {
+                    "kind": "crm",
+                    "title": "CRM webhook permanently failed",
+                    "detail": str(crm_fail),
+                }
+            )
+    questions_err = log.get("questions_config_fallback")
+    if questions_err not in (None, ""):
+        alerts.append(
+            {
+                "kind": "questions",
+                "title": "Screening could not start — invalid question configuration",
+                "detail": str(questions_err),
+            }
+        )
     return alerts

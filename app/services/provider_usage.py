@@ -21,6 +21,7 @@ the monitor never hammers billing APIs.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import time
 from typing import Any
@@ -52,6 +53,16 @@ def _cache_set(key: str, value: Any, ttl: int = _CACHE_TTL_S) -> None:
     _cache[key] = (time.monotonic() + ttl, value)
 
 
+def _key_fingerprint(key: str) -> str:
+    """Short, non-reversible fingerprint of an API key for cache scoping.
+
+    Balance responses are per-credential, so the cache must be keyed by which
+    key produced them. Otherwise rotating a key (or supplying a per-tenant key)
+    would surface another key's cached balance until the TTL expired.
+    """
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+
+
 def _money(amount: Any, currency: str = "USD") -> str | None:
     try:
         return f"${float(amount):,.2f}" if currency == "USD" else f"{float(amount):,.2f} {currency}"
@@ -59,13 +70,14 @@ def _money(amount: Any, currency: str = "USD") -> str | None:
         return None
 
 
-async def _openrouter_balance() -> dict[str, Any]:
+async def _openrouter_balance(*, api_key: str | None = None) -> dict[str, Any]:
     """Remaining OpenRouter credits (best-effort)."""
-    key = (settings.openrouter_api_key or "").strip()
+    key = (api_key or settings.openrouter_api_key or "").strip()
     if not key:
         return {"available": False, "reason": "No API key configured"}
 
-    cached = _cache_get("openrouter_balance")
+    cache_key = f"openrouter_balance:{_key_fingerprint(key)}"
+    cached = _cache_get(cache_key)
     if cached is not None:
         return cached
 
@@ -109,17 +121,18 @@ async def _openrouter_balance() -> dict[str, Any]:
     except Exception as e:
         logger.debug("OpenRouter balance lookup failed: %s", e)
 
-    _cache_set("openrouter_balance", result)
+    _cache_set(cache_key, result)
     return result
 
 
-async def _deepgram_balance() -> dict[str, Any]:
+async def _deepgram_balance(*, api_key: str | None = None) -> dict[str, Any]:
     """Remaining Deepgram project balance (best-effort)."""
-    key = (settings.deepgram_api_key or "").strip()
+    key = (api_key or settings.deepgram_api_key or "").strip()
     if not key:
         return {"available": False, "reason": "No API key configured"}
 
-    cached = _cache_get("deepgram_balance")
+    cache_key = f"deepgram_balance:{_key_fingerprint(key)}"
+    cached = _cache_get(cache_key)
     if cached is not None:
         return cached
 
@@ -193,7 +206,7 @@ async def _deepgram_balance() -> dict[str, Any]:
             "reason": "Couldn't reach Deepgram just now.",
         }
 
-    _cache_set("deepgram_balance", result)
+    _cache_set(cache_key, result)
     return result
 
 
@@ -291,12 +304,21 @@ async def get_provider_overview(
     db, days: int = 30, *, status: dict | None = None
 ) -> dict[str, Any]:
     """Full provider monitoring payload: live balances + internal usage + config."""
+    from app.core.call_settings import capture_provider_api_keys
     from config import provider_registry
 
     if status is None:
         status = provider_registry.get_status()
-    openrouter = await _openrouter_balance()
-    deepgram = await _deepgram_balance()
+    keys = await capture_provider_api_keys(db)
+    configured = {
+        "groq": keys.configured("groq"),
+        "openai": keys.configured("openai"),
+        "openrouter": keys.configured("openrouter"),
+        "gemini": keys.configured("gemini"),
+        "deepgram": keys.configured("deepgram"),
+    }
+    openrouter = await _openrouter_balance(api_key=keys.openrouter)
+    deepgram = await _deepgram_balance(api_key=keys.deepgram)
     usage = await get_internal_usage(db, days=days)
 
     # Per-vendor "remaining" cards. Only OpenRouter & Deepgram expose a number.
@@ -309,35 +331,35 @@ async def get_provider_overview(
             "key": "deepgram",
             "name": "Deepgram",
             "role": "Speech-to-text / Voice",
-            "configured": bool((settings.deepgram_api_key or "").strip()),
+            "configured": configured["deepgram"],
             "balance": deepgram,
         },
         {
             "key": "openrouter",
             "name": "OpenRouter",
             "role": "AI brain (LLM)",
-            "configured": bool((settings.openrouter_api_key or "").strip()),
+            "configured": configured["openrouter"],
             "balance": openrouter,
         },
         {
             "key": "groq",
             "name": "Groq",
             "role": "AI brain (LLM)",
-            "configured": bool((settings.groq_api_key or "").strip()),
+            "configured": configured["groq"],
             "balance": no_api,
         },
         {
             "key": "openai",
             "name": "OpenAI",
             "role": "AI brain (LLM)",
-            "configured": bool((settings.openai_api_key or "").strip()),
+            "configured": configured["openai"],
             "balance": no_api,
         },
         {
             "key": "gemini",
             "name": "Google Gemini",
             "role": "AI brain (LLM)",
-            "configured": bool((settings.gemini_api_key or "").strip()),
+            "configured": configured["gemini"],
             "balance": no_api,
         },
     ]

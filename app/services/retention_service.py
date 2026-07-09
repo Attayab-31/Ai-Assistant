@@ -32,15 +32,17 @@ async def _run_retention() -> dict:
     from app.core.redis_client import acquire_once
     from app.db import crud
     from app.db.database import AsyncSessionLocal
-    from app.services.storage_service import storage_service
-
-    if not await acquire_once("retention:purge:lock", 7200):
+    if not await acquire_once("retention:purge:lock", 7200, fail_closed=True):
         logger.info("Retention sweep already running — skipping")
         return {"enabled": False, "skipped": True}
 
     summary = {
         "soft_deleted_calls": 0,
         "recordings": 0,
+        "recording_delete_failures": 0,
+        "storage_retries": 0,
+        "storage_retries_removed": 0,
+        "storage_retries_remaining": 0,
         "calls": 0,
         "audit_logs": 0,
         "stale_calls_closed": 0,
@@ -91,18 +93,42 @@ async def _run_retention() -> dict:
                 db, now - timedelta(days=soft_days)
             )
 
+        from app.services.recording_cleanup import retry_pending_recording_deletes
+
+        retry_summary = await retry_pending_recording_deletes()
+        summary["storage_retries"] = retry_summary.get("retried", 0)
+        summary["storage_retries_removed"] = retry_summary.get("removed", 0)
+        summary["storage_retries_remaining"] = retry_summary.get("remaining", 0)
+
         if recording_days > 0:
+            from app.services.recording_cleanup import (
+                enqueue_orphaned_recording,
+                removal_ok_for_db_clear,
+                remove_recording,
+            )
+
             cutoff = now - timedelta(days=recording_days)
+            cursor_created_at = None
+            cursor_id = None
             while True:
                 rows = await crud.get_recordings_before(
-                    db, cutoff, limit=RECORDING_BATCH_SIZE
+                    db,
+                    cutoff,
+                    limit=RECORDING_BATCH_SIZE,
+                    after_created_at=cursor_created_at,
+                    after_id=cursor_id,
                 )
                 if not rows:
                     break
-                for call_id, url in rows:
-                    await storage_service.delete_recording(url)
-                    await crud.clear_recording_url(db, call_id)
-                summary["recordings"] += len(rows)
+                for call_id, url, _created_at in rows:
+                    result = await remove_recording(url)
+                    if removal_ok_for_db_clear(result):
+                        await crud.clear_recording_url(db, call_id)
+                        summary["recordings"] += 1
+                    else:
+                        summary["recording_delete_failures"] += 1
+                        await enqueue_orphaned_recording(url)
+                cursor_id, _url, cursor_created_at = rows[-1]
                 if len(rows) < RECORDING_BATCH_SIZE:
                     break
 

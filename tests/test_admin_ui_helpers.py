@@ -71,3 +71,11 @@ def test_side_effect_alerts_from_error_log():
         {"email_queue": "x", "crm_queue": "y"}
     )
     assert {a["kind"] for a in both} == {"email", "crm"}
+
+    questions = side_effect_alerts_from_error_log(
+        {"questions_config_fallback": "Duplicate question states are not allowed"}
+    )
+    assert len(questions) == 1
+    assert questions[0]["kind"] == "questions"
+    assert "invalid question configuration" in questions[0]["title"].lower()
+    assert "Duplicate" in questions[0]["detail"]

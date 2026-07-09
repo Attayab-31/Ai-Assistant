@@ -21,6 +21,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import crud
@@ -54,9 +55,55 @@ from app.utils.helpers import (
     tenant_display_name,
     time_ago,
 )
+from app.services.admin_audit_helpers import (
+    format_audit_change_summary as _format_audit_change_summary,
+)
+
+
+def _audit_change_summary_jinja(values: object) -> str:
+    if isinstance(values, (list, tuple)) and len(values) == 2:
+        old_value, new_value = values
+    else:
+        old_value, new_value = None, None
+    return _format_audit_change_summary(old_value, new_value)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+MAX_ADMIN_NOTES_LENGTH = 4000
+MAX_BULK_REVIEW_IDS = 500
+
+_AUDIT_STALE_WARNING = (
+    "Action completed, but audit logging failed. Check server logs."
+)
+
+
+def _add_audit_warning(response: dict, audit_ok: bool) -> dict:
+    """Attach a standard warning when audit-log persistence failed."""
+    if not audit_ok:
+        existing = response.get("warnings")
+        if isinstance(existing, list):
+            if _AUDIT_STALE_WARNING not in existing:
+                existing.append(_AUDIT_STALE_WARNING)
+        else:
+            response["warnings"] = [_AUDIT_STALE_WARNING]
+    return response
+
+
+async def _safe_create_audit_log(*args, **kwargs) -> bool:
+    """Try to persist audit metadata without failing a successful admin mutation."""
+    if args:
+        if len(args) == 1 and "db" not in kwargs:
+            kwargs["db"] = args[0]
+        else:
+            logger.error("Invalid _safe_create_audit_log call signature")
+            return False
+    try:
+        await crud.create_audit_log(**kwargs)
+        return True
+    except Exception as exc:
+        logger.error("Audit log write failed after admin action: %s", exc)
+        return False
+
 
 TEMPLATES_DIR = Path(__file__).parent.parent / "admin" / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
@@ -78,6 +125,7 @@ _ADMIN_JINJA_FILTERS = {
     "friendly_provider": friendly_provider_name,
     "friendly_audit_action": friendly_audit_action,
     "friendly_audit_entity": friendly_audit_entity,
+    "audit_change_summary": _audit_change_summary_jinja,
     "pagination_url": pagination_url,
     "tenant_display": tenant_display_name,
 }
@@ -111,6 +159,28 @@ async def _render_admin_page(
         needs_review_count = await crud.count_tenants_needing_review(db)
     active = context.get("active_page")
     help_href, help_label = PAGE_HELP.get(active or "", ("", ""))
+    if user and user.can("settings"):
+        from app.core.question_flow import (
+            count_missing_spanish_question_overrides,
+            runtime_question_errors,
+        )
+
+        questions = await crud.get_setting_value(db, "screening_questions", [])
+        raw = questions if isinstance(questions, list) else None
+        extra: dict = {}
+        if "questions_runtime_errors" not in context:
+            extra["questions_runtime_errors"] = runtime_question_errors(raw)
+        if "questions_spanish_warnings" not in context:
+            missing_es = count_missing_spanish_question_overrides(raw)
+            if missing_es:
+                extra["questions_spanish_warnings"] = [
+                    f"{missing_es} active question{'s' if missing_es != 1 else ''} "
+                    "have no Spanish wording. Spanish calls will read those "
+                    "questions in English until you add Spanish text."
+                ]
+            else:
+                extra["questions_spanish_warnings"] = []
+        context = {**context, **extra}
     return templates.TemplateResponse(
         template_name,
         {
@@ -315,6 +385,7 @@ async def call_detail_page(
 
     tenant = await crud.get_tenant_by_call(db, call_id)
 
+    from app.core.call_settings import has_notification_settings_snapshot
     from app.core.question_flow import (
         build_applicant_summary_rows,
         field_labels_from_questions,
@@ -408,6 +479,8 @@ async def call_detail_page(
         flow_from_snapshot=questions_snapshot_from_tenant(tenant) is not None,
         using_legacy_question_config=tenant is not None
         and questions_snapshot_from_tenant(tenant) is None,
+        using_legacy_notification_settings=tenant is not None
+        and not has_notification_settings_snapshot(tenant),
         transcript_lines=parse_transcript_lines(call.full_transcript),
         turn_traces=turn_traces,
         trace_errors=trace_errors,
@@ -645,25 +718,10 @@ async def settings_providers_page(request: Request, db: AsyncSession = Depends(g
 
     all_settings = await crud.get_all_settings(db)
     from config import provider_registry
-    from config import settings as env_settings
+    from app.core.call_settings import provider_key_configured_map
 
     provider_status = provider_registry.get_status()
-
-    # Which providers already have a usable API key — from an env var OR a
-    # key rotated through the admin panel (stored as <provider>_api_key_encrypted).
-    # We expose only booleans, never the key material.
-    def _key_set(provider: str, env_attr: str) -> bool:
-        if (getattr(env_settings, env_attr, "") or "").strip():
-            return True
-        return bool(all_settings.get(f"{provider}_api_key_encrypted"))
-
-    provider_keys = {
-        "groq": _key_set("groq", "groq_api_key"),
-        "openai": _key_set("openai", "openai_api_key"),
-        "openrouter": _key_set("openrouter", "openrouter_api_key"),
-        "gemini": _key_set("gemini", "gemini_api_key"),
-        "deepgram": _key_set("deepgram", "deepgram_api_key"),
-    }
+    provider_keys = await provider_key_configured_map(db)
 
     return await _render_admin_page(
         db,
@@ -1031,6 +1089,16 @@ async def api_get_call_recording(
 
     value = call.recording_url
     if value.startswith(("http://", "https://")):
+        from app.services.recording_cleanup import is_managed_recording_path
+        from app.utils.security import UnsafeURLError, assert_safe_external_url
+
+        # Legacy absolute URLs must still pass outbound URL safety checks.
+        if is_managed_recording_path(value):
+            raise HTTPException(status_code=404, detail="Recording unavailable")
+        try:
+            assert_safe_external_url(value)
+        except UnsafeURLError as exc:
+            raise HTTPException(status_code=404, detail="Recording unavailable") from exc
         return RedirectResponse(url=value)
 
     from app.services.storage_service import storage_service
@@ -1055,15 +1123,22 @@ async def api_delete_call(
 
     audit_value = {"call_id": call.call_id, "phone": call.phone_number}
     recording_url = call.recording_url
+    recording_delete_failed = False
 
-    # Remove the stored recording first (best-effort), then the DB rows.
     if recording_url:
-        from app.services.storage_service import storage_service
+        from app.services.recording_cleanup import (
+            RecordingRemovalResult,
+            enqueue_orphaned_recording,
+            remove_recording,
+        )
 
-        await storage_service.delete_recording(recording_url)
+        removal = await remove_recording(recording_url)
+        if removal == RecordingRemovalResult.FAILED:
+            recording_delete_failed = True
+            await enqueue_orphaned_recording(recording_url)
 
     await crud.hard_delete_call(db, call_id)
-    await crud.create_audit_log(
+    audit_ok = await _safe_create_audit_log(
         db,
         action="deleted_call",
         admin_user_id=user.id,
@@ -1072,7 +1147,14 @@ async def api_delete_call(
         old_value=audit_value,
         ip_address=request.client.host if request.client else None,
     )
-    return {"deleted": True}
+    response: dict = {"deleted": True}
+    if recording_delete_failed:
+        response["recording_delete_failed"] = True
+        response["warnings"] = [
+            "Call deleted, but the stored recording could not be removed from "
+            "storage. It will be retried automatically."
+        ]
+    return _add_audit_warning(response, audit_ok)
 
 
 @router.post("/api/calls/{call_id}/resend-email")
@@ -1093,6 +1175,11 @@ async def api_resend_email(
             status_code=400, detail="No tenant data found for this call"
         )
 
+    from app.core.call_settings import (
+        load_notification_settings_from_db,
+        notification_settings_email_dict,
+        notification_settings_email_dict_from_tenant,
+    )
     from app.services.email_service import send_screening_email_task
 
     tenant_payload = {
@@ -1129,6 +1216,13 @@ async def api_resend_email(
         if isinstance(custom, dict):
             tenant_payload["custom_fields"] = custom
 
+    email_settings = notification_settings_email_dict_from_tenant(tenant)
+    used_live_settings = email_settings is None
+    if email_settings is None:
+        email_settings = notification_settings_email_dict(
+            await load_notification_settings_from_db(db)
+        )
+
     send_screening_email_task.delay(
         call_id=str(call.id),
         phone_number=call.phone_number,
@@ -1144,9 +1238,10 @@ async def api_resend_email(
             "tts": call.tts_provider,
         },
         bypass_filters=True,
+        email_settings=email_settings,
     )
 
-    await crud.create_audit_log(
+    audit_ok = await _safe_create_audit_log(
         db,
         action="resent_email",
         admin_user_id=user.id,
@@ -1154,7 +1249,10 @@ async def api_resend_email(
         entity_id=call_id,
         ip_address=request.client.host if request.client else None,
     )
-    return {"queued": True}
+    return _add_audit_warning(
+        {"queued": True, "used_live_settings": used_live_settings},
+        audit_ok,
+    )
 
 
 @router.patch("/api/calls/{call_id}/notes")
@@ -1170,23 +1268,29 @@ async def api_update_call_notes(
     if not tenant:
         raise HTTPException(status_code=404, detail="No tenant record for this call")
 
-    notes = payload.get("notes", "")
-    await crud.update_tenant(db, tenant.id, notes=notes)
-    await crud.create_audit_log(
+    notes_text = str(payload.get("notes", "") or "")
+    if len(notes_text) > MAX_ADMIN_NOTES_LENGTH:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Notes cannot exceed {MAX_ADMIN_NOTES_LENGTH} characters.",
+        )
+    await crud.update_tenant(db, tenant.id, notes=notes_text)
+    audit_ok = await _safe_create_audit_log(
         db,
         action="updated_call_notes",
         admin_user_id=user.id,
         entity_type="tenant",
         entity_id=tenant.id,
-        new_value={"call_id": str(call_id), "notes_length": len(notes or "")},
+        new_value={"call_id": str(call_id), "notes_length": len(notes_text)},
         ip_address=request.client.host if request.client else None,
     )
-    return {"saved": True}
+    return _add_audit_warning({"saved": True}, audit_ok)
 
 
 @router.patch("/api/calls/{call_id}/review")
 async def api_mark_reviewed(
     call_id: uuid.UUID,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     user: AdminUser = Depends(require_scope("calls", edit=True)),
 ):
@@ -1195,14 +1299,25 @@ async def api_mark_reviewed(
     if not tenant:
         raise HTTPException(status_code=404, detail="No tenant record for this call")
 
-    new_status = not tenant.reviewed_by_admin
+    old_status = bool(tenant.reviewed_by_admin)
+    new_status = not old_status
     await crud.update_tenant(
         db,
         tenant.id,
         reviewed_by_admin=new_status,
         reviewed_at=datetime.now(UTC) if new_status else None,
     )
-    return {"reviewed": new_status}
+    audit_ok = await _safe_create_audit_log(
+        db,
+        action="toggled_call_review",
+        admin_user_id=user.id,
+        entity_type="tenant",
+        entity_id=tenant.id,
+        old_value={"reviewed": old_status},
+        new_value={"reviewed": new_status, "call_id": str(call_id)},
+        ip_address=request.client.host if request.client else None,
+    )
+    return _add_audit_warning({"reviewed": new_status}, audit_ok)
 
 
 @router.patch("/api/calls/{call_id}/qualification")
@@ -1238,7 +1353,7 @@ async def api_override_qualification(
 
     await crud.update_tenant(db, tenant.id, **update_kwargs)
 
-    await crud.create_audit_log(
+    audit_ok = await _safe_create_audit_log(
         db,
         action="overrode_qualification",
         admin_user_id=user.id,
@@ -1248,12 +1363,13 @@ async def api_override_qualification(
         new_value={"status": new_status, "reason": reason or None},
         ip_address=request.client.host if request.client else None,
     )
-    return {"updated": True, "status": new_status}
+    return _add_audit_warning({"updated": True, "status": new_status}, audit_ok)
 
 
 @router.patch("/api/tenants/{tenant_id}/review")
 async def api_mark_tenant_reviewed(
     tenant_id: uuid.UUID,
+    request: Request,
     payload: dict | None = None,
     db: AsyncSession = Depends(get_db),
     user: AdminUser = Depends(require_scope("tenants", edit=True)),
@@ -1263,6 +1379,7 @@ async def api_mark_tenant_reviewed(
     if not tenant:
         raise HTTPException(status_code=404, detail="Applicant not found")
     payload = payload or {}
+    old_reviewed = bool(tenant.reviewed_by_admin)
     if "reviewed" in payload:
         new_status = bool(payload["reviewed"])
     else:
@@ -1273,26 +1390,62 @@ async def api_mark_tenant_reviewed(
         reviewed_by_admin=new_status,
         reviewed_at=datetime.now(UTC) if new_status else None,
     )
-    return {"reviewed": new_status, "tenant_id": str(tenant.id)}
+    audit_ok = await _safe_create_audit_log(
+        db,
+        action="tenant_review_updated",
+        admin_user_id=user.id,
+        entity_type="tenant",
+        entity_id=tenant.id,
+        old_value={"reviewed_by_admin": old_reviewed},
+        new_value={"reviewed_by_admin": new_status},
+        ip_address=request.client.host if request.client else None,
+    )
+    return _add_audit_warning(
+        {"reviewed": new_status, "tenant_id": str(tenant.id)},
+        audit_ok,
+    )
 
 
 @router.post("/api/tenants/bulk-review")
 async def api_bulk_mark_reviewed(
     payload: dict,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     user: AdminUser = Depends(require_scope("tenants", edit=True)),
 ):
     """Mark multiple applicants reviewed in one action."""
     raw_ids = payload.get("tenant_ids") or []
+    if len(raw_ids) > MAX_BULK_REVIEW_IDS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Bulk review supports at most {MAX_BULK_REVIEW_IDS} applicants per request.",
+        )
     reviewed = bool(payload.get("reviewed", True))
     tenant_ids: list[uuid.UUID] = []
+    invalid_ids = 0
     for raw in raw_ids:
         try:
             tenant_ids.append(uuid.UUID(str(raw)))
         except ValueError:
-            continue
+            invalid_ids += 1
+    if invalid_ids:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{invalid_ids} invalid tenant id value(s) provided.",
+        )
     updated = await crud.bulk_set_tenants_reviewed(db, tenant_ids, reviewed=reviewed)
-    return {"updated": updated, "reviewed": reviewed}
+    audit_ok = await _safe_create_audit_log(
+        db,
+        action="tenant_bulk_review_updated",
+        admin_user_id=user.id,
+        entity_type="tenant",
+        new_value={"reviewed": reviewed, "updated": updated, "requested": len(raw_ids)},
+        ip_address=request.client.host if request.client else None,
+    )
+    return _add_audit_warning(
+        {"updated": updated, "reviewed": reviewed},
+        audit_ok,
+    )
 
 
 @router.get("/api/calls/export")
@@ -1362,9 +1515,9 @@ async def api_blacklist_tenant(
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
 
-    await crud.add_to_blacklist(db, tenant.phone_number, updated_by=user.id)
+    _, cache_ok = await crud.add_to_blacklist(db, tenant.phone_number, updated_by=user.id)
     await crud.update_tenant(db, tenant_id, is_blacklisted=True)
-    await crud.create_audit_log(
+    audit_ok = await _safe_create_audit_log(
         db,
         action="blacklisted_number",
         admin_user_id=user.id,
@@ -1373,7 +1526,9 @@ async def api_blacklist_tenant(
         new_value={"phone_number": tenant.phone_number},
         ip_address=request.client.host if request.client else None,
     )
-    return {"blacklisted": True}
+    from app.api.settings import _add_cache_warning
+
+    return _add_cache_warning(_add_audit_warning({"blacklisted": True}, audit_ok), cache_ok)
 
 
 @router.patch("/api/tenants/{tenant_id}/notes")
@@ -1389,18 +1544,23 @@ async def api_update_tenant_notes(
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
 
-    notes = payload.get("notes", "")
-    await crud.update_tenant(db, tenant_id, notes=notes)
-    await crud.create_audit_log(
+    notes_text = str(payload.get("notes", "") or "")
+    if len(notes_text) > MAX_ADMIN_NOTES_LENGTH:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Notes cannot exceed {MAX_ADMIN_NOTES_LENGTH} characters.",
+        )
+    await crud.update_tenant(db, tenant_id, notes=notes_text)
+    audit_ok = await _safe_create_audit_log(
         db,
         action="updated_tenant_notes",
         admin_user_id=user.id,
         entity_type="tenant",
         entity_id=tenant_id,
-        new_value={"notes_length": len(notes or "")},
+        new_value={"notes_length": len(notes_text)},
         ip_address=request.client.host if request.client else None,
     )
-    return {"saved": True}
+    return _add_audit_warning({"saved": True}, audit_ok)
 
 
 @router.get("/api/analytics/export")
@@ -1466,13 +1626,29 @@ async def api_update_tenant(
     update_data = {}
     custom_updates: dict = {}
     declared = set(TenantUpdateRequest.model_fields.keys())
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    payload_fields = payload.model_dump(exclude_unset=True)
+    for field, value in payload_fields.items():
         if str(field).startswith("custom_"):
             custom_updates[field] = value
         elif field in declared:
             update_data[field] = value
         else:
-            update_data[field] = value
+            raise HTTPException(
+                status_code=422,
+                detail=f"Unsupported tenant field: {field}",
+            )
+
+    if custom_updates:
+        from app.services.admin_audit_helpers import validate_custom_tenant_updates
+
+        try:
+            validate_custom_tenant_updates(custom_updates)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    from app.services.admin_audit_helpers import build_tenant_audit_old_value
+
+    old_audit = build_tenant_audit_old_value(tenant, payload_fields)
 
     if custom_updates:
         nd = dict(tenant.normalized_data or {})
@@ -1489,22 +1665,31 @@ async def api_update_tenant(
         # are reflected in the stored score/status instead of going stale.
         rescore = await _rescore_tenant(db, tenant_id)
 
-        await crud.create_audit_log(
+        new_audit = {
+            k: v for k, v in payload_fields.items() if k != "normalized_data"
+        }
+        if rescore:
+            new_audit.update(rescore)
+
+        audit_ok = await _safe_create_audit_log(
             db,
             action="updated_tenant",
             admin_user_id=user.id,
             entity_type="tenant",
             entity_id=tenant_id,
-            old_value={},
-            new_value={**update_data, **rescore},
+            old_value=old_audit,
+            new_value=new_audit,
             ip_address=request.client.host if request.client else None,
         )
+    else:
+        audit_ok = True
 
-    return {
+    response = {
         "success": True,
         "updated_fields": list(update_data.keys()),
         **rescore,
     }
+    return _add_audit_warning(response, audit_ok)
 
 
 async def _rescore_tenant(db: AsyncSession, tenant_id: uuid.UUID) -> dict:
@@ -1623,16 +1808,20 @@ async def api_create_user(
     # admin role gets all scopes implicitly; store None in DB.
     stored_scopes = scopes if role in ("staff", "viewer") else None
 
-    new_user = await crud.create_user(
-        db,
-        email=email,
-        hashed_password=hash_password(payload.password),
-        full_name=payload.full_name.strip() or email,
-        role=role,
-        permissions=stored_scopes,
-    )
+    try:
+        new_user = await crud.create_user(
+            db,
+            email=email,
+            hashed_password=hash_password(payload.password),
+            full_name=payload.full_name.strip() or email,
+            role=role,
+            permissions=stored_scopes,
+        )
+    except IntegrityError as e:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="Email already in use.") from e
 
-    await crud.create_audit_log(
+    audit_ok = await _safe_create_audit_log(
         db,
         action="created_admin_user",
         admin_user_id=user.id,
@@ -1644,16 +1833,19 @@ async def api_create_user(
 
     logger.info("Admin user %s created by %s (role=%s)", email, user.email, role)
     invalidate_user_cache(new_user.id)
-    return {
-        "success": True,
-        "user": {
-            "id": str(new_user.id),
-            "email": new_user.email,
-            "full_name": new_user.full_name,
-            "role": new_user.role,
-            "scopes": list(new_user.effective_scopes),
+    return _add_audit_warning(
+        {
+            "success": True,
+            "user": {
+                "id": str(new_user.id),
+                "email": new_user.email,
+                "full_name": new_user.full_name,
+                "role": new_user.role,
+                "scopes": list(new_user.effective_scopes),
+            },
         },
-    }
+        audit_ok,
+    )
 
 
 @router.patch("/api/users/{user_id}")
@@ -1730,7 +1922,7 @@ async def api_update_user(
     if not updated:
         raise HTTPException(status_code=404, detail="User not found")
 
-    await crud.create_audit_log(
+    audit_ok = await _safe_create_audit_log(
         db,
         action="updated_admin_user",
         admin_user_id=user.id,
@@ -1746,17 +1938,20 @@ async def api_update_user(
     )
 
     invalidate_user_cache(user_id)
-    return {
-        "success": True,
-        "user": {
-            "id": str(updated.id),
-            "email": updated.email,
-            "full_name": updated.full_name,
-            "role": updated.role,
-            "scopes": list(updated.effective_scopes),
-            "is_active": updated.is_active,
+    return _add_audit_warning(
+        {
+            "success": True,
+            "user": {
+                "id": str(updated.id),
+                "email": updated.email,
+                "full_name": updated.full_name,
+                "role": updated.role,
+                "scopes": list(updated.effective_scopes),
+                "is_active": updated.is_active,
+            },
         },
-    }
+        audit_ok,
+    )
 
 
 @router.delete("/api/users/{user_id}")
@@ -1802,7 +1997,7 @@ async def api_delete_user(
     await crud.delete_user(db, user_id)
     invalidate_user_cache(user_id)
 
-    await crud.create_audit_log(
+    audit_ok = await _safe_create_audit_log(
         db,
         action="deleted_admin_user",
         admin_user_id=user.id,
@@ -1814,4 +2009,4 @@ async def api_delete_user(
     )
 
     logger.info("Admin user %s deleted by %s", deleted_email, user.email)
-    return {"success": True, "deleted": deleted_email}
+    return _add_audit_warning({"success": True, "deleted": deleted_email}, audit_ok)

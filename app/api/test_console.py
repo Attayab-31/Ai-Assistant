@@ -23,6 +23,7 @@ from __future__ import annotations
 import base64
 import logging
 import uuid
+from functools import lru_cache
 from pathlib import Path
 
 from fastapi import (
@@ -42,14 +43,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import call_handler
 from app.core.conversation import CallState
-from app.db.crud import get_user_by_id
+from app.db.crud import get_user_by_id, is_number_blacklisted
 from app.db.database import AsyncSessionLocal, get_db
 from app.utils.audio import (
     any_audio_to_mulaw,
     mulaw_to_wav,
 )
 from app.utils.dependencies import ACCESS_TOKEN_COOKIE_NAME, get_current_user
-from app.utils.helpers import friendly_provider_name
+from app.utils.helpers import friendly_provider_name, sanitize_phone_number
+from app.utils.security import mask_phone
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -80,6 +82,14 @@ class SayRequest(BaseModel):
 # ──────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ──────────────────────────────────────────────────────────────────────────────
+
+
+def _require_test_call_id(call_id: str) -> str:
+    """Enforce strict test-session namespace isolation."""
+    cid = str(call_id or "").strip()
+    if not cid.startswith("test-"):
+        raise HTTPException(status_code=400, detail="Invalid test call_id")
+    return cid
 
 
 def _audio_payload(audio_mulaw) -> dict:
@@ -133,8 +143,34 @@ def _is_loopback(client_host: str | None) -> bool:
     return bool(client_host) and client_host in _LOOPBACK_HOSTS
 
 
+@lru_cache(maxsize=1)
+def _trusted_proxy_peers() -> frozenset[str]:
+    peers = {
+        part.strip()
+        for part in (settings.trusted_proxy_ips or "").split(",")
+        if part.strip()
+    }
+    return frozenset(peers)
+
+
+def _resolve_client_host(
+    peer_host: str | None,
+    headers,
+) -> str | None:
+    """Return effective caller host, honoring trusted proxy forwarding."""
+    peer = (peer_host or "").strip()
+    if peer and peer in _trusted_proxy_peers():
+        forwarded = headers.get("x-forwarded-for", "")
+        if forwarded:
+            return forwarded.split(",")[0].strip()
+        real_ip = headers.get("x-real-ip", "")
+        if real_ip:
+            return real_ip.strip()
+    return peer or None
+
+
 def _dev_loopback_exempt(client_host: str | None) -> bool:
-    """Allow unauthenticated local QA on loopback in non-production."""
+    """Allow unauthenticated local QA only for real same-machine requests."""
     return not settings.is_production and _is_loopback(client_host)
 
 
@@ -148,7 +184,8 @@ async def require_test_console_access(
     any non-loopback client, so a dev instance exposed on a network can't be
     driven anonymously; only same-machine localhost QA is allowed without login.
     """
-    client_host = request.client.host if request.client else None
+    peer_host = request.client.host if request.client else None
+    client_host = _resolve_client_host(peer_host, request.headers)
     if _dev_loopback_exempt(client_host):
         return
     user = await get_current_user(request, db)
@@ -171,7 +208,9 @@ async def _verify_ws_auth(websocket: WebSocket) -> bool:
     allowed without auth for local QA; non-loopback connections must present a
     valid admin token with Settings edit permission.
     """
-    client_host = websocket.client.host if websocket.client else None
+    peer_host = websocket.client.host if websocket.client else None
+    ws_headers = getattr(websocket, "headers", {}) or {}
+    client_host = _resolve_client_host(peer_host, ws_headers)
     if _dev_loopback_exempt(client_host):
         return True
 
@@ -182,6 +221,13 @@ async def _verify_ws_auth(websocket: WebSocket) -> bool:
         return False
     payload = decode_access_token(token)
     if not payload or not payload.get("sub"):
+        return False
+    from app.core.redis_client import is_token_revoked
+
+    # Keep WS auth parity with HTTP auth dependencies: a logged-out/revoked
+    # token must be rejected immediately (fail-closed in production if Redis
+    # is unavailable, as implemented by is_token_revoked()).
+    if await is_token_revoked(token):
         return False
 
     try:
@@ -258,13 +304,30 @@ async def start_test_call(
 ):
     """
     Create a new in-memory test session and return the greeting (text + audio).
-    No DB call record is created — this is a sandbox.
+    No DB call record is created — this is a sandbox, but the do-not-call list
+    is enforced the same way as live Telnyx calls.
     """
+    phone_number = sanitize_phone_number(payload.phone_number)
+    if not phone_number:
+        raise HTTPException(status_code=400, detail="Invalid phone number")
+
+    if await is_number_blacklisted(db, phone_number):
+        logger.warning(
+            "Rejecting blacklisted test call: %s", mask_phone(phone_number)
+        )
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "This phone number is on the do-not-call list and cannot "
+                "start a test call."
+            ),
+        )
+
     call_id = f"test-{uuid.uuid4().hex[:12]}"
 
     session = await call_handler.create_session(
         call_id=call_id,
-        phone_number=payload.phone_number,
+        phone_number=phone_number,
         db=db,
         property_name=payload.property_name,
     )
@@ -315,7 +378,8 @@ async def say(
     Send text as if it were a transcribed tenant utterance. Returns the AI's
     text reply, TTS audio, and updated session state.
     """
-    session = call_handler.get_session(payload.call_id)
+    cid = _require_test_call_id(payload.call_id)
+    session = call_handler.get_session(cid)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
@@ -332,7 +396,7 @@ async def say(
     )
 
     return {
-        "call_id": payload.call_id,
+        "call_id": cid,
         "response_text": response_text if response_text else "",
         "is_complete": is_complete,
         **_audio_payload(response_audio),
@@ -350,7 +414,8 @@ async def say_audio(
     Upload a WAV blob (e.g. from MediaRecorder), transcribe it with the
     active STT provider, then run the same flow as /api/say.
     """
-    session = call_handler.get_session(call_id)
+    cid = _require_test_call_id(call_id)
+    session = call_handler.get_session(cid)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
@@ -371,7 +436,7 @@ async def say_audio(
     ) = await call_handler.process_tenant_speech(session, transcript)
 
     return {
-        "call_id": call_id,
+        "call_id": cid,
         "transcript": transcript,
         "response_text": response_text,
         "is_complete": is_complete,
@@ -390,7 +455,7 @@ async def end_test_call(
     _auth: None = Depends(require_test_console_access),
 ):
     """Finalize the test call: run extraction + scoring, then drop the session."""
-    cid = payload.call_id
+    cid = _require_test_call_id(payload.call_id)
     session = call_handler.get_session(cid)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -440,7 +505,8 @@ async def get_session_state(
     _auth: None = Depends(require_test_console_access),
 ):
     """Inspect the current state of a test session."""
-    session = call_handler.get_session(call_id)
+    cid = _require_test_call_id(call_id)
+    session = call_handler.get_session(cid)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     return {
@@ -476,15 +542,23 @@ async def test_stream(websocket: WebSocket, call_id: str):
     Telnyx-compatible WebSocket: same protocol and handler as production.
     Emits debug events (transcript, response, complete) for the test UI.
     """
-    await websocket.accept()
     if not await _verify_ws_auth(websocket):
+        await websocket.accept()
         await websocket.send_json(
             {"event": "error", "message": "authentication required"}
         )
         await websocket.close(code=1008)
         return
+    await websocket.accept()
 
-    session = await call_handler.wait_for_session(call_id, timeout=5.0)
+    try:
+        cid = _require_test_call_id(call_id)
+    except HTTPException:
+        await websocket.send_json({"event": "error", "message": "invalid test call_id"})
+        await websocket.close(code=1008)
+        return
+
+    session = await call_handler.wait_for_session(cid, timeout=5.0)
     if not session:
         await websocket.send_json({"event": "error", "message": "session not found"})
         await websocket.close(code=1008)
@@ -494,7 +568,7 @@ async def test_stream(websocket: WebSocket, call_id: str):
 
     await run_bidirectional_audio_stream(
         websocket,
-        call_id,
+        cid,
         session,
         hangup_on_complete=False,
         emit_debug_events=True,

@@ -38,3 +38,44 @@ def test_utterance_end_clamped_to_deepgram_minimum():
 def test_unknown_profile_falls_back():
     cfg = resolve_voice_latency({"voice_latency_profile": "turbo"})
     assert cfg["voice_latency_profile"] == "balanced"
+
+
+def test_explicit_critical_threshold_overrides_profile_defaults():
+    cfg = resolve_voice_latency(
+        {
+            "voice_latency_profile": "balanced",
+            "latency_alert_turn_p95_crit_ms": 2200,
+            "latency_alert_timeout_rate_crit_pct": 7.5,
+        }
+    )
+    assert cfg["latency_alert_turn_p95_crit_ms"] == 2200
+    assert cfg["latency_alert_timeout_rate_crit_pct"] == 7.5
+
+
+def test_critical_thresholds_clamped_to_warning_floor():
+    cfg = resolve_voice_latency(
+        {
+            "voice_latency_profile": "balanced",
+            "latency_alert_turn_p95_ms": 1500,
+            "latency_alert_turn_p95_crit_ms": 1200,
+            "latency_alert_timeout_rate_pct": 3.0,
+            "latency_alert_timeout_rate_crit_pct": 2.0,
+        }
+    )
+    assert cfg["latency_alert_turn_p95_crit_ms"] >= cfg["latency_alert_turn_p95_ms"]
+    assert cfg["latency_alert_timeout_rate_crit_pct"] >= cfg["latency_alert_timeout_rate_pct"]
+
+
+def test_conversation_session_accepts_critical_latency_alert_fields():
+    from app.core.conversation import ConversationSession
+
+    session = ConversationSession(
+        call_id="test-latency",
+        phone_number="+15555550123",
+        latency_alert_turn_p95_ms=1200,
+        latency_alert_turn_p95_crit_ms=1800,
+        latency_alert_timeout_rate_pct=2.0,
+        latency_alert_timeout_rate_crit_pct=5.0,
+    )
+    assert session.latency_alert_turn_p95_crit_ms == 1800
+    assert session.latency_alert_timeout_rate_crit_pct == 5.0

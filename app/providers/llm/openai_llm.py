@@ -11,9 +11,9 @@ from app.providers.base import (
     BaseLLMProvider,
     complete_openai_chat,
     openai_chat_kwargs,
+    resolve_frozen_credential,
     stream_openai_chat,
 )
-from config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -25,17 +25,19 @@ class OpenAILLMProvider(BaseLLMProvider):
 
     provider_name = "openai"
 
-    def __init__(self, model: str = "gpt-4o-mini") -> None:
+    def __init__(self, model: str = "gpt-4o-mini", *, api_key: str | None = None) -> None:
         self.model = model if model in AVAILABLE_MODELS else "gpt-4o-mini"
+        self._api_key = api_key
         self._client: AsyncOpenAI | None = None
         logger.info(f"OpenAILLMProvider initialized with model: {self.model}")
 
     @property
     def client(self) -> AsyncOpenAI:
         if self._client is None:
-            if not settings.openai_api_key:
+            key = resolve_frozen_credential(self._api_key, settings_attr="openai_api_key")
+            if not key:
                 raise ValueError("OPENAI_API_KEY not set in environment")
-            self._client = AsyncOpenAI(api_key=settings.openai_api_key)
+            self._client = AsyncOpenAI(api_key=key)
         return self._client
 
     async def get_response(

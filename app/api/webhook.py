@@ -19,8 +19,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import call_handler
 from app.core.ratelimit import limiter
-from app.db.crud import create_call, get_setting_value
-from app.db.database import AsyncSessionLocal, get_db
+from app.db.crud import (
+    create_call,
+    get_call_by_call_id,
+    get_setting_value,
+    is_number_blacklisted,
+)
+from app.db.database import get_db
 from app.services.telnyx_service import telnyx_service, verify_telnyx_webhook_signature
 from app.utils.helpers import sanitize_phone_number
 from app.utils.security import mask_phone
@@ -33,6 +38,35 @@ router = APIRouter()
 # Telnyx signs (timestamp | body); a valid signature on a stale timestamp means a
 # captured request is being replayed, so we drop it even though the crypto checks out.
 WEBHOOK_TIMESTAMP_TOLERANCE_S = 300
+_RETRYABLE_WEBHOOK_EVENTS = {
+    "call.initiated",
+    "call.answered",
+    "call.hangup",
+    "call.recording.saved",
+}
+# Events whose handling is meaningless without a call_control_id.
+_ID_REQUIRED_WEBHOOK_EVENTS = {
+    "call.initiated",
+    "call.answered",
+    "call.hangup",
+}
+
+
+def _webhook_dedupe_key(event_type: str, call_payload: dict) -> str | None:
+    """Return the Redis dedupe key used by the handler for this Telnyx event."""
+    call_control_id = call_payload.get("call_control_id", "")
+    if not call_control_id:
+        return None
+    if event_type == "call.initiated":
+        return f"webhook:initiated:{call_control_id}"
+    if event_type == "call.answered":
+        return f"webhook:answered:{call_control_id}"
+    if event_type == "call.hangup":
+        return f"webhook:hangup:{call_control_id}"
+    if event_type == "call.recording.saved":
+        recording_id = call_payload.get("recording_id") or call_control_id
+        return f"webhook:recording:{recording_id}"
+    return None
 
 
 async def _dedupe_webhook_event(
@@ -46,10 +80,13 @@ async def _dedupe_webhook_event(
         return True
     from app.core.redis_client import acquire_once
 
+    # Keep lifecycle webhooks available even when Redis is down. If dedupe storage
+    # is unavailable we prefer processing (idempotent handlers) over dropping
+    # call.initiated/answered/hangup events entirely.
     if await acquire_once(
         lock_key,
         3600,
-        fail_closed=settings.is_production,
+        fail_closed=False,
     ):
         return True
     logger.info("Duplicate %s for %s — ignoring", log_label, call_control_id)
@@ -73,6 +110,14 @@ async def verify_webhook(request: Request) -> bytes:
             # Never accept unsigned webhooks in production — without the public
             # key anyone could POST forged call events.
             logger.error("TELNYX_PUBLIC_KEY not set in production — rejecting webhook")
+            raise HTTPException(
+                status_code=503,
+                detail="Webhook verification not configured",
+            )
+        if not settings.allow_unsigned_webhooks_in_dev:
+            logger.error(
+                "TELNYX_PUBLIC_KEY not set and unsigned webhooks disabled in development"
+            )
             raise HTTPException(
                 status_code=503,
                 detail="Webhook verification not configured",
@@ -138,6 +183,21 @@ async def telnyx_webhook(request: Request, db: AsyncSession = Depends(get_db)):
 
     logger.info(f"Telnyx webhook: {event_type} | call_control_id={call_control_id}")
 
+    # Lifecycle events are keyed entirely by call_control_id (DB lookups, dedupe
+    # locks, hangup handling). An empty id bypasses dedupe (see
+    # _dedupe_webhook_event) and would let handlers act on an unidentifiable call,
+    # so reject it up front rather than processing a malformed delivery.
+    if event_type in _ID_REQUIRED_WEBHOOK_EVENTS and not call_control_id:
+        logger.warning("Rejecting %s webhook with empty call_control_id", event_type)
+        raise HTTPException(status_code=400, detail="Missing call_control_id")
+    if (
+        event_type == "call.recording.saved"
+        and not call_control_id
+        and not call_payload.get("recording_id")
+    ):
+        logger.warning("Rejecting call.recording.saved webhook with no call identifier")
+        raise HTTPException(status_code=400, detail="Missing call identifier")
+
     try:
         if event_type == "call.initiated":
             await handle_call_initiated(db, call_payload)
@@ -153,9 +213,20 @@ async def telnyx_webhook(request: Request, db: AsyncSession = Depends(get_db)):
             logger.info("Streaming stopped for %s", call_control_id)
         else:
             logger.debug("Unhandled event type: %s", event_type)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error("Error handling %s: %s", event_type, e, exc_info=True)
-        # Don't raise — Telnyx expects 200 even on internal errors to avoid retry storms
+        if event_type in _RETRYABLE_WEBHOOK_EVENTS:
+            dedupe_key = _webhook_dedupe_key(event_type, call_payload)
+            if dedupe_key:
+                from app.core.redis_client import cache_delete
+
+                await cache_delete(dedupe_key)
+            raise HTTPException(
+                status_code=500,
+                detail="Webhook processing failed",
+            ) from e
 
     return {"received": True}
 
@@ -179,21 +250,33 @@ async def handle_call_initiated(db: AsyncSession, call_payload: dict) -> None:
     ):
         return
 
-    # Check blacklist
-    blacklist = await get_setting_value(db, "blacklisted_numbers", [])
-    if phone_number in blacklist:
+    # Check blacklist (same rule as test console — admin DNC list is source of truth).
+    if await is_number_blacklisted(db, phone_number):
         logger.warning("Rejecting blacklisted number: %s", mask_phone(phone_number))
         await telnyx_service.reject_call(call_control_id, cause="CALL_REJECTED")
         return
 
-    # Create call record
-    await create_call(
-        db,
-        call_id=call_control_id,
-        phone_number=phone_number,
-        direction="inbound" if direction == "incoming" else "outbound",
-        status="initiated",
-    )
+    # Create call record (recording flag frozen here — not re-read at answer).
+    recording_enabled = await get_setting_value(db, "call_recording_enabled", False)
+    try:
+        await create_call(
+            db,
+            call_id=call_control_id,
+            phone_number=phone_number,
+            direction="inbound" if direction == "incoming" else "outbound",
+            status="initiated",
+            recording_requested=bool(recording_enabled),
+        )
+    except IntegrityError:
+        await db.rollback()
+        existing = await get_call_by_call_id(db, call_control_id)
+        if existing is not None:
+            logger.info(
+                "Duplicate call.initiated for %s — treating as idempotent",
+                call_control_id,
+            )
+            return
+        raise
 
     # Answer the call
     if direction == "incoming":
@@ -232,7 +315,15 @@ async def handle_call_answered_event(db: AsyncSession, call_payload: dict) -> No
     ):
         return
 
-    recording_enabled = await get_setting_value(db, "call_recording_enabled", False)
+    from app.db.crud import get_call_by_call_id, update_call
+
+    call = await get_call_by_call_id(db, call_control_id)
+    # Use the flag frozen at call.initiated; fall back to live setting only if
+    # the row is missing (webhook ordering race).
+    if call is not None:
+        recording_enabled = bool(call.recording_requested)
+    else:
+        recording_enabled = await get_setting_value(db, "call_recording_enabled", False)
     if recording_enabled:
         try:
             await telnyx_service.start_recording(call_control_id)
@@ -249,8 +340,6 @@ async def handle_call_answered_event(db: AsyncSession, call_payload: dict) -> No
     stream_token = generate_stream_token(call_control_id, settings.secret_key)
     stream_url = f"{ws_base}/telnyx/stream/{call_control_id}?token={stream_token}"
 
-    from app.db.crud import update_call
-
     # Never log the full stream URL — it carries a short-lived bearer token that
     # would let anyone with log access hijack the live call's audio.
     try:
@@ -258,8 +347,19 @@ async def handle_call_answered_event(db: AsyncSession, call_payload: dict) -> No
         logger.info("Streaming started for call %s", call_control_id)
         await update_call(db, call_control_id, status="in_progress")
     except Exception as e:
-        # If streaming can't start, the caller would otherwise sit in silence
-        # on an "in_progress" call. Mark it failed and hang up cleanly.
+        # Duplicate call.answered deliveries can happen (especially while dedupe
+        # is fail-open), and Telnyx may reject a second start_streaming for a
+        # call that's already active. Treat that as idempotent success rather
+        # than failing/hanging up a healthy in-progress call.
+        latest = await get_call_by_call_id(db, call_control_id)
+        if latest is not None and latest.status == "in_progress":
+            logger.info(
+                "Streaming already active for %s; treating duplicate answered as idempotent",
+                call_control_id,
+            )
+            return
+        # If streaming really can't start, the caller would otherwise sit in
+        # silence on an active call. Mark it failed and hang up cleanly.
         logger.error("Failed to start streaming for call %s: %s", call_control_id, e)
         await update_call(db, call_control_id, status="failed")
         try:
@@ -307,29 +407,33 @@ async def handle_call_hangup(db: AsyncSession, call_payload: dict) -> None:
         asyncio.create_task(
             call_handler.finalize_after_stream_timeout(call_control_id)
         )
-        from app.db.crud import get_call_by_call_id, update_call
+        from app.db.crud import get_call_by_call_id, mark_call_abandoned_if_active
 
         existing = await get_call_by_call_id(db, call_control_id)
         if existing and existing.status == "in_progress":
             logger.info(
                 "Hangup for in_progress call %s — stream stop signaled "
-                "(session on another worker); finalize timeout scheduled",
+                "(session on another worker; Redis + DB fallback); finalize timeout scheduled",
                 call_control_id,
             )
             return
         if existing and existing.status not in ("completed", "failed", "abandoned"):
-            await update_call(
-                db,
-                call_control_id,
-                status="abandoned",
-                ended_at=datetime.now(UTC),
-            )
-            logger.info("Call marked abandoned: %s", call_control_id)
+            marked = await mark_call_abandoned_if_active(db, call_control_id)
+            if marked:
+                logger.info("Call marked abandoned: %s", call_control_id)
 
 
 async def handle_recording_saved(db: AsyncSession, call_payload: dict) -> None:
     """Download Telnyx recording and store in Supabase when configured."""
     call_control_id = call_payload.get("call_control_id", "")
+    recording_id = call_payload.get("recording_id") or call_control_id
+    if not await _dedupe_webhook_event(
+        recording_id,
+        f"webhook:recording:{recording_id}",
+        log_label="call.recording.saved",
+    ):
+        return
+
     recording_urls = call_payload.get("recording_urls") or {}
     mp3_url = recording_urls.get("mp3") or recording_urls.get("wav")
 
@@ -405,39 +509,9 @@ async def telnyx_audio_stream(websocket: WebSocket, call_id: str):
     await websocket.accept()
     logger.info("WebSocket connected for call: %s", call_id)
 
-    # The session normally lives on whichever worker owns this WebSocket. If it
-    # doesn't exist yet (typical) or the call.answered webhook landed on another
-    # worker, create it here from the DB call record so we're multi-worker safe.
-    session = call_handler.get_session(call_id)
-    if session is None:
-        session = await call_handler.wait_for_session(call_id, timeout=1.0)
-    if session is None:
-        try:
-            async with AsyncSessionLocal() as setup_db:
-                from app.db.crud import get_call_by_call_id
-
-                call = await get_call_by_call_id(setup_db, call_id)
-                if call is None:
-                    # Authentic connection (the stream token is verified above)
-                    # but the call.initiated/answered webhook hasn't landed yet
-                    # or hit another worker. Proceed so we don't drop a real
-                    # call; finalize will create the call row and coerce the
-                    # unknown phone. Logged so the webhook-ordering gap is
-                    # visible in production.
-                    logger.warning(
-                        "No call row for %s at stream start — proceeding with "
-                        "unknown phone (webhook ordering/another worker)",
-                        call_id,
-                    )
-                phone_number = call.phone_number if call else ""
-                session = await call_handler.create_session(
-                    call_id=call_id,
-                    phone_number=phone_number,
-                    db=setup_db,
-                )
-        except Exception as e:
-            logger.error("Failed to create session for %s: %s", call_id, e)
-            session = None
+    # Session is created lazily on the WebSocket worker; polls the DB briefly if
+    # call.initiated has not committed the row yet (multi-worker / ordering race).
+    session = await call_handler.ensure_stream_session(call_id)
     if session is None:
         logger.error("No session for call %s — closing WS", call_id)
         await websocket.close(code=1008)

@@ -139,9 +139,14 @@
     </div>
     <details class="adv">
       <summary>Advanced options</summary>
-      <div class="form-group" style="margin-bottom: 0;">
+      <div class="form-group" style="margin-bottom: 10px;">
         <label>Specific voice name (optional)</label>
         <input type="text" id="tts_voice" value="{{ cur_tts_voice }}" placeholder="Leave blank for the recommended default" />
+      </div>
+      <div class="form-group" style="margin-bottom: 0;">
+        <label>Spanish voice name (optional)</label>
+        <input type="text" id="tts_voice_spanish" value="{{ settings.get('tts_voice_deepgram_es' if cur_tts == 'deepgram' else 'tts_voice_google_es', 'aura-2-estrella-es' if cur_tts == 'deepgram' else 'es-US-Neural2-A') }}" placeholder="{% if cur_tts == 'deepgram' %}e.g. aura-2-estrella-es{% else %}e.g. es-US-Neural2-A{% endif %}" />
+        <p class="text-muted" style="margin: 4px 0 0;">Used automatically when a caller chooses Spanish on the language question.</p>
       </div>
     </details>
     <div style="margin-top: 12px;"><button type="button" class="btn btn-primary settings-save" onclick="withBtnLoading(this, () => switchProvider('tts'), 'Saving\u2026')">Save voice</button></div>
@@ -246,6 +251,7 @@
         <option value="groq" {% if cur_stt_fb == 'groq' %}selected{% endif %}>Groq Whisper</option>
         <option value="none" {% if cur_stt_fb == 'none' %}selected{% endif %}>No backup</option>
       </select>
+      <p class="text-muted" style="margin: 4px 0 0;">Used when batch transcription runs — including if the live listening connection drops during a call.</p>
     </div>
 
     <div class="form-group" style="margin-top: 12px;">
@@ -292,6 +298,7 @@
       const k = (document.getElementById('stt_api_key').value || '').trim(); if (k) body.api_key = k;
     } else if (kind === 'tts') {
       const v = (document.getElementById('tts_voice').value || '').trim(); if (v) body.voice = v;
+      const sv = (document.getElementById('tts_voice_spanish').value || '').trim(); if (sv) body.spanish_voice = sv;
       const s = parseFloat(document.getElementById('tts_speed').value);
       if (!isNaN(s)) body.speed = Math.max(0.75, Math.min(1.25, s));
     }
@@ -346,6 +353,10 @@
     deepgram: {{ settings.get('tts_voice_deepgram', '') | tojson }},
     google: {{ settings.get('tts_voice_google', '') | tojson }},
   };
+  const TTS_VOICES_ES = {
+    deepgram: {{ settings.get('tts_voice_deepgram_es', 'aura-2-estrella-es') | tojson }},
+    google: {{ settings.get('tts_voice_google_es', 'es-US-Neural2-A') | tojson }},
+  };
 
   function syncLlmModelField() {
     const provider = document.getElementById('llm_provider').value;
@@ -366,8 +377,13 @@
   function syncTtsVoiceField() {
     const provider = document.getElementById('tts_provider').value;
     const input = document.getElementById('tts_voice');
+    const spanish = document.getElementById('tts_voice_spanish');
     if (input && TTS_VOICES[provider] !== undefined) {
       input.value = TTS_VOICES[provider] || '';
+    }
+    if (spanish && TTS_VOICES_ES[provider] !== undefined) {
+      spanish.value = TTS_VOICES_ES[provider] || '';
+      spanish.placeholder = provider === 'deepgram' ? 'e.g. aura-2-estrella-es' : 'e.g. es-US-Neural2-A';
     }
   }
 

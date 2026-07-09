@@ -19,6 +19,20 @@ from config import settings
 logger = logging.getLogger(__name__)
 
 
+def _record_side_effect_failure_sync(
+    call_id: str,
+    *,
+    key: str,
+    detail: str,
+) -> None:
+    """Persist permanent side-effect failure so admins can see it on call detail."""
+    from app.services.side_effect_errors import (
+        record_side_effect_delivery_failure_sync,
+    )
+
+    record_side_effect_delivery_failure_sync(call_id, key=key, detail=detail)
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Email Template Rendering
 # ──────────────────────────────────────────────────────────────────────────────
@@ -282,6 +296,7 @@ def send_screening_email_task(
     duration: int,
     providers: dict,
     bypass_filters: bool = False,
+    email_settings: dict | None = None,
 ):
     """
     Celery task: send screening summary email to landlord.
@@ -298,7 +313,7 @@ def send_screening_email_task(
 
         resend.api_key = settings.resend_api_key
 
-        email_settings = _get_email_settings_sync()
+        email_settings = resolve_email_settings(email_settings)
 
         if (
             not bypass_filters
@@ -364,6 +379,11 @@ def send_screening_email_task(
             raise self.retry(exc=e, countdown=10 * (2**self.request.retries))
         except self.MaxRetriesExceededError:
             logger.error(f"Email permanently failed for call {call_id} after retries")
+            _record_side_effect_failure_sync(
+                call_id,
+                key="email_delivery",
+                detail=str(e),
+            )
             return {"sent": False, "reason": "max_retries_exceeded", "error": str(e)}
 
 
@@ -382,6 +402,7 @@ def fire_crm_webhook_task(
     score: int,
     tenant_data: dict,
     app_url: str,
+    email_settings: dict | None = None,
 ):
     """
     Celery task: fire CRM webhook with HMAC-SHA256 signature.
@@ -399,10 +420,15 @@ def fire_crm_webhook_task(
         assert_safe_external_url(webhook_url)
     except UnsafeURLError as e:
         logger.error("Refusing unsafe CRM webhook URL for call %s: %s", call_id, e)
+        _record_side_effect_failure_sync(
+            call_id,
+            key="crm_webhook",
+            detail="unsafe_webhook_url",
+        )
         return {"sent": False, "error": "unsafe_webhook_url"}
 
     try:
-        email_settings = _get_email_settings_sync()
+        email_settings = resolve_email_settings(email_settings)
 
         payload = {
             "event": "tenant_screened",
@@ -451,6 +477,11 @@ def fire_crm_webhook_task(
             raise self.retry(exc=e, countdown=15 * (2**self.request.retries))
         except self.MaxRetriesExceededError:
             logger.error(f"CRM webhook permanently failed for call {call_id}")
+            _record_side_effect_failure_sync(
+                call_id,
+                key="crm_webhook",
+                detail=str(e),
+            )
             return {"sent": False, "error": str(e)}
 
 
@@ -471,6 +502,7 @@ def send_latency_alert_task(
     max_turn_ms: int = 0,
     llm_provider: str = "",
     tts_provider: str = "",
+    email_settings: dict | None = None,
 ):
     """Email the landlord when a call breached voice latency SLOs."""
     import html as _html
@@ -479,7 +511,7 @@ def send_latency_alert_task(
         if not settings.resend_api_key:
             return {"sent": False, "reason": "no_api_key"}
 
-        email_settings = _get_email_settings_sync()
+        email_settings = resolve_email_settings(email_settings)
         landlord_email = (
             email_settings.get("landlord_email") or settings.default_landlord_email
         )
@@ -535,14 +567,13 @@ def send_daily_digest_task():
         if not settings.resend_api_key:
             return {"sent": False, "reason": "no_api_key"}
 
-        stats = _get_yesterday_stats_sync()
+        # Use the admin-configured email settings (recipient, sender identity,
+        # CC/BCC) just like the per-call result email, falling back to env.
+        email_settings = resolve_email_settings()
+        stats = _get_yesterday_stats_sync(email_settings.get("timezone") or "")
         if stats["total_calls"] == 0:
             logger.info("No calls yesterday — skipping digest")
             return {"sent": False, "reason": "no_calls"}
-
-        # Use the admin-configured email settings (recipient, sender identity,
-        # CC/BCC) just like the per-call result email, falling back to env.
-        email_settings = _get_email_settings_sync()
         landlord_email = email_settings.get("landlord_email")
         if not landlord_email:
             return {"sent": False, "reason": "no_recipient"}
@@ -596,16 +627,24 @@ def provider_health_check_task():
 
     logger.info("Running provider health check...")
     try:
-        async def _ping_llm() -> dict:
-            results = {}
-            try:
-                ok, latency = await provider_registry.llm.ping()
-                results["llm"] = {"healthy": ok, "latency_ms": latency}
-            except Exception as e:
-                results["llm"] = {"healthy": False, "error": str(e)}
+        async def _ping_all() -> dict:
+            # Celery workers run in separate processes; ensure provider registry
+            # is initialized in this process before reading llm/stt/tts handles.
+            await provider_registry.initialize()
+            results: dict[str, dict] = {}
+            for role, provider in (
+                ("llm", provider_registry.llm),
+                ("stt", provider_registry.stt),
+                ("tts", provider_registry.tts),
+            ):
+                try:
+                    ok, latency = await provider.ping()
+                    results[role] = {"healthy": ok, "latency_ms": latency}
+                except Exception as e:
+                    results[role] = {"healthy": False, "error": str(e)}
             return results
 
-        results = asyncio.run(_ping_llm())
+        results = asyncio.run(_ping_all())
         logger.info(f"Health check results: {results}")
     except Exception as e:
         logger.error(f"Health check task failed: {e}")
@@ -633,6 +672,40 @@ def _coerce_bool(value, default: bool = False) -> bool:
     if value in (None, ""):
         return default
     return str(value).strip().lower() in {"true", "1", "yes", "y"}
+
+
+def resolve_email_settings(email_settings: dict | None = None) -> dict:
+    """Use per-call frozen settings when provided; otherwise load live admin values."""
+    if email_settings:
+        return normalize_email_settings(email_settings)
+    return _get_email_settings_sync()
+
+
+def normalize_email_settings(raw: dict) -> dict:
+    """Normalize a settings dict into the shape expected by email tasks."""
+    from app.utils.security import decrypt_value
+
+    raw_secret = str(raw.get("crm_webhook_secret") or "")
+    crm_secret = raw_secret
+    if raw_secret:
+        try:
+            crm_secret = decrypt_value(raw_secret).strip()
+        except Exception:
+            crm_secret = raw_secret
+
+    return {
+        "landlord_email": raw.get("landlord_email") or settings.default_landlord_email,
+        "email_from_name": raw.get("email_from_name") or "",
+        "email_from_address": raw.get("email_from_address") or "",
+        "email_subject_template": raw.get("email_subject_template") or "",
+        "email_body_template": raw.get("email_body_template") or "",
+        "email_qualified_only": _coerce_bool(raw.get("email_qualified_only")),
+        "email_include_transcript": _coerce_bool(raw.get("email_include_transcript")),
+        "cc_emails": raw.get("cc_emails") or "",
+        "bcc_emails": raw.get("bcc_emails") or "",
+        "timezone": raw.get("timezone") or "",
+        "crm_webhook_secret": crm_secret,
+    }
 
 
 def _get_email_settings_sync() -> dict:
@@ -672,19 +745,7 @@ def _get_email_settings_sync() -> dict:
         finally:
             loop.close()
 
-    return {
-        "landlord_email": raw.get("landlord_email") or settings.default_landlord_email,
-        "email_from_name": raw.get("email_from_name") or "",
-        "email_from_address": raw.get("email_from_address") or "",
-        "email_subject_template": raw.get("email_subject_template") or "",
-        "email_body_template": raw.get("email_body_template") or "",
-        "email_qualified_only": _coerce_bool(raw.get("email_qualified_only")),
-        "email_include_transcript": _coerce_bool(raw.get("email_include_transcript")),
-        "cc_emails": raw.get("cc_emails") or "",
-        "bcc_emails": raw.get("bcc_emails") or "",
-        "timezone": raw.get("timezone") or "",
-        "crm_webhook_secret": raw.get("crm_webhook_secret") or "",
-    }
+    return normalize_email_settings(raw)
 
 
 def _mark_email_sent_sync(call_id: str) -> None:
@@ -716,10 +777,11 @@ def _mark_email_sent_sync(call_id: str) -> None:
         pass
 
 
-def _get_yesterday_stats_sync() -> dict:
+def _get_yesterday_stats_sync(timezone: str = "") -> dict:
     """Get yesterday's call stats synchronously for digest email."""
     import asyncio
     from datetime import timedelta
+    from zoneinfo import ZoneInfo
 
     from sqlalchemy import and_, func, select
 
@@ -730,10 +792,17 @@ def _get_yesterday_stats_sync() -> dict:
     async def _fetch():
         async with AsyncSessionLocal() as db:
             now = datetime.now(UTC)
-            yesterday_start = (now - timedelta(days=1)).replace(
+            try:
+                tz = ZoneInfo(str(timezone).strip()) if str(timezone or "").strip() else UTC
+            except Exception:
+                tz = UTC
+            local_now = now.astimezone(tz)
+            local_yesterday_start = (local_now - timedelta(days=1)).replace(
                 hour=0, minute=0, second=0, microsecond=0
             )
-            yesterday_end = yesterday_start + timedelta(days=1)
+            local_yesterday_end = local_yesterday_start + timedelta(days=1)
+            yesterday_start = local_yesterday_start.astimezone(UTC)
+            yesterday_end = local_yesterday_end.astimezone(UTC)
 
             total = (
                 await db.execute(

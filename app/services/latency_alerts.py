@@ -19,8 +19,20 @@ def _alert_thresholds(session) -> tuple[float, float, float, float]:
         getattr(session, "latency_alert_timeout_rate_pct", TIMEOUT_RATE_WARN_PCT)
         or TIMEOUT_RATE_WARN_PCT
     )
-    turn_crit = max(turn_warn * 1.5, TURN_P95_CRIT_MS)
-    timeout_crit = max(timeout_warn * 2.5, TIMEOUT_RATE_CRIT_PCT)
+    turn_crit_cfg = getattr(session, "latency_alert_turn_p95_crit_ms", None)
+    timeout_crit_cfg = getattr(session, "latency_alert_timeout_rate_crit_pct", None)
+    turn_crit = (
+        float(turn_crit_cfg)
+        if turn_crit_cfg not in (None, "")
+        else max(turn_warn * 1.5, TURN_P95_CRIT_MS)
+    )
+    timeout_crit = (
+        float(timeout_crit_cfg)
+        if timeout_crit_cfg not in (None, "")
+        else max(timeout_warn * 2.5, TIMEOUT_RATE_CRIT_PCT)
+    )
+    turn_crit = max(turn_crit, turn_warn)
+    timeout_crit = max(timeout_crit, timeout_warn)
     return turn_warn, turn_crit, timeout_warn, timeout_crit
 
 
@@ -80,11 +92,16 @@ def evaluate_call_latency(session) -> list[str]:
     return warnings
 
 
-def queue_latency_alert_if_needed(session, *, call_id: str) -> None:
-    """Email the landlord when a call breached latency thresholds."""
+def queue_latency_alert_if_needed(
+    session, *, call_id: str, email_settings: dict | None = None
+) -> bool:
+    """Email the landlord when a call breached latency thresholds.
+
+    Returns True when a Celery task was queued, False when skipped or enqueue failed.
+    """
     warnings = evaluate_call_latency(session)
     if not warnings:
-        return
+        return False
     try:
         from app.services.email_service import send_latency_alert_task
 
@@ -96,11 +113,14 @@ def queue_latency_alert_if_needed(session, *, call_id: str) -> None:
             max_turn_ms=int(round(getattr(session, "max_turn_latency_ms", 0))),
             llm_provider=getattr(session, "llm_provider", ""),
             tts_provider=getattr(session, "tts_provider", ""),
+            email_settings=email_settings,
         )
         logger.warning(
             "[%s] Latency SLO breach — queued alert: %s",
             call_id,
             "; ".join(warnings),
         )
+        return True
     except Exception as exc:
         logger.error("Failed to queue latency alert for %s: %s", call_id, exc)
+        return False

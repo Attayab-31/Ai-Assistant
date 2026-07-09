@@ -8,6 +8,7 @@ from app.core.question_flow import (
     new_custom_question,
     next_unanswered_state,
     normalize_questions,
+    screening_complete,
     validate_questions_for_save,
 )
 
@@ -259,6 +260,173 @@ def test_conditional_eq_understands_bool_strings():
     assert evaluate_conditional(cond, {"flag": False}) is False
 
 
+def test_conditional_numeric_operators():
+    from app.core.question_flow import evaluate_conditional
+
+    data = {"monthly_income": "3500"}
+    assert evaluate_conditional(
+        {"field": "monthly_income", "operator": "gte", "value": 3000}, data
+    )
+    assert not evaluate_conditional(
+        {"field": "monthly_income", "operator": "gt", "value": 3500}, data
+    )
+    assert evaluate_conditional(
+        {"field": "monthly_income", "operator": "lt", "value": 4000}, data
+    )
+
+
+def test_conditional_in_operator():
+    from app.core.question_flow import evaluate_conditional
+
+    cond = {"field": "pet_type", "operator": "in", "value": "dog, cat"}
+    assert evaluate_conditional(cond, {"pet_type": "dog"})
+    assert not evaluate_conditional(cond, {"pet_type": "bird"})
+
+
+def test_conditional_asked_uses_flow_context():
+    from app.core.question_flow import ConditionalFlowContext, evaluate_conditional
+
+    questions = [
+        {
+            "state": "Q1",
+            "extract_fields": ["has_pets"],
+            "active": True,
+            "order": 1,
+        },
+        {
+            "state": "Q2",
+            "extract_fields": ["pet_type"],
+            "active": True,
+            "order": 2,
+        },
+    ]
+    cond = {"field": "has_pets", "operator": "asked"}
+    ctx = ConditionalFlowContext(
+        answered_states=frozenset({"Q1"}),
+        questions=tuple(questions),
+    )
+    assert evaluate_conditional(cond, {}, flow_context=ctx)
+    assert not evaluate_conditional(
+        cond, {}, flow_context=ConditionalFlowContext(questions=tuple(questions))
+    )
+
+
+def test_text_answer_uses_session_raw_answers():
+    from app.core.question_flow import is_question_answered_for_def
+
+    q = {
+        "state": "Q_NOTES",
+        "answer_type": "text",
+        "extract_fields": ["notes"],
+        "active": True,
+        "order": 1,
+    }
+    assert not is_question_answered_for_def(q, {})
+    assert is_question_answered_for_def(q, {}, raw_answers={"Q_NOTES": "hello"})
+    assert is_question_answered_for_def(q, {"notes": "typed"})
+
+
+def test_validate_questions_rejects_numeric_conditional_without_value():
+    from app.core.question_flow import new_custom_question, validate_questions_for_save
+
+    base = new_custom_question(question="Income?", answer_type="currency", order=1)
+    base["extract_fields"] = ["custom_income"]
+    q = new_custom_question(question="High income follow-up?", answer_type="text", order=2)
+    q["conditional"] = {
+        "field": "custom_income",
+        "operator": "gte",
+        "value": "",
+    }
+    with pytest.raises(ValueError, match="numeric value"):
+        validate_questions_for_save([base, q])
+
+
+def test_admin_can_detach_builtin_conditional_on_v2_save():
+    """Admin sets a built-in follow-up to 'always ask' -> null must survive.
+
+    Once a question is v2 (admin-managed), an explicit ``conditional: null``
+    means the admin deliberately detached the built-in follow-up from its
+    parent yes/no. The migration must not silently re-inject the legacy rule.
+    """
+    from app.core.question_flow import migrate_question_to_v2
+
+    pet_details = {
+        "schema_version": 2,
+        "id": "Q6A",
+        "state": "Q6A_PET_DETAILS",
+        "question": "Tell me about your pets.",
+        "answer_type": "text",
+        "extract_fields": ["pet_type", "pet_breed"],
+        "conditional": None,
+        "active": True,
+        "order": 7,
+    }
+    migrated = migrate_question_to_v2(dict(pet_details))
+    assert migrated["conditional"] is None
+
+
+def test_legacy_v1_migration_still_injects_builtin_conditional():
+    """First-time v1 -> v2 upgrade must still pull in the built-in rule."""
+    from app.core.question_flow import migrate_question_to_v2
+
+    legacy_pet_details = {
+        "id": "Q6A",
+        "state": "Q6A_PET_DETAILS",
+        "question": "Tell me about your pets.",
+        "extract_fields": ["pet_type", "pet_breed"],
+        "active": True,
+        "order": 7,
+    }
+    migrated = migrate_question_to_v2(dict(legacy_pet_details))
+    assert migrated["conditional"] == {
+        "field": "has_pets",
+        "operator": "eq",
+        "value": True,
+    }
+
+
+def test_advance_stays_when_llm_incomplete_even_without_question_mark():
+    """Follow-up without '?' must not advance while question_complete=false."""
+    from app.core.call_handler import question_advance_ready
+
+    assert not question_advance_ready(
+        question_complete=False,
+        deterministic_done=True,
+        understood=True,
+    )
+
+
+def test_advance_proceeds_when_llm_marks_complete_despite_rhetorical_question():
+    """Rhetorical '?' in speech must not block when question_complete=true."""
+    from app.core.call_handler import question_advance_ready
+
+    assert question_advance_ready(
+        question_complete=True,
+        deterministic_done=True,
+        understood=True,
+    )
+
+
+def test_advance_when_deterministic_done_and_caller_not_understood():
+    from app.core.call_handler import question_advance_ready
+
+    assert question_advance_ready(
+        question_complete=False,
+        deterministic_done=True,
+        understood=False,
+    )
+
+
+def test_advance_when_llm_marks_complete_without_deterministic_slots():
+    from app.core.call_handler import question_advance_ready
+
+    assert question_advance_ready(
+        question_complete=True,
+        deterministic_done=False,
+        understood=True,
+    )
+
+
 def test_scoring_does_not_crash_on_malformed_config():
     from app.core.question_scoring import evaluate_question_scoring
 
@@ -305,6 +473,40 @@ def test_save_warns_on_unreachable_and_unscored_flow():
     base["active"] = False
     warnings = question_save_warnings([base, follow])
     assert any("start of the call" in w for w in warnings)
+
+
+def test_analyze_questions_draft_no_scoring_warning():
+    from app.core.question_flow import analyze_questions_draft, new_custom_question
+
+    q = new_custom_question(question="Notes?", answer_type="text", order=1)
+    q["scoring"] = {"enabled": False, "max_points": 0, "rule_type": "any_answer", "pass_config": {}}
+    analysis = analyze_questions_draft([q])
+    assert analysis["validation_error"] is None
+    assert analysis["runtime_valid"] is True
+    assert any("scoring enabled" in w.lower() for w in analysis["warnings"])
+
+
+def test_analyze_questions_draft_validation_error():
+    from app.core.question_flow import analyze_questions_draft, new_custom_question
+
+    base = new_custom_question(question="Gate?", answer_type="yes_no", order=1)
+    base["extract_fields"] = ["custom_gate_flag"]
+    base["active"] = False
+    follow = new_custom_question(question="Follow?", answer_type="text", order=2)
+    follow["conditional"] = {"field": "custom_gate_flag", "operator": "eq", "value": True}
+    analysis = analyze_questions_draft([base, follow])
+    assert analysis["validation_error"] is not None
+    assert analysis["runtime_valid"] is False
+    assert analysis["runtime_errors"]
+
+
+def test_analyze_questions_draft_uses_validated_override():
+    from app.core.question_flow import analyze_questions_draft, default_questions_v2
+
+    validated = default_questions_v2()
+    analysis = analyze_questions_draft([], validated=validated)
+    assert analysis["validation_error"] is None
+    assert analysis["runtime_valid"] is True
 
 
 def test_custom_question_cannot_use_reserved_column():
@@ -526,6 +728,118 @@ def test_needs_readback_confirmation_respects_confirmed_fields():
     assert not needs_readback_confirmation(
         "Q1_FULL_NAME", data, questions, {"full_name"}
     )
+
+
+def test_screening_complete_requires_confirmation_context():
+    questions = [
+        {
+            "schema_version": 2,
+            "id": "Q1",
+            "state": "Q1",
+            "question": "Name?",
+            "answer_type": "text",
+            "extract_fields": ["full_name"],
+            "field_labels": {"full_name": "full name"},
+            "requires_confirmation": True,
+            "order": 1,
+            "active": True,
+        },
+        {
+            "schema_version": 2,
+            "id": "Q2",
+            "state": "Q2",
+            "question": "Phone?",
+            "answer_type": "phone",
+            "extract_fields": ["contact_phone"],
+            "field_labels": {"contact_phone": "contact phone"},
+            "requires_confirmation": True,
+            "order": 2,
+            "active": True,
+        },
+    ]
+    data = {
+        "full_name": "John Smith",
+        "contact_phone": "+13174026780",
+    }
+    # Name confirmed, phone captured but not yet confirmed -> still incomplete.
+    assert not screening_complete(
+        data,
+        questions=questions,
+        confirmed_fields={"full_name"},
+    )
+    # Once both are confirmed, flow can continue past both confirmation-gated steps.
+    assert screening_complete(
+        data,
+        questions=questions,
+        confirmed_fields={"full_name", "contact_phone"},
+    )
+
+
+def test_session_is_screening_complete_uses_confirmed_fields():
+    from app.core.conversation import ConversationSession
+
+    questions = [
+        {
+            "schema_version": 2,
+            "id": "Q1",
+            "state": "Q1",
+            "question": "Name?",
+            "answer_type": "text",
+            "extract_fields": ["full_name"],
+            "field_labels": {"full_name": "full name"},
+            "requires_confirmation": True,
+            "order": 1,
+            "active": True,
+        },
+        {
+            "schema_version": 2,
+            "id": "Q2",
+            "state": "Q2",
+            "question": "Phone?",
+            "answer_type": "phone",
+            "extract_fields": ["contact_phone"],
+            "field_labels": {"contact_phone": "contact phone"},
+            "requires_confirmation": True,
+            "order": 2,
+            "active": True,
+        },
+    ]
+    session = ConversationSession(
+        call_id="complete-check",
+        phone_number="+15550000000",
+        questions=questions,
+    )
+    session.extracted_data.update(
+        {
+            "full_name": "John Smith",
+            "contact_phone": "+13174026780",
+        }
+    )
+
+    assert session.is_screening_complete() is False
+    session.mark_field_confirmed("full_name")
+    session.mark_field_confirmed("contact_phone")
+    assert session.is_screening_complete() is True
+
+
+def test_screening_complete_honors_raw_answers_context():
+    questions = [
+        {
+            "schema_version": 2,
+            "id": "Q_NOTES",
+            "state": "Q_NOTES",
+            "question": "Any notes?",
+            "answer_type": "text",
+            "extract_fields": ["notes"],
+            "field_labels": {"notes": "notes"},
+            "requires_confirmation": False,
+            "order": 1,
+            "active": True,
+        }
+    ]
+    # Text questions can be considered answered from raw_answers even when no
+    # normalized extract slot was written.
+    assert screening_complete({}, questions=questions, raw_answers={"Q_NOTES": "hello"})
 
 
 def test_compose_agent_response_dedupes_follow_up():
@@ -750,6 +1064,54 @@ def test_merge_extracted_data_allows_admin_custom_field():
     assert session.extracted_data.get("pet_age") == "three years"
 
 
+def test_merge_extracted_data_skips_confirmed_admin_field():
+    from app.core.conversation import ConversationSession
+    from app.core.question_flow import new_custom_question, validate_questions_for_save
+
+    custom = new_custom_question(
+        question="What is your ID number?",
+        answer_type="text",
+        order=1,
+    )
+    custom["extract_fields"] = ["custom_id_number"]
+    custom["field_labels"] = {"custom_id_number": "ID number"}
+    custom["requires_confirmation"] = True
+    questions = validate_questions_for_save([custom])
+    session = ConversationSession(
+        call_id="lock",
+        phone_number="+1",
+        questions=questions,
+        current_state=custom["state"],
+    )
+    session.extracted_data["custom_id_number"] = "ID-111"
+    session.mark_field_confirmed("custom_id_number")
+
+    session.merge_extracted_data({"custom_id_number": "ID-999", "other_note": "x"})
+
+    assert session.extracted_data["custom_id_number"] == "ID-111"
+    assert "other_note" not in session.extracted_data
+
+
+def test_merge_extracted_data_allows_explicit_correction_of_confirmed_field():
+    from app.core.conversation import ConversationSession
+    from app.core.question_flow import default_questions_v2
+
+    session = ConversationSession(
+        call_id="corr",
+        phone_number="+1",
+        questions=default_questions_v2(),
+    )
+    session.extracted_data["full_name"] = "Jane Doe"
+    session.mark_field_confirmed("full_name")
+
+    session.merge_extracted_data(
+        {"full_name": "Janet Doe"},
+        allow_overwrite=frozenset({"full_name"}),
+    )
+
+    assert session.extracted_data["full_name"] == "Janet Doe"
+
+
 def test_filter_extracted_to_allowed_fields_at_finalize():
     from app.core.conversation import filter_extracted_to_allowed_fields
     from app.core.question_flow import default_questions_v2
@@ -807,6 +1169,47 @@ def test_retry_prompt_for_count_uses_localized_overrides():
     )
 
 
+def test_polite_redirect_uses_call_language_for_retry_prompt():
+    from app.core.conversation import ConversationSession, polite_redirect
+
+    questions = [
+        {
+            "schema_version": 2,
+            "id": "Q1",
+            "state": "Q1_FULL_NAME",
+            "question": "Can I have your full name?",
+            "answer_type": "text",
+            "extract_fields": ["full_name"],
+            "field_labels": {"full_name": "full name"},
+            "retry_prompt": "What is your full name?",
+            "retry_prompt_2": "Could you tell me your first and last name?",
+            "retry_prompt_3": "Just your first and last name is perfect.",
+            "order": 1,
+            "active": True,
+            "locales": {
+                "es": {
+                    "question": "Cual es su nombre completo?",
+                    "retry_prompt": "Cual es su nombre completo?",
+                    "retry_prompt_2": "Podria decirme su nombre y apellido?",
+                    "retry_prompt_3": "Solo su nombre y apellido esta perfecto.",
+                }
+            },
+        }
+    ]
+    session = ConversationSession(
+        call_id="t",
+        phone_number="+15550000000",
+        questions=questions,
+        current_state="Q1_FULL_NAME",
+        call_language="es",
+        retry_count=1,
+    )
+
+    text = polite_redirect(session, "unclear")
+    assert "Podria decirme su nombre y apellido?" in text
+    assert "Could you tell me your first and last name?" not in text
+
+
 def test_localized_question_text_falls_back_to_base():
     from app.core.question_flow import localized_question_text
 
@@ -819,6 +1222,65 @@ def test_localized_question_text_falls_back_to_base():
     assert localized_question_text(q, language_code="es", key="retry_prompt") == (
         "Could you share your employer?"
     )
+
+
+def test_count_missing_spanish_question_overrides():
+    from app.core.question_flow import (
+        count_missing_spanish_question_overrides,
+        new_custom_question,
+    )
+
+    custom = new_custom_question(question="Smoke?", answer_type="yes_no", order=1)
+    assert count_missing_spanish_question_overrides([custom]) == 1
+    custom["locales"] = {"es": {"question": "Fuma?"}}
+    assert count_missing_spanish_question_overrides([custom]) == 0
+
+
+def test_merge_seed_spanish_locales_preserves_admin_spanish():
+    from app.core.question_flow import merge_seed_spanish_locales
+
+    stored = [
+        {
+            "state": "Q1_FULL_NAME",
+            "question": "Name?",
+            "locales": {"es": {"question": "Nombre admin?"}},
+        }
+    ]
+    seed = {
+        "Q1_FULL_NAME": {
+            "locales": {
+                "es": {
+                    "question": "Seed Spanish?",
+                    "retry_prompt": "Seed retry?",
+                }
+            }
+        }
+    }
+    merged, updated = merge_seed_spanish_locales(stored, seed)
+    assert updated == 1
+    es = merged[0]["locales"]["es"]
+    assert es["question"] == "Nombre admin?"
+    assert es["retry_prompt"] == "Seed retry?"
+
+
+def test_default_seed_questions_include_spanish_locales():
+    from app.core.question_flow import default_questions_v2, localized_question_text
+
+    from app.core.seed_data import load_seed_questions
+
+    load_seed_questions.cache_clear()
+    q1 = next(q for q in default_questions_v2() if q["state"] == "Q1_FULL_NAME")
+    assert localized_question_text(q1, language_code="es", key="question").startswith(
+        "¿"
+    )
+
+
+def test_question_save_warnings_missing_spanish():
+    from app.core.question_flow import new_custom_question, question_save_warnings
+
+    custom = new_custom_question(question="Pets?", answer_type="yes_no", order=1)
+    warnings = question_save_warnings([custom])
+    assert any("Spanish wording" in w for w in warnings)
 
 
 def test_raw_field_types_always_text():
@@ -992,11 +1454,108 @@ def test_validate_blocks_all_conditional_flow():
         validate_questions_for_save([gate, follow])
 
 
-def test_coerce_questions_for_runtime_falls_back_on_corrupt():
-    from app.core.question_flow import coerce_questions_for_runtime, default_questions_v2
+def test_coerce_questions_for_runtime_fail_closed_on_empty():
+    from app.core.question_flow import coerce_questions_for_runtime
 
-    fixed = coerce_questions_for_runtime([])
-    assert len(fixed) == len(default_questions_v2())
+    assert coerce_questions_for_runtime([]) == []
+
+
+def test_coerce_questions_for_runtime_with_reason():
+    from app.core.question_flow import (
+        coerce_questions_for_runtime_with_reason,
+        default_questions_v2,
+    )
+
+    qs, reason = coerce_questions_for_runtime_with_reason([])
+    assert qs == []
+    assert reason is not None
+    assert "blocked" in reason.lower()
+
+    valid, no_reason = coerce_questions_for_runtime_with_reason(default_questions_v2())
+    assert no_reason is None
+    assert len(valid) == len(default_questions_v2())
+
+
+@pytest.mark.asyncio
+async def test_handle_call_answered_blocked_on_invalid_questions_config(monkeypatch):
+    from app.core.call_handler import handle_call_answered
+    from app.core.conversation import CallState, ConversationSession
+
+    session = ConversationSession(
+        call_id="blocked-q",
+        phone_number="+1",
+        property_name="Demo Property",
+        questions=[],
+    )
+    session.control_flags["questions_config_blocked"] = (
+        "Duplicate question states are not allowed"
+    )
+
+    async def fake_synth(*args, **kwargs):
+        return [b"audio"]
+
+    monkeypatch.setattr(
+        "app.core.call_handler.synthesize_speech_parts",
+        fake_synth,
+    )
+
+    audio = await handle_call_answered(session)
+    assert audio == [b"audio"]
+    assert session.current_state == CallState.ENDED.value
+    assert session.control_flags.get("provider_failure", {}).get("service") == "questions"
+    assert session.control_flags.get("questions_config_fallback") == (
+        "Duplicate question states are not allowed"
+    )
+
+
+def test_snapshot_blocks_calls_when_questions_invalid():
+    from app.core.call_settings import snapshot_from_map
+
+    snap = snapshot_from_map({"screening_questions": []})
+    assert snap.questions_runtime_fallback is not None
+    assert snap.questions == []
+
+    snap_bad_json = snapshot_from_map({"screening_questions": "not-json"})
+    assert snap_bad_json.questions == []
+    assert snap_bad_json.questions_runtime_fallback is not None
+    assert "json" in snap_bad_json.questions_runtime_fallback.lower()
+
+    from app.core.question_flow import default_questions_v2
+
+    ok = snapshot_from_map(
+        {"screening_questions": default_questions_v2()}
+    )
+    assert ok.questions_runtime_fallback is None
+    assert len(ok.questions) > 0
+
+
+def test_runtime_question_errors_empty():
+    from app.core.question_flow import runtime_question_errors
+
+    errors = runtime_question_errors([])
+    assert len(errors) == 1
+    assert "blocked" in errors[0].lower()
+
+
+def test_runtime_question_errors_valid_defaults():
+    from app.core.question_flow import default_questions_v2, runtime_question_errors
+
+    assert runtime_question_errors(default_questions_v2()) == []
+
+
+def test_runtime_question_errors_invalid():
+    from app.core.question_flow import default_questions_v2, runtime_question_errors
+
+    questions = default_questions_v2()
+    for i, q in enumerate(questions):
+        if q["state"] == "Q1_FULL_NAME":
+            bad = dict(q)
+            bad["extract_fields"] = ["renamed_name"]
+            questions[i] = bad
+            break
+    errors = runtime_question_errors(questions)
+    assert len(errors) == 1
+    assert "primary field" in errors[0].lower()
 
 
 def test_has_sufficient_extraction_requires_required_and_confirmed():

@@ -8,8 +8,7 @@ import re
 
 import httpx
 
-from app.providers.base import BaseTTSProvider
-from config import settings
+from app.providers.base import BaseTTSProvider, resolve_frozen_credential
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +38,12 @@ AVAILABLE_VOICES = [
     "aura-orpheus-en",
     "aura-angus-en",
     "aura-helios-en",
+    "aura-2-estrella-es",
+    "aura-2-nestor-es",
+    "aura-2-celeste-es",
+    "aura-2-sirio-es",
+    "aura-2-javier-es",
+    "aura-2-alvaro-es",
 ]
 
 
@@ -58,8 +63,9 @@ class DeepgramTTSProvider(BaseTTSProvider):
 
     provider_name = "deepgram"
 
-    def __init__(self, voice: str = DEFAULT_VOICE) -> None:
+    def __init__(self, voice: str = DEFAULT_VOICE, *, api_key: str | None = None) -> None:
         self.voice = self._normalize_voice(voice)
+        self._api_key = api_key
         logger.info("DeepgramTTSProvider initialized: voice=%s", self.voice)
 
     @staticmethod
@@ -78,7 +84,8 @@ class DeepgramTTSProvider(BaseTTSProvider):
         voice: str | None = None,
         speed: float = 1.0,
     ) -> bytes:
-        if not settings.deepgram_api_key:
+        key = resolve_frozen_credential(self._api_key, settings_attr="deepgram_api_key")
+        if not key:
             raise ValueError("DEEPGRAM_API_KEY not set")
 
         active_voice = voice or self.voice
@@ -90,7 +97,7 @@ class DeepgramTTSProvider(BaseTTSProvider):
         }
 
         headers = {
-            "Authorization": f"Token {settings.deepgram_api_key}",
+            "Authorization": f"Token {key}",
             "Content-Type": "application/json",
         }
 

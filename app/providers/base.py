@@ -16,6 +16,19 @@ import httpx
 logger = logging.getLogger(__name__)
 
 
+def resolve_frozen_credential(
+    frozen_value: str | None,
+    *,
+    settings_attr: str,
+) -> str:
+    """Use a per-call frozen credential when provided; else live settings."""
+    if frozen_value is not None:
+        return frozen_value.strip()
+    from config import settings
+
+    return (getattr(settings, settings_attr, None) or "").strip()
+
+
 def build_llm_messages(system_prompt: str, messages: list[dict]) -> list[dict]:
     """Prepend the system prompt to a chat message list."""
     return [{"role": "system", "content": system_prompt}] + messages

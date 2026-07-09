@@ -10,11 +10,11 @@ from __future__ import annotations
 import re
 import uuid
 from collections.abc import Iterable
+from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from app.core.screening_flow import (
-    _has_value,
     normalize_email,
     normalize_phone,
 )
@@ -164,7 +164,31 @@ SCORING_RULE_TYPES = frozenset(
     }
 )
 
-CONDITIONAL_OPERATORS = frozenset({"eq", "ne", "truthy", "falsy"})
+CONDITIONAL_OPERATORS = frozenset(
+    {"eq", "ne", "truthy", "falsy", "gt", "gte", "lt", "lte", "in", "asked"}
+)
+NUMERIC_CONDITIONAL_OPERATORS = frozenset({"gt", "gte", "lt", "lte"})
+
+
+@dataclass(frozen=True)
+class ConditionalFlowContext:
+    """Live-call context for conditionals that depend on visit history."""
+
+    answered_states: frozenset[str] = frozenset()
+    refused_states: frozenset[str] = frozenset()
+    completed_states: frozenset[str] = frozenset()
+    questions: tuple[dict[str, Any], ...] | None = None
+
+    def was_field_question_asked(self, field: str) -> bool:
+        """True when the question owning *field* was reached on this call."""
+        if not self.questions or not field:
+            return False
+        field_to_state, _ = build_field_maps(list(self.questions))
+        state = field_to_state.get(field)
+        if not state:
+            return False
+        visited = self.answered_states | self.refused_states | self.completed_states
+        return state in visited
 
 SPEECH_MODES = frozenset(
     {
@@ -427,7 +451,12 @@ def migrate_question_to_v2(q: dict[str, Any]) -> dict[str, Any]:
         }
 
     conditional = q.get("conditional")
-    if conditional is None and meta.get("conditional"):
+    # Only infer a built-in conditional during a genuine v1 -> v2 upgrade.
+    # Once a question is v2 it is admin-managed, so an explicit
+    # ``conditional: null`` means the admin deliberately detached the built-in
+    # follow-up from its parent yes/no. Re-injecting the legacy conditional here
+    # would silently override the admin, who is the source of truth.
+    if conditional is None and meta.get("conditional") and not is_v2_question(q):
         conditional = dict(meta["conditional"])
 
     answer_type = _infer_answer_type(q)
@@ -535,6 +564,7 @@ def ordered_active_questions(
     data: dict[str, Any] | None = None,
     *,
     skip_states: Iterable[str] | None = None,
+    flow_context: ConditionalFlowContext | None = None,
 ) -> list[dict[str, Any]]:
     """Active questions in order, respecting conditionals and skip sets."""
     data = data or {}
@@ -546,14 +576,17 @@ def ordered_active_questions(
         state = str(q["state"])
         if state in skip:
             continue
-        if should_skip_question(q, data):
+        if should_skip_question(q, data, flow_context=flow_context):
             continue
         result.append(q)
     return result
 
 
 def evaluate_conditional(
-    conditional: dict[str, Any] | None, data: dict[str, Any]
+    conditional: dict[str, Any] | None,
+    data: dict[str, Any],
+    *,
+    flow_context: ConditionalFlowContext | None = None,
 ) -> bool:
     """Return True when the question should be asked (condition met)."""
     if not conditional:
@@ -572,6 +605,32 @@ def evaluate_conditional(
         return _truthy_value(value) is False
     if op == "truthy":
         return _truthy_value(value) is True
+    if op == "asked":
+        if flow_context:
+            return flow_context.was_field_question_asked(field)
+        return _truthy_value(value) is True
+    if op in NUMERIC_CONDITIONAL_OPERATORS:
+        actual = _parse_number(value)
+        threshold = _parse_number(expected)
+        if actual is None or threshold is None:
+            return False
+        if op == "gt":
+            return actual > threshold
+        if op == "gte":
+            return actual >= threshold
+        if op == "lt":
+            return actual < threshold
+        if op == "lte":
+            return actual <= threshold
+    if op == "in":
+        if isinstance(expected, (list, tuple, set)):
+            allowed = expected
+        else:
+            allowed = [part.strip() for part in str(expected or "").split(",")]
+        normalized = {str(item).strip().lower() for item in allowed if str(item).strip()}
+        if not normalized:
+            return False
+        return str(value).strip().lower() in normalized
     return True
 
 
@@ -611,9 +670,16 @@ def _conditional_equals(value: Any, expected: Any) -> bool:
     return str(value).strip().lower() == str(expected).strip().lower()
 
 
-def should_skip_question(q: dict[str, Any], data: dict[str, Any]) -> bool:
+def should_skip_question(
+    q: dict[str, Any],
+    data: dict[str, Any],
+    *,
+    flow_context: ConditionalFlowContext | None = None,
+) -> bool:
     conditional = q.get("conditional")
-    if conditional and not evaluate_conditional(conditional, data):
+    if conditional and not evaluate_conditional(
+        conditional, data, flow_context=flow_context
+    ):
         return True
     return False
 
@@ -705,6 +771,7 @@ def _extract_fields_satisfied(
     data: dict[str, Any],
     *,
     answer_type: str,
+    raw_answers: dict[str, Any] | None = None,
 ) -> bool:
     """True when configured extract slots for this question are filled."""
     from app.core.screening_flow import _has_value
@@ -741,7 +808,7 @@ def _extract_fields_satisfied(
         if _has_value(data, primary):
             return True
         state = str(q.get("state") or "")
-        return bool((data.get("raw_answers") or {}).get(state))
+        return bool((raw_answers or {}).get(state))
     return _has_value(data, primary)
 
 
@@ -751,6 +818,8 @@ def is_question_answered_for_def(
     refused_states: Iterable[str] | None = None,
     *,
     confirmed_fields: Iterable[str] | None = None,
+    flow_context: ConditionalFlowContext | None = None,
+    raw_answers: dict[str, Any] | None = None,
 ) -> bool:
     """True when the caller genuinely answered this question (not merely skipped)."""
     state = str(q.get("state") or "")
@@ -758,7 +827,7 @@ def is_question_answered_for_def(
     if state in refused:
         return True
     # Conditional follow-ups that do not apply are skipped, not answered.
-    if should_skip_question(q, data):
+    if should_skip_question(q, data, flow_context=flow_context):
         return False
 
     confirm_field = confirm_field_for_question(q)
@@ -766,7 +835,12 @@ def is_question_answered_for_def(
         return False
 
     answer_type = str(q.get("answer_type") or "text")
-    return _extract_fields_satisfied(q, data, answer_type=answer_type)
+    return _extract_fields_satisfied(
+        q,
+        data,
+        answer_type=answer_type,
+        raw_answers=raw_answers,
+    )
 
 
 def _is_spanish_language(language_code: str | None) -> bool:
@@ -1086,6 +1160,8 @@ def is_question_answered(
     *,
     questions: list[dict[str, Any]] | None = None,
     confirmed_fields: Iterable[str] | None = None,
+    flow_context: ConditionalFlowContext | None = None,
+    raw_answers: dict[str, Any] | None = None,
 ) -> bool:
     idx = questions_index(questions)
     if state not in idx:
@@ -1095,6 +1171,8 @@ def is_question_answered(
         data,
         refused_states,
         confirmed_fields=confirmed_fields,
+        flow_context=flow_context,
+        raw_answers=raw_answers,
     )
 
 
@@ -1104,6 +1182,8 @@ def next_unanswered_state(
     *,
     questions: list[dict[str, Any]] | None = None,
     confirmed_fields: Iterable[str] | None = None,
+    flow_context: ConditionalFlowContext | None = None,
+    raw_answers: dict[str, Any] | None = None,
 ) -> str | None:
     skip = set(skip_states or [])
     qs = normalize_questions(questions)
@@ -1113,10 +1193,15 @@ def next_unanswered_state(
             continue
         if not q.get("active", True):
             continue
-        if should_skip_question(q, data):
+        if should_skip_question(q, data, flow_context=flow_context):
             continue
         if not is_question_answered_for_def(
-            q, data, skip_states, confirmed_fields=confirmed_fields
+            q,
+            data,
+            skip_states,
+            confirmed_fields=confirmed_fields,
+            flow_context=flow_context,
+            raw_answers=raw_answers,
         ):
             return state
     return None
@@ -1133,6 +1218,8 @@ def count_answered_questions(
     *,
     questions: list[dict[str, Any]] | None = None,
     confirmed_fields: Iterable[str] | None = None,
+    flow_context: ConditionalFlowContext | None = None,
+    raw_answers: dict[str, Any] | None = None,
 ) -> int:
     skip = set(skip_states or [])
     total = 0
@@ -1140,10 +1227,15 @@ def count_answered_questions(
         state = str(q["state"])
         if state in skip or not q.get("active", True):
             continue
-        if should_skip_question(q, data):
+        if should_skip_question(q, data, flow_context=flow_context):
             continue
         if is_question_answered_for_def(
-            q, data, skip_states, confirmed_fields=confirmed_fields
+            q,
+            data,
+            skip_states,
+            confirmed_fields=confirmed_fields,
+            flow_context=flow_context,
+            raw_answers=raw_answers,
         ):
             total += 1
     return total
@@ -1154,9 +1246,14 @@ def count_active_questions(
     skip_states: Iterable[str] | None = None,
     *,
     questions: list[dict[str, Any]] | None = None,
+    flow_context: ConditionalFlowContext | None = None,
 ) -> int:
     skip = set(skip_states or [])
-    return len(ordered_active_questions(questions, data, skip_states=skip))
+    return len(
+        ordered_active_questions(
+            questions, data, skip_states=skip, flow_context=flow_context
+        )
+    )
 
 
 def screening_complete(
@@ -1164,8 +1261,21 @@ def screening_complete(
     skip_states: Iterable[str] | None = None,
     *,
     questions: list[dict[str, Any]] | None = None,
+    confirmed_fields: Iterable[str] | None = None,
+    flow_context: ConditionalFlowContext | None = None,
+    raw_answers: dict[str, Any] | None = None,
 ) -> bool:
-    return next_unanswered_state(data, skip_states, questions=questions) is None
+    return (
+        next_unanswered_state(
+            data,
+            skip_states,
+            questions=questions,
+            confirmed_fields=confirmed_fields,
+            flow_context=flow_context,
+            raw_answers=raw_answers,
+        )
+        is None
+    )
 
 
 def inactive_flow_states(questions: list[dict[str, Any]] | None) -> set[str]:
@@ -1444,6 +1554,16 @@ def validate_questions_for_save(
             op = str(conditional.get("operator") or "")
             if op and op not in CONDITIONAL_OPERATORS:
                 raise ValueError(f"Invalid conditional operator '{op}' on {q.get('id')}")
+            if op in NUMERIC_CONDITIONAL_OPERATORS:
+                if _parse_number(conditional.get("value")) is None:
+                    raise ValueError(
+                        f"Conditional on {q.get('id')} operator '{op}' "
+                        "requires a numeric value"
+                    )
+            if op == "in" and conditional.get("value") in (None, ""):
+                raise ValueError(
+                    f"Conditional on {q.get('id')} operator 'in' requires a value list"
+                )
         # Only the primary (first) field must be unique — it drives completion
         # and scoring. Secondary/raw fields (e.g. pets_raw, eviction_raw) may be
         # shared between a question and its conditional follow-up.
@@ -1523,22 +1643,62 @@ def validate_questions_for_save(
 def coerce_questions_for_runtime(
     questions: list[dict[str, Any]] | None,
 ) -> list[dict[str, Any]]:
-    """Validate admin questions at call start; fall back to defaults if corrupt."""
+    """Validate admin questions at call start; return [] when config is invalid."""
+    validated, _reason = coerce_questions_for_runtime_with_reason(questions)
+    return validated
+
+
+def coerce_questions_for_runtime_with_reason(
+    questions: list[dict[str, Any]] | None,
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Validate questions for a new call; fail closed when admin config is invalid.
+
+    Live calls use only admin-saved ``screening_questions``. When the stored
+    config is missing or fails validation, returns an empty list and a reason
+    string — never seed defaults.
+    """
     import logging
 
     log = logging.getLogger(__name__)
     if not questions:
-        return default_questions_v2()
+        reason = (
+            "No screening questions are configured; live screening calls are "
+            "blocked until an admin saves a valid question set."
+        )
+        log.error("Invalid screening_questions in settings (%s)", reason)
+        return [], reason
     try:
-        return validate_questions_for_save(
+        return (
+            validate_questions_for_save(
+                [dict(q) for q in questions if isinstance(q, dict)]
+            ),
+            None,
+        )
+    except ValueError as exc:
+        reason = str(exc)
+        log.error(
+            "Invalid screening_questions in settings (%s) — blocking live calls",
+            exc,
+        )
+        return [], reason
+
+
+def runtime_question_errors(
+    questions: list[dict[str, Any]] | None,
+) -> list[str]:
+    """Return errors that block live calls until admin fixes saved questions."""
+    if not questions:
+        return [
+            "No screening questions are configured; live screening calls are "
+            "blocked until an admin saves a valid question set."
+        ]
+    try:
+        validate_questions_for_save(
             [dict(q) for q in questions if isinstance(q, dict)]
         )
     except ValueError as exc:
-        log.error(
-            "Invalid screening_questions in settings (%s) — using system defaults",
-            exc,
-        )
-        return default_questions_v2()
+        return [str(exc)]
+    return []
 
 
 def new_language_question(
@@ -1666,6 +1826,61 @@ def total_enabled_scoring_points(questions: list[dict[str, Any]] | None) -> int:
     return total
 
 
+def count_missing_spanish_question_overrides(
+    questions: list[dict[str, Any]] | None,
+) -> int:
+    """Active non-language questions missing locales.es.question."""
+    count = 0
+    for q in normalize_questions(questions):
+        if not q.get("active", True):
+            continue
+        if str(q.get("answer_type") or "") == "language_choice":
+            continue
+        locales = normalize_question_locales(q.get("locales"))
+        es_question = str((locales.get("es") or {}).get("question") or "").strip()
+        if not es_question:
+            count += 1
+    return count
+
+
+def merge_seed_spanish_locales(
+    questions: list[dict[str, Any]],
+    seed_by_state: dict[str, dict[str, Any]],
+) -> tuple[list[dict[str, Any]], int]:
+    """Fill missing locales.es from seed defaults; never overwrite admin Spanish."""
+    merged: list[dict[str, Any]] = []
+    updated = 0
+    for raw_q in questions:
+        if not isinstance(raw_q, dict):
+            merged.append(raw_q)
+            continue
+        q = dict(raw_q)
+        seed = seed_by_state.get(str(q.get("state") or ""))
+        if not seed:
+            merged.append(q)
+            continue
+        seed_es = normalize_question_locales(seed.get("locales")).get("es") or {}
+        if not seed_es:
+            merged.append(q)
+            continue
+        locales = dict(q.get("locales") or {})
+        es = dict(locales.get("es") or {})
+        added = False
+        for key in ("question", "retry_prompt", "retry_prompt_2", "retry_prompt_3"):
+            if str(es.get(key) or "").strip():
+                continue
+            val = str(seed_es.get(key) or "").strip()
+            if val:
+                es[key] = val
+                added = True
+        if added:
+            locales["es"] = es
+            q["locales"] = locales
+            updated += 1
+        merged.append(q)
+    return merged, updated
+
+
 def question_save_warnings(questions: list[dict[str, Any]] | None) -> list[str]:
     warnings: list[str] = []
     missing = missing_contact_fields(questions)
@@ -1701,7 +1916,48 @@ def question_save_warnings(questions: list[dict[str, Any]] | None) -> list[str]:
             "automatically — every call will be marked for manual review. "
             "Enable scoring on at least one question to qualify applicants."
         )
+
+    missing_es = count_missing_spanish_question_overrides(questions)
+    if missing_es:
+        warnings.append(
+            f"{missing_es} active question{'s' if missing_es != 1 else ''} "
+            "have no Spanish wording — Spanish calls will use English for those "
+            "questions until you add locales.es text in the Questions editor."
+        )
     return warnings
+
+
+def analyze_questions_draft(
+    questions: list[dict[str, Any]] | None,
+    *,
+    validated: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Return admin warnings and runtime validity for a draft or saved question list."""
+    raw = [dict(q) for q in (questions or []) if isinstance(q, dict)]
+    validation_error: str | None = None
+    normalized = validated
+    if normalized is None:
+        try:
+            normalized = validate_questions_for_save(raw)
+        except ValueError as exc:
+            validation_error = str(exc)
+            normalized = []
+            for q in raw:
+                try:
+                    normalized.append(migrate_question_to_v2(dict(q)))
+                except (TypeError, ValueError, KeyError):
+                    continue
+
+    warnings = question_save_warnings(normalized)
+    runtime_errors = runtime_question_errors(
+        normalized if validation_error is None else raw
+    )
+    return {
+        "warnings": warnings,
+        "runtime_errors": runtime_errors,
+        "runtime_valid": not runtime_errors,
+        "validation_error": validation_error,
+    }
 
 
 def questions_snapshot_from_tenant(tenant: Any | None) -> list[dict[str, Any]] | None:
@@ -2136,10 +2392,22 @@ def build_preview_sample_paths(
             gate_fields.setdefault(field, []).append(expected)
         elif op == "ne":
             gate_fields.setdefault(field, []).append(not expected)
-        elif op == "truthy":
+        elif op in ("truthy", "asked"):
             gate_fields.setdefault(field, []).append(True)
         elif op == "falsy":
             gate_fields.setdefault(field, []).append(False)
+        elif op in NUMERIC_CONDITIONAL_OPERATORS:
+            threshold = _parse_number(expected)
+            if threshold is not None:
+                bump = Decimal("1") if op in {"gt", "gte"} else Decimal("-1")
+                gate_fields.setdefault(field, []).append(threshold + bump)
+        elif op == "in":
+            if isinstance(expected, (list, tuple)) and expected:
+                gate_fields.setdefault(field, []).append(expected[0])
+            elif expected not in (None, ""):
+                gate_fields.setdefault(field, []).append(
+                    str(expected).split(",")[0].strip()
+                )
 
     base: dict[str, Any] = {}
     for field in gate_fields:

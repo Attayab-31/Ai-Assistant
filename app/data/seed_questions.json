@@ -26,7 +26,15 @@
       "rule_type": "any_answer",
       "pass_config": {}
     },
-    "understanding_guide": "Listen for full legal name even if given casually. Spelled letters are corrections \u2014 assemble them."
+    "understanding_guide": "Listen for full legal name even if given casually. Spelled letters are corrections — assemble them.",
+    "locales": {
+      "es": {
+        "question": "¿Puedo comenzar con su nombre completo?",
+        "retry_prompt": "¿Cuál es su nombre completo?",
+        "retry_prompt_2": "¿Podría decirme su nombre y apellido?",
+        "retry_prompt_3": "Solo su nombre y apellido está perfecto."
+      }
+    }
   },
   {
     "schema_version": 2,
@@ -43,7 +51,7 @@
     "validation": "phone number",
     "retry_prompt": "What phone number should the leasing team use?",
     "retry_prompt_2": "Could you say your number one digit at a time, including the area code?",
-    "retry_prompt_3": "No rush \u2014 just read the digits slowly and I'll take them down.",
+    "retry_prompt_3": "No rush — just read the digits slowly and I'll take them down.",
     "active": true,
     "order": 2,
     "required": true,
@@ -55,7 +63,15 @@
       "rule_type": "any_answer",
       "pass_config": {}
     },
-    "understanding_guide": "Accept any phone format; normalize to digits."
+    "understanding_guide": "Accept any phone format; normalize to digits.",
+    "locales": {
+      "es": {
+        "question": "¿Cuál es el mejor número de teléfono para contactarlo?",
+        "retry_prompt": "¿Qué número de teléfono debe usar el equipo de alquiler?",
+        "retry_prompt_2": "¿Podría decir su número dígito por dígito, incluyendo el código de área?",
+        "retry_prompt_3": "Sin prisa — lea los dígitos despacio y los anoto."
+      }
+    }
   },
   {
     "schema_version": 2,
@@ -71,7 +87,7 @@
     },
     "validation": "email address",
     "retry_prompt": "Could you spell or say your email address?",
-    "retry_prompt_2": "You can spell it out \u2014 for example, j-o-h-n, at, gmail, dot, com.",
+    "retry_prompt_2": "You can spell it out — for example, j-o-h-n, at, gmail, dot, com.",
     "retry_prompt_3": "Just say the letters, and use 'at' for the @ sign and 'dot' for the period.",
     "active": true,
     "order": 3,
@@ -84,7 +100,15 @@
       "rule_type": "any_answer",
       "pass_config": {}
     },
-    "understanding_guide": "Accept spoken email; assemble spelled local parts."
+    "understanding_guide": "Accept spoken email; assemble spelled local parts.",
+    "locales": {
+      "es": {
+        "question": "¿Qué dirección de correo electrónico debemos usar?",
+        "retry_prompt": "¿Podría deletrear o decir su correo electrónico?",
+        "retry_prompt_2": "Puede deletrearlo — por ejemplo, j-o-h-n, arroba, gmail, punto, com.",
+        "retry_prompt_3": "Diga las letras, use arroba para @ y punto para el punto."
+      }
+    }
   },
   {
     "schema_version": 2,
@@ -117,7 +141,13 @@
         "max_days_ahead": 120
       }
     },
-    "understanding_guide": "Accept relative dates and vague windows."
+    "understanding_guide": "Accept relative dates and vague windows.",
+    "locales": {
+      "es": {
+        "question": "¿Para qué fecha de mudanza está pensando?",
+        "retry_prompt": "¿Qué fecha o plazo tiene en mente para mudarse?"
+      }
+    }
   },
   {
     "schema_version": 2,
@@ -150,7 +180,13 @@
       "rule_type": "any_answer",
       "pass_config": {}
     },
-    "understanding_guide": "Count everyone living in the home."
+    "understanding_guide": "Count everyone living in the home.",
+    "locales": {
+      "es": {
+        "question": "¿Cuántas personas vivirían en el hogar?",
+        "retry_prompt": "¿Cuántos ocupantes en total vivirían ahí?"
+      }
+    }
   },
   {
     "schema_version": 2,
@@ -181,7 +217,13 @@
       "rule_type": "any_answer",
       "pass_config": {}
     },
-    "understanding_guide": "Boolean only for pets."
+    "understanding_guide": "Boolean only for pets.",
+    "locales": {
+      "es": {
+        "question": "¿Tiene mascotas?",
+        "retry_prompt": "¿Tiene mascotas, sí o no?"
+      }
+    }
   },
   {
     "schema_version": 2,
@@ -221,7 +263,13 @@
       "rule_type": "any_answer",
       "pass_config": {}
     },
-    "understanding_guide": "Extract type, breed, and weight."
+    "understanding_guide": "Extract type, breed, and weight.",
+    "locales": {
+      "es": {
+        "question": "¿Qué tipo, raza y peso aproximado tienen?",
+        "retry_prompt": "¿Podría indicarme el tipo, la raza y el peso de la mascota?"
+      }
+    }
   },
   {
     "schema_version": 2,
@@ -250,7 +298,13 @@
       "rule_type": "any_answer",
       "pass_config": {}
     },
-    "understanding_guide": ""
+    "understanding_guide": "",
+    "locales": {
+      "es": {
+        "question": "¿Dónde vive actualmente?",
+        "retry_prompt": "¿Dónde vive ahora?"
+      }
+    }
   },
   {
     "schema_version": 2,
@@ -279,7 +333,13 @@
       "rule_type": "any_answer",
       "pass_config": {}
     },
-    "understanding_guide": ""
+    "understanding_guide": "",
+    "locales": {
+      "es": {
+        "question": "¿Cuánto tiempo ha vivido ahí?",
+        "retry_prompt": "¿Aproximadamente cuánto tiempo lleva en su lugar actual?"
+      }
+    }
   },
   {
     "schema_version": 2,
@@ -308,7 +368,13 @@
       "rule_type": "any_answer",
       "pass_config": {}
     },
-    "understanding_guide": ""
+    "understanding_guide": "",
+    "locales": {
+      "es": {
+        "question": "¿Por qué se muda?",
+        "retry_prompt": "¿Podría contarnos brevemente por qué se muda?"
+      }
+    }
   },
   {
     "schema_version": 2,
@@ -337,7 +403,13 @@
       "rule_type": "any_answer",
       "pass_config": {}
     },
-    "understanding_guide": ""
+    "understanding_guide": "",
+    "locales": {
+      "es": {
+        "question": "¿Cuándo planea mudarse?",
+        "retry_prompt": "¿Cuándo planea mudarse?"
+      }
+    }
   },
   {
     "schema_version": 2,
@@ -371,7 +443,13 @@
         "no": 15
       }
     },
-    "understanding_guide": ""
+    "understanding_guide": "",
+    "locales": {
+      "es": {
+        "question": "¿Ha tenido algún desalojo o proceso judicial con un arrendador?",
+        "retry_prompt": "Solo para confirmar, ¿ha tenido algún desalojo o proceso judicial con un arrendador?"
+      }
+    }
   },
   {
     "schema_version": 2,
@@ -405,7 +483,13 @@
       "rule_type": "any_answer",
       "pass_config": {}
     },
-    "understanding_guide": ""
+    "understanding_guide": "",
+    "locales": {
+      "es": {
+        "question": "Gracias por compartirlo. ¿Podría explicar brevemente las circunstancias?",
+        "retry_prompt": "¿Podría explicar brevemente qué ocurrió con ese proceso?"
+      }
+    }
   },
   {
     "schema_version": 2,
@@ -436,7 +520,13 @@
       "rule_type": "any_answer",
       "pass_config": {}
     },
-    "understanding_guide": ""
+    "understanding_guide": "",
+    "locales": {
+      "es": {
+        "question": "¿Cuál es el ingreso mensual de su hogar antes de impuestos?",
+        "retry_prompt": "¿Aproximadamente cuánto es el ingreso mensual de su hogar antes de impuestos?"
+      }
+    }
   },
   {
     "schema_version": 2,
@@ -465,7 +555,13 @@
       "rule_type": "any_answer",
       "pass_config": {}
     },
-    "understanding_guide": ""
+    "understanding_guide": "",
+    "locales": {
+      "es": {
+        "question": "¿Dónde trabaja?",
+        "retry_prompt": "¿Dónde está empleado actualmente, o cuál es su fuente de ingresos?"
+      }
+    }
   },
   {
     "schema_version": 2,
@@ -494,7 +590,13 @@
       "rule_type": "any_answer",
       "pass_config": {}
     },
-    "understanding_guide": ""
+    "understanding_guide": "",
+    "locales": {
+      "es": {
+        "question": "¿Cuánto tiempo lleva trabajando ahí?",
+        "retry_prompt": "¿Cuánto tiempo lleva con ese empleador o fuente de ingresos?"
+      }
+    }
   },
   {
     "schema_version": 2,
@@ -523,6 +625,12 @@
       "rule_type": "any_answer",
       "pass_config": {}
     },
-    "understanding_guide": ""
+    "understanding_guide": "",
+    "locales": {
+      "es": {
+        "question": "¿Hay algo en su historial de alquiler, crédito o antecedentes que quiera que el equipo sepa antes de continuar?",
+        "retry_prompt": "¿Algo sobre su historial de alquiler, crédito o antecedentes que quiera que el equipo sepa?"
+      }
+    }
   }
 ]

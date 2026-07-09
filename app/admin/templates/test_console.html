@@ -518,6 +518,7 @@
         });
         const {
             enqueueAgentAudio,
+            markAgentTurnEnding,
             stopAgentPlayback,
             playAudio,
             clearPendingUnmute,
@@ -598,11 +599,14 @@
         }
 
         async function api(path, body, isForm) {
-            const opts = { method: "POST" };
+            const opts = {
+                method: "POST",
+                headers: { "X-Requested-With": "XMLHttpRequest" },
+            };
             if (isForm) {
                 opts.body = body;
             } else if (body) {
-                opts.headers = { "Content-Type": "application/json" };
+                opts.headers["Content-Type"] = "application/json";
                 opts.body = JSON.stringify(body);
             }
             const r = await fetch(path, opts);
@@ -654,6 +658,7 @@
                 state.ws = ws;
 
                 ws.onopen = async () => {
+                    VoiceCall.unlockAudioPlayback("audioPlayer", 0.85);
                     setStatus("connected — playing greeting", "ok");
                     $("voiceStatus").textContent = "Connected. Starting mic (muted during greeting)…";
                     ws.send(JSON.stringify({ event: "start" }));
@@ -672,16 +677,20 @@
                     let msg;
                     try { msg = JSON.parse(ev.data); } catch (_) { return; }
 
-                    if (msg.event === "play_wav" && msg.audio_wav_b64) {
-                        enqueueAgentAudio(msg.audio_wav_b64, msg.turn_end);
+                    if (msg.event === "play_wav") {
+                        if (msg.audio_wav_b64) {
+                            enqueueAgentAudio(msg.audio_wav_b64, msg.turn_end);
+                        } else if (msg.turn_end) {
+                            markAgentTurnEnding();
+                        }
                     } else if (msg.event === "interrupt") {
                         // Server confirmed a real barge-in (transcript-gated).
                         // Stop local playback immediately so the caller is heard.
                         stopAgentPlayback();
                     } else if (msg.event === "agent_done") {
-                        // Informational only — playback completion is driven by
-                        // play_wav turn_end + the audio element onended callback.
-                        // Calling onAgentDone here used to break the queue.
+                        // Streaming turns enqueue TTS live with turn_end=false on each
+                        // chunk; the server signals turn completion separately.
+                        markAgentTurnEnding();
                     } else if (msg.event === "greeting" && msg.text) {
                         appendMsg("AI", msg.text);
                         applySession({ call_id: state.callId, session: msg.session });

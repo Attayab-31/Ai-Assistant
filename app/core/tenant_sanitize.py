@@ -8,7 +8,6 @@ be coerced safely are moved into the caller-supplied ``overflow`` dict (typicall
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from datetime import date, datetime
