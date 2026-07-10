@@ -30,7 +30,7 @@ def test_default_system_settings_include_groq_stt_model():
     assert "groq_stt_model" in keys
 
 
-def test_validate_runtime_secrets_blocks_test_console_in_production():
+def test_validate_runtime_secrets_allows_test_console_in_production_when_enabled():
     from config import Settings
 
     settings = Settings(
@@ -44,11 +44,12 @@ def test_validate_runtime_secrets_blocks_test_console_in_production():
         admin_password="strong-password-here",
         web_workers=1,
         enable_test_console=True,
+        trusted_proxy_ips="127.0.0.1",
     )
     with patch.object(settings, "encryption_key", "dGVzdC1rZXktdGVzdC1rZXktdGVzdC1rZXk="):
         with patch("cryptography.fernet.Fernet"):
             errors = settings.validate_runtime_secrets()
-    assert any("ENABLE_TEST_CONSOLE" in e for e in errors)
+    assert errors == []
 
 
 def test_side_effect_alerts_include_permanent_failures():

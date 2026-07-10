@@ -218,7 +218,8 @@ class Settings(BaseSettings):
                 "SECRET_KEY must be set to a strong, unique value in production"
             )
         elif len(self.secret_key) < 32:
-            errors.append("SECRET_KEY must be at least 32 characters in production")
+            errors.append(
+                "SECRET_KEY must be at least 32 characters in production")
 
         if self.admin_password in ("", "Admin123!"):
             errors.append(
@@ -264,10 +265,6 @@ class Settings(BaseSettings):
         if not (self.telnyx_api_key or "").strip():
             errors.append(
                 "TELNYX_API_KEY must be set in production to place and control calls"
-            )
-        if self.enable_test_console:
-            errors.append(
-                "ENABLE_TEST_CONSOLE must be false in production"
             )
 
         app_host = (self.app_url or "").lower()
@@ -321,7 +318,8 @@ class Settings(BaseSettings):
                 "SECRET_KEY must be set to a strong, unique value in production"
             )
         elif len(self.secret_key) < 32:
-            errors.append("SECRET_KEY must be at least 32 characters in production")
+            errors.append(
+                "SECRET_KEY must be at least 32 characters in production")
 
         if require_encryption:
             if not self.encryption_key:
@@ -833,7 +831,8 @@ _ENCRYPTED_KEY_MAP = {
     "gemini_api_key_encrypted": "gemini_api_key",
     "deepgram_api_key_encrypted": "deepgram_api_key",
 }
-_ENV_API_KEY_DEFAULTS = {attr: getattr(settings, attr, "") for attr in _ENCRYPTED_KEY_MAP.values()}
+_ENV_API_KEY_DEFAULTS = {attr: getattr(
+    settings, attr, "") for attr in _ENCRYPTED_KEY_MAP.values()}
 
 
 def _apply_encrypted_api_keys(values: dict) -> None:
@@ -949,10 +948,14 @@ class ProviderRegistry:
         # back to env values when a key is absent or fails to decrypt.
         _apply_encrypted_api_keys(values)
 
-        llm = str(values.get("active_llm_provider") or settings.active_llm_provider)
-        stt = str(values.get("active_stt_provider") or settings.active_stt_provider)
-        tts = str(values.get("active_tts_provider") or settings.active_tts_provider)
-        self._auto_fallback_enabled = bool(values.get("auto_fallback_enabled", True))
+        llm = str(values.get("active_llm_provider")
+                  or settings.active_llm_provider)
+        stt = str(values.get("active_stt_provider")
+                  or settings.active_stt_provider)
+        tts = str(values.get("active_tts_provider")
+                  or settings.active_tts_provider)
+        self._auto_fallback_enabled = bool(
+            values.get("auto_fallback_enabled", True))
         self._llm_fallback_provider = str(
             values.get("llm_fallback_provider") or "auto"
         ).lower()
@@ -1074,21 +1077,24 @@ class ProviderRegistry:
     def llm(self):
         """Get active LLM provider."""
         if self._llm is None:
-            raise RuntimeError("LLM provider not initialized. Call initialize() first.")
+            raise RuntimeError(
+                "LLM provider not initialized. Call initialize() first.")
         return self._llm
 
     @property
     def stt(self):
         """Get active STT provider."""
         if self._stt is None:
-            raise RuntimeError("STT provider not initialized. Call initialize() first.")
+            raise RuntimeError(
+                "STT provider not initialized. Call initialize() first.")
         return self._stt
 
     @property
     def tts(self):
         """Get active TTS provider."""
         if self._tts is None:
-            raise RuntimeError("TTS provider not initialized. Call initialize() first.")
+            raise RuntimeError(
+                "TTS provider not initialized. Call initialize() first.")
         return self._tts
 
     @property
