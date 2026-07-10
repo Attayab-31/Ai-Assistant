@@ -96,33 +96,15 @@ services:
 
       - key: REDIS_URL
 
-        fromService:
-
-          name: ai-screener-redis
-
-          type: redis
-
-          property: connectionString
+        sync: false
 
       - key: CELERY_BROKER_URL
 
-        fromService:
-
-          name: ai-screener-redis
-
-          type: redis
-
-          property: connectionString
+        sync: false
 
       - key: CELERY_RESULT_BACKEND
 
-        fromService:
-
-          name: ai-screener-redis
-
-          type: redis
-
-          property: connectionString
+        sync: false
 
       - key: TELNYX_API_KEY
 
@@ -242,33 +224,15 @@ services:
 
       - key: REDIS_URL
 
-        fromService:
-
-          name: ai-screener-redis
-
-          type: redis
-
-          property: connectionString
+        sync: false
 
       - key: CELERY_BROKER_URL
 
-        fromService:
-
-          name: ai-screener-redis
-
-          type: redis
-
-          property: connectionString
+        sync: false
 
       - key: CELERY_RESULT_BACKEND
 
-        fromService:
-
-          name: ai-screener-redis
-
-          type: redis
-
-          property: connectionString
+        sync: false
 
       - key: RESEND_API_KEY
 
@@ -480,33 +444,15 @@ services:
 
       - key: REDIS_URL
 
-        fromService:
-
-          name: ai-screener-redis
-
-          type: redis
-
-          property: connectionString
+        sync: false
 
       - key: CELERY_BROKER_URL
 
-        fromService:
-
-          name: ai-screener-redis
-
-          type: redis
-
-          property: connectionString
+        sync: false
 
       - key: CELERY_RESULT_BACKEND
 
-        fromService:
-
-          name: ai-screener-redis
-
-          type: redis
-
-          property: connectionString
+        sync: false
 
       - key: TELNYX_API_KEY
 
@@ -650,17 +596,8 @@ services:
 
 
 
-  # ── Managed Redis (broker + cache + idempotency) ────────────────────────────
+  # ── External Redis (Upstash / Redis Cloud / etc.) ─────────────────────────
 
-  # noeviction so the Celery broker never silently drops queued tasks.
-
-  - type: redis
-
-    name: ai-screener-redis
-
-    plan: free
-
-    maxmemoryPolicy: noeviction
-
-    ipAllowList: []
+  # Set REDIS_URL, CELERY_BROKER_URL, and CELERY_RESULT_BACKEND manually in
+  # the Render dashboard or via the Blueprint env vars.
 
