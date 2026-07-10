@@ -210,13 +210,7 @@ services:
 
       - key: APP_URL
 
-        fromService:
-
-          name: ai-screener-web
-
-          type: web
-
-          envVarKey: APP_URL
+        value: ""
 
       - key: DATABASE_URL
 
@@ -236,113 +230,47 @@ services:
 
       - key: RESEND_API_KEY
 
-        fromService:
-
-          name: ai-screener-web
-
-          type: web
-
-          envVarKey: RESEND_API_KEY
+        value: ""
 
       - key: EMAIL_FROM
 
-        fromService:
-
-          name: ai-screener-web
-
-          type: web
-
-          envVarKey: EMAIL_FROM
+        value: ""
 
       - key: EMAIL_FROM_NAME
 
-        fromService:
-
-          name: ai-screener-web
-
-          type: web
-
-          envVarKey: EMAIL_FROM_NAME
+        value: ""
 
       - key: SUPABASE_URL
 
-        fromService:
-
-          name: ai-screener-web
-
-          type: web
-
-          envVarKey: SUPABASE_URL
+        value: ""
 
       - key: SUPABASE_SECRET_KEY
 
-        fromService:
-
-          name: ai-screener-web
-
-          type: web
-
-          envVarKey: SUPABASE_SECRET_KEY
+        value: ""
 
       - key: SUPABASE_STORAGE_BUCKET
 
-        fromService:
-
-          name: ai-screener-web
-
-          type: web
-
-          envVarKey: SUPABASE_STORAGE_BUCKET
+        value: call-recordings
 
       - key: DEEPGRAM_API_KEY
 
-        fromService:
-
-          name: ai-screener-web
-
-          type: web
-
-          envVarKey: DEEPGRAM_API_KEY
+        value: ""
 
       - key: GROQ_API_KEY
 
-        fromService:
-
-          name: ai-screener-web
-
-          type: web
-
-          envVarKey: GROQ_API_KEY
+        value: ""
 
       - key: OPENAI_API_KEY
 
-        fromService:
-
-          name: ai-screener-web
-
-          type: web
-
-          envVarKey: OPENAI_API_KEY
+        value: ""
 
       - key: OPENROUTER_API_KEY
 
-        fromService:
-
-          name: ai-screener-web
-
-          type: web
-
-          envVarKey: OPENROUTER_API_KEY
+        value: ""
 
       - key: GEMINI_API_KEY
 
-        fromService:
-
-          name: ai-screener-web
-
-          type: web
-
-          envVarKey: GEMINI_API_KEY
+        value: ""
 
 
 
@@ -410,33 +338,15 @@ services:
 
       - key: APP_URL
 
-        fromService:
-
-          name: ai-screener-web
-
-          type: web
-
-          envVarKey: APP_URL
+        value: ""
 
       - key: ADMIN_EMAIL
 
-        fromService:
-
-          name: ai-screener-web
-
-          type: web
-
-          envVarKey: ADMIN_EMAIL
+        value: ""
 
       - key: ADMIN_PASSWORD
 
-        fromService:
-
-          name: ai-screener-web
-
-          type: web
-
-          envVarKey: ADMIN_PASSWORD
+        value: ""
 
       - key: DATABASE_URL
 
@@ -456,143 +366,59 @@ services:
 
       - key: TELNYX_API_KEY
 
-        fromService:
-
-          name: ai-screener-web
-
-          type: web
-
-          envVarKey: TELNYX_API_KEY
+        value: ""
 
       - key: TELNYX_PUBLIC_KEY
 
-        fromService:
-
-          name: ai-screener-web
-
-          type: web
-
-          envVarKey: TELNYX_PUBLIC_KEY
+        value: ""
 
       - key: DEEPGRAM_API_KEY
 
-        fromService:
-
-          name: ai-screener-web
-
-          type: web
-
-          envVarKey: DEEPGRAM_API_KEY
+        value: ""
 
       - key: GROQ_API_KEY
 
-        fromService:
-
-          name: ai-screener-web
-
-          type: web
-
-          envVarKey: GROQ_API_KEY
+        value: ""
 
       - key: OPENAI_API_KEY
 
-        fromService:
-
-          name: ai-screener-web
-
-          type: web
-
-          envVarKey: OPENAI_API_KEY
+        value: ""
 
       - key: OPENROUTER_API_KEY
 
-        fromService:
-
-          name: ai-screener-web
-
-          type: web
-
-          envVarKey: OPENROUTER_API_KEY
+        value: ""
 
       - key: GEMINI_API_KEY
 
-        fromService:
-
-          name: ai-screener-web
-
-          type: web
-
-          envVarKey: GEMINI_API_KEY
+        value: ""
 
       - key: RESEND_API_KEY
 
-        fromService:
-
-          name: ai-screener-web
-
-          type: web
-
-          envVarKey: RESEND_API_KEY
+        value: ""
 
       - key: EMAIL_FROM
 
-        fromService:
-
-          name: ai-screener-web
-
-          type: web
-
-          envVarKey: EMAIL_FROM
+        value: ""
 
       - key: EMAIL_FROM_NAME
 
-        fromService:
-
-          name: ai-screener-web
-
-          type: web
-
-          envVarKey: EMAIL_FROM_NAME
+        value: ""
 
       - key: TRUSTED_PROXY_IPS
 
-        fromService:
-
-          name: ai-screener-web
-
-          type: web
-
-          envVarKey: TRUSTED_PROXY_IPS
+        value: ""
 
       - key: SUPABASE_URL
 
-        fromService:
-
-          name: ai-screener-web
-
-          type: web
-
-          envVarKey: SUPABASE_URL
+        value: ""
 
       - key: SUPABASE_SECRET_KEY
 
-        fromService:
-
-          name: ai-screener-web
-
-          type: web
-
-          envVarKey: SUPABASE_SECRET_KEY
+        value: ""
 
       - key: SUPABASE_STORAGE_BUCKET
 
-        fromService:
-
-          name: ai-screener-web
-
-          type: web
-
-          envVarKey: SUPABASE_STORAGE_BUCKET
+        value: call-recordings
 
 
 
