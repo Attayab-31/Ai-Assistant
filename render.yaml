@@ -32,8 +32,6 @@ services:
 
     plan: free
 
-    preDeployCommand: /app/docker-entrypoint.sh migrate
-
     # CRITICAL: keep this at exactly 1. Live call state is per-process; scaling
 
     # the web tier splits sessions across instances and breaks calls.
