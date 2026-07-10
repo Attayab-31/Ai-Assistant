@@ -408,6 +408,22 @@ services:
 
         value: "false"
 
+      - key: ENABLE_TEST_CONSOLE
+
+        value: "false"
+
+      - key: WEB_WORKERS
+
+        value: "1"
+
+      - key: LOG_DIR
+
+        value: /app/logs
+
+      - key: LOG_VOICE_TRACE
+
+        value: "false"
+
       - key: SECRET_KEY
 
         fromService:
@@ -418,6 +434,16 @@ services:
 
           envVarKey: SECRET_KEY
 
+      - key: ENCRYPTION_KEY
+
+        fromService:
+
+          name: ai-screener-web
+
+          type: web
+
+          envVarKey: ENCRYPTION_KEY
+
       - key: APP_URL
 
         fromService:
@@ -427,6 +453,26 @@ services:
           type: web
 
           envVarKey: APP_URL
+
+      - key: ADMIN_EMAIL
+
+        fromService:
+
+          name: ai-screener-web
+
+          type: web
+
+          envVarKey: ADMIN_EMAIL
+
+      - key: ADMIN_PASSWORD
+
+        fromService:
+
+          name: ai-screener-web
+
+          type: web
+
+          envVarKey: ADMIN_PASSWORD
 
       - key: DATABASE_URL
 
@@ -461,6 +507,146 @@ services:
           type: redis
 
           property: connectionString
+
+      - key: TELNYX_API_KEY
+
+        fromService:
+
+          name: ai-screener-web
+
+          type: web
+
+          envVarKey: TELNYX_API_KEY
+
+      - key: TELNYX_PUBLIC_KEY
+
+        fromService:
+
+          name: ai-screener-web
+
+          type: web
+
+          envVarKey: TELNYX_PUBLIC_KEY
+
+      - key: DEEPGRAM_API_KEY
+
+        fromService:
+
+          name: ai-screener-web
+
+          type: web
+
+          envVarKey: DEEPGRAM_API_KEY
+
+      - key: GROQ_API_KEY
+
+        fromService:
+
+          name: ai-screener-web
+
+          type: web
+
+          envVarKey: GROQ_API_KEY
+
+      - key: OPENAI_API_KEY
+
+        fromService:
+
+          name: ai-screener-web
+
+          type: web
+
+          envVarKey: OPENAI_API_KEY
+
+      - key: OPENROUTER_API_KEY
+
+        fromService:
+
+          name: ai-screener-web
+
+          type: web
+
+          envVarKey: OPENROUTER_API_KEY
+
+      - key: GEMINI_API_KEY
+
+        fromService:
+
+          name: ai-screener-web
+
+          type: web
+
+          envVarKey: GEMINI_API_KEY
+
+      - key: RESEND_API_KEY
+
+        fromService:
+
+          name: ai-screener-web
+
+          type: web
+
+          envVarKey: RESEND_API_KEY
+
+      - key: EMAIL_FROM
+
+        fromService:
+
+          name: ai-screener-web
+
+          type: web
+
+          envVarKey: EMAIL_FROM
+
+      - key: EMAIL_FROM_NAME
+
+        fromService:
+
+          name: ai-screener-web
+
+          type: web
+
+          envVarKey: EMAIL_FROM_NAME
+
+      - key: TRUSTED_PROXY_IPS
+
+        fromService:
+
+          name: ai-screener-web
+
+          type: web
+
+          envVarKey: TRUSTED_PROXY_IPS
+
+      - key: SUPABASE_URL
+
+        fromService:
+
+          name: ai-screener-web
+
+          type: web
+
+          envVarKey: SUPABASE_URL
+
+      - key: SUPABASE_SECRET_KEY
+
+        fromService:
+
+          name: ai-screener-web
+
+          type: web
+
+          envVarKey: SUPABASE_SECRET_KEY
+
+      - key: SUPABASE_STORAGE_BUCKET
+
+        fromService:
+
+          name: ai-screener-web
+
+          type: web
+
+          envVarKey: SUPABASE_STORAGE_BUCKET
 
 
 
