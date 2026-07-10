@@ -210,23 +210,53 @@ services:
 
       - key: APP_URL
 
-        value: ""
+        fromService:
+
+          name: ai-screener-web
+
+          type: web
+
+          envVarKey: APP_URL
 
       - key: DATABASE_URL
 
-        sync: false
+        fromService:
+
+          name: ai-screener-web
+
+          type: web
+
+          envVarKey: DATABASE_URL
 
       - key: REDIS_URL
 
-        sync: false
+        fromService:
+
+          name: ai-screener-web
+
+          type: web
+
+          envVarKey: REDIS_URL
 
       - key: CELERY_BROKER_URL
 
-        sync: false
+        fromService:
+
+          name: ai-screener-web
+
+          type: web
+
+          envVarKey: CELERY_BROKER_URL
 
       - key: CELERY_RESULT_BACKEND
 
-        sync: false
+        fromService:
+
+          name: ai-screener-web
+
+          type: web
+
+          envVarKey: CELERY_RESULT_BACKEND
 
       - key: RESEND_API_KEY
 
@@ -338,31 +368,73 @@ services:
 
       - key: APP_URL
 
-        value: ""
+        fromService:
+
+          name: ai-screener-web
+
+          type: web
+
+          envVarKey: APP_URL
 
       - key: ADMIN_EMAIL
 
-        value: ""
+        fromService:
+
+          name: ai-screener-web
+
+          type: web
+
+          envVarKey: ADMIN_EMAIL
 
       - key: ADMIN_PASSWORD
 
-        value: ""
+        fromService:
+
+          name: ai-screener-web
+
+          type: web
+
+          envVarKey: ADMIN_PASSWORD
 
       - key: DATABASE_URL
 
-        sync: false
+        fromService:
+
+          name: ai-screener-web
+
+          type: web
+
+          envVarKey: DATABASE_URL
 
       - key: REDIS_URL
 
-        sync: false
+        fromService:
+
+          name: ai-screener-web
+
+          type: web
+
+          envVarKey: REDIS_URL
 
       - key: CELERY_BROKER_URL
 
-        sync: false
+        fromService:
+
+          name: ai-screener-web
+
+          type: web
+
+          envVarKey: CELERY_BROKER_URL
 
       - key: CELERY_RESULT_BACKEND
 
-        sync: false
+        fromService:
+
+          name: ai-screener-web
+
+          type: web
+
+          envVarKey: CELERY_RESULT_BACKEND
 
       - key: TELNYX_API_KEY
 
