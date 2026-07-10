@@ -2,24 +2,19 @@
 #
 # Architecture (see README): one web instance (live call sessions are held
 # in-memory per process, so the web service MUST stay at a single instance),
-# plus a Celery worker and a single Celery beat scheduler, backed by Render
-# Key Value (Redis) and an external Postgres (set DATABASE_URL).
+# plus a Celery worker and a single Celery beat scheduler, backed by Redis
+# and an external Postgres (set DATABASE_URL).
 #
-# Free-tier note: Render does not offer free background workers. Worker and
-# beat are deployed as web services with a lightweight port probe so Render's
-# health checks succeed. Only ai-screener-web receives public traffic.
+# Free-tier notes:
+# - Render allows only ONE free Key Value (Redis) instance per account. This
+#   blueprint does NOT create Redis — set REDIS_URL on ai-screener-web manually
+#   (use your existing Render Key Value internal URL, or Upstash rediss://).
+# - Background workers are not free; worker/beat run as web services with a
+#   port probe. Only ai-screener-web receives public traffic.
 #
 # Secrets marked `sync: false` must be filled in the Render dashboard.
 
 services:
-  # ── Managed Redis (broker + cache) ─────────────────────────────────────────
-  - type: keyvalue
-    name: ai-screener-redis
-    plan: free
-    region: oregon
-    ipAllowList: []  # internal connections only (same Render private network)
-    maxmemoryPolicy: noeviction
-
   # ── Web (FastAPI / uvicorn) ────────────────────────────────────────────────
   - type: web
     name: ai-screener-web
@@ -61,21 +56,13 @@ services:
         sync: false
       - key: DATABASE_MIGRATION_MODE
         value: check
+      # Set all three to the same Redis URL (Render Key Value internal URL or Upstash).
       - key: REDIS_URL
-        fromService:
-          name: ai-screener-redis
-          type: keyvalue
-          property: connectionString
+        sync: false
       - key: CELERY_BROKER_URL
-        fromService:
-          name: ai-screener-redis
-          type: keyvalue
-          property: connectionString
+        sync: false
       - key: CELERY_RESULT_BACKEND
-        fromService:
-          name: ai-screener-redis
-          type: keyvalue
-          property: connectionString
+        sync: false
       - key: TELNYX_API_KEY
         sync: false
       - key: TELNYX_PUBLIC_KEY
@@ -140,56 +127,19 @@ services:
           envVarKey: DATABASE_URL
       - key: REDIS_URL
         fromService:
-          name: ai-screener-redis
-          type: keyvalue
-          property: connectionString
+          name: ai-screener-web
+          type: web
+          envVarKey: REDIS_URL
       - key: CELERY_BROKER_URL
         fromService:
-          name: ai-screener-redis
-          type: keyvalue
-          property: connectionString
+          name: ai-screener-web
+          type: web
+          envVarKey: CELERY_BROKER_URL
       - key: CELERY_RESULT_BACKEND
         fromService:
-          name: ai-screener-redis
-          type: keyvalue
-          property: connectionString
-      - key: RESEND_API_KEY
-        sync: false
-      - key: EMAIL_FROM
-        sync: false
-      - key: EMAIL_FROM_NAME
-        sync: false
-      - key: SUPABASE_URL
-        sync: false
-      - key: SUPABASE_SECRET_KEY
-        sync: false
-      - key: SUPABASE_STORAGE_BUCKET
-        value: call-recordings
-      - key: DEEPGRAM_API_KEY
-        fromService:
           name: ai-screener-web
           type: web
-          envVarKey: DEEPGRAM_API_KEY
-      - key: GROQ_API_KEY
-        fromService:
-          name: ai-screener-web
-          type: web
-          envVarKey: GROQ_API_KEY
-      - key: OPENAI_API_KEY
-        fromService:
-          name: ai-screener-web
-          type: web
-          envVarKey: OPENAI_API_KEY
-      - key: OPENROUTER_API_KEY
-        fromService:
-          name: ai-screener-web
-          type: web
-          envVarKey: OPENROUTER_API_KEY
-      - key: GEMINI_API_KEY
-        fromService:
-          name: ai-screener-web
-          type: web
-          envVarKey: GEMINI_API_KEY
+          envVarKey: CELERY_RESULT_BACKEND
 
   # ── Celery beat (scheduler — MUST be a single instance) ─────────────────────
   # type: web (not worker) — required on Render free plan.
@@ -226,28 +176,16 @@ services:
           envVarKey: DATABASE_URL
       - key: REDIS_URL
         fromService:
-          name: ai-screener-redis
-          type: keyvalue
-          property: connectionString
+          name: ai-screener-web
+          type: web
+          envVarKey: REDIS_URL
       - key: CELERY_BROKER_URL
         fromService:
-          name: ai-screener-redis
-          type: keyvalue
-          property: connectionString
+          name: ai-screener-web
+          type: web
+          envVarKey: CELERY_BROKER_URL
       - key: CELERY_RESULT_BACKEND
         fromService:
-          name: ai-screener-redis
-          type: keyvalue
-          property: connectionString
-      - key: RESEND_API_KEY
-        sync: false
-      - key: EMAIL_FROM
-        sync: false
-      - key: EMAIL_FROM_NAME
-        sync: false
-      - key: SUPABASE_URL
-        sync: false
-      - key: SUPABASE_SECRET_KEY
-        sync: false
-      - key: SUPABASE_STORAGE_BUCKET
-        value: call-recordings
+          name: ai-screener-web
+          type: web
+          envVarKey: CELERY_RESULT_BACKEND
