@@ -166,7 +166,7 @@ services:
 
   # ── Celery worker (emails, CRM webhooks, retention) ─────────────────────────
 
-  - type: worker
+  - type: web
 
     name: ai-screener-worker
 
@@ -276,7 +276,7 @@ services:
 
   # ── Celery beat (scheduler — MUST be a single instance) ─────────────────────
 
-  - type: worker
+  - type: web
 
     name: ai-screener-beat
 
