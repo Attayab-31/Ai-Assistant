@@ -52,9 +52,9 @@ services:
       - key: APP_URL
         value: https://ai-screener-web.onrender.com
       - key: ADMIN_EMAIL
-        value: ""
+        sync: false
       - key: ADMIN_PASSWORD
-        value: ""
+        sync: false
       - key: DATABASE_URL
         sync: false
       - key: DATABASE_MIGRATION_MODE
@@ -75,32 +75,32 @@ services:
           type: keyvalue
           property: connectionString
       - key: TELNYX_API_KEY
-        value: ""
+        sync: false
       - key: TELNYX_PUBLIC_KEY
-        value: ""
+        sync: false
       - key: DEEPGRAM_API_KEY
-        value: ""
+        sync: false
       - key: GROQ_API_KEY
-        value: ""
+        sync: false
       - key: OPENAI_API_KEY
-        value: ""
+        sync: false
       - key: OPENROUTER_API_KEY
-        value: ""
+        sync: false
       - key: GEMINI_API_KEY
-        value: ""
+        sync: false
       - key: RESEND_API_KEY
-        value: ""
+        sync: false
       - key: EMAIL_FROM
-        value: ""
+        sync: false
       - key: EMAIL_FROM_NAME
-        value: ""
+        sync: false
       # Render terminates TLS at the edge; trust private-network proxy peers.
       - key: TRUSTED_PROXY_IPS
         value: "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,127.0.0.1"
       - key: SUPABASE_URL
-        value: ""
+        sync: false
       - key: SUPABASE_SECRET_KEY
-        value: ""
+        sync: false
       - key: SUPABASE_STORAGE_BUCKET
         value: call-recordings
 
@@ -152,27 +152,42 @@ services:
           type: keyvalue
           property: connectionString
       - key: RESEND_API_KEY
-        value: ""
+        sync: false
       - key: EMAIL_FROM
-        value: ""
+        sync: false
       - key: EMAIL_FROM_NAME
-        value: ""
+        sync: false
       - key: SUPABASE_URL
-        value: ""
+        sync: false
       - key: SUPABASE_SECRET_KEY
-        value: ""
+        sync: false
       - key: SUPABASE_STORAGE_BUCKET
         value: call-recordings
       - key: DEEPGRAM_API_KEY
-        value: ""
+        fromService:
+          name: ai-screener-web
+          type: web
+          envVarKey: DEEPGRAM_API_KEY
       - key: GROQ_API_KEY
-        value: ""
+        fromService:
+          name: ai-screener-web
+          type: web
+          envVarKey: GROQ_API_KEY
       - key: OPENAI_API_KEY
-        value: ""
+        fromService:
+          name: ai-screener-web
+          type: web
+          envVarKey: OPENAI_API_KEY
       - key: OPENROUTER_API_KEY
-        value: ""
+        fromService:
+          name: ai-screener-web
+          type: web
+          envVarKey: OPENROUTER_API_KEY
       - key: GEMINI_API_KEY
-        value: ""
+        fromService:
+          name: ai-screener-web
+          type: web
+          envVarKey: GEMINI_API_KEY
 
   # ── Celery beat (scheduler — MUST be a single instance) ─────────────────────
   # type: web (not worker) — required on Render free plan.
@@ -223,14 +238,14 @@ services:
           type: keyvalue
           property: connectionString
       - key: RESEND_API_KEY
-        value: ""
+        sync: false
       - key: EMAIL_FROM
-        value: ""
+        sync: false
       - key: EMAIL_FROM_NAME
-        value: ""
+        sync: false
       - key: SUPABASE_URL
-        value: ""
+        sync: false
       - key: SUPABASE_SECRET_KEY
-        value: ""
+        sync: false
       - key: SUPABASE_STORAGE_BUCKET
         value: call-recordings
