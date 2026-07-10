@@ -195,16 +195,28 @@ class Settings(BaseSettings):
     @field_validator("app_url", mode="before")
     @classmethod
     def resolve_app_url(cls, value: object) -> str:
+        """Resolve the public app URL for links, CORS, and production guards.
+
+        Never use ``RENDER_INTERNAL_URL`` — it is ``http://`` on Render's private
+        network and breaks HTTPS requirements for Celery beat/worker processes.
+        """
+        candidates: list[str] = []
+
         if isinstance(value, str):
-            normalized = value.strip()
+            normalized = value.strip().rstrip("/")
             if normalized and not cls._is_placeholder_url(normalized):
-                return normalized
+                candidates.append(normalized)
 
-        for env_name in ("APP_URL", "RENDER_EXTERNAL_URL", "RENDER_INTERNAL_URL"):
-            env_value = os.getenv(env_name, "")
-            if env_value and env_value.strip():
-                return env_value.strip()
+        for env_name in ("APP_URL", "RENDER_EXTERNAL_URL"):
+            env_value = os.getenv(env_name, "").strip().rstrip("/")
+            if env_value and not cls._is_placeholder_url(env_value):
+                candidates.append(env_value)
 
+        for url in candidates:
+            if url.lower().startswith("https://"):
+                return url
+        if candidates:
+            return candidates[0]
         return str(value or "")
 
     @field_validator("redis_url", "celery_broker_url", "celery_result_backend", mode="before")
@@ -341,6 +353,11 @@ class Settings(BaseSettings):
             ("CELERY_BROKER_URL", self.celery_broker_url),
             ("CELERY_RESULT_BACKEND", self.celery_result_backend),
         ):
+            if url and _is_local_redis_url(url):
+                errors.append(
+                    f"{name} must not point at localhost in production — "
+                    "set a managed Redis URL (Render Key Value or Upstash)"
+                )
             if url and "default_ro" in url:
                 errors.append(
                     f"{name} uses Upstash read-only credentials (default_ro); "
@@ -406,6 +423,11 @@ class Settings(BaseSettings):
             ("CELERY_BROKER_URL", self.celery_broker_url),
             ("CELERY_RESULT_BACKEND", self.celery_result_backend),
         ):
+            if url and _is_local_redis_url(url):
+                errors.append(
+                    f"{name} must not point at localhost in production — "
+                    "set a managed Redis URL (Render Key Value or Upstash)"
+                )
             if url and "default_ro" in url:
                 errors.append(
                     f"{name} uses Upstash read-only credentials (default_ro); "
@@ -413,6 +435,13 @@ class Settings(BaseSettings):
                 )
 
         return errors
+
+
+def _is_local_redis_url(url: str) -> bool:
+    lowered = (url or "").strip().lower()
+    return lowered.startswith("redis://localhost") or lowered.startswith(
+        "redis://127.0.0.1"
+    )
 
 
 settings = Settings()

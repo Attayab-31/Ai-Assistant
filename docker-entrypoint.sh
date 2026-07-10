@@ -16,10 +16,14 @@ case "$ROLE" in
     ;;
   worker)
     echo "[entrypoint] Starting Celery worker (solo pool for async DB safety)..."
+    # Free-tier Render has no background workers — this web service must bind $PORT.
+    python /app/scripts/render_port_probe.py &
     exec celery -A app.core.celery_app.celery_app worker --pool=solo --loglevel=info
     ;;
   beat)
     echo "[entrypoint] Starting Celery beat scheduler..."
+    # Free-tier Render has no background workers — this web service must bind $PORT.
+    python /app/scripts/render_port_probe.py &
     exec celery -A app.core.celery_app.celery_app beat --loglevel=info
     ;;
   migrate)

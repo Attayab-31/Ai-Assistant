@@ -1,489 +1,236 @@
 # Render Blueprint — deploy with "New > Blueprint" pointing at this repo.
-
 #
-
 # Architecture (see README): one web instance (live call sessions are held
-
 # in-memory per process, so the web service MUST stay at a single instance),
-
-# plus a Celery worker and a single Celery beat scheduler, backed by a
-
-# managed Redis (broker/cache) and an external Postgres (set DATABASE_URL).
-
+# plus a Celery worker and a single Celery beat scheduler, backed by Render
+# Key Value (Redis) and an external Postgres (set DATABASE_URL).
 #
-
+# Free-tier note: Render does not offer free background workers. Worker and
+# beat are deployed as web services with a lightweight port probe so Render's
+# health checks succeed. Only ai-screener-web receives public traffic.
+#
 # Secrets marked `sync: false` must be filled in the Render dashboard.
 
-
-
 services:
+  # ── Managed Redis (broker + cache) ─────────────────────────────────────────
+  - type: keyvalue
+    name: ai-screener-redis
+    plan: free
+    region: oregon
+    ipAllowList: []  # internal connections only (same Render private network)
+    maxmemoryPolicy: noeviction
 
   # ── Web (FastAPI / uvicorn) ────────────────────────────────────────────────
-
   - type: web
-
     name: ai-screener-web
-
     runtime: docker
-
     dockerfilePath: ./Dockerfile
-
     dockerCommand: /app/docker-entrypoint.sh web
-
     plan: free
-
+    region: oregon
     # CRITICAL: keep this at exactly 1. Live call state is per-process; scaling
-
     # the web tier splits sessions across instances and breaks calls.
-
     numInstances: 1
-
     healthCheckPath: /health
-
     envVars:
-
       - key: ENVIRONMENT
-
         value: production
-
       - key: DEBUG
-
         value: "false"
-
       - key: ENABLE_TEST_CONSOLE
-
         value: "false"
-
       - key: WEB_WORKERS
-
         value: "1"
-
       - key: LOG_DIR
-
         value: /app/logs
-
       - key: LOG_VOICE_TRACE
-
         value: "false"
-
       - key: SECRET_KEY
-
         generateValue: true
-
       - key: ENCRYPTION_KEY
-
         generateValue: true
-
       - key: APP_URL
-
         value: https://ai-screener-web.onrender.com
-
       - key: ADMIN_EMAIL
-
         value: ""
-
       - key: ADMIN_PASSWORD
-
         value: ""
-
       - key: DATABASE_URL
-
         sync: false
-
       - key: DATABASE_MIGRATION_MODE
-
         value: check
-
       - key: REDIS_URL
-
-        sync: false
-
+        fromService:
+          name: ai-screener-redis
+          type: keyvalue
+          property: connectionString
       - key: CELERY_BROKER_URL
-
-        sync: false
-
+        fromService:
+          name: ai-screener-redis
+          type: keyvalue
+          property: connectionString
       - key: CELERY_RESULT_BACKEND
-
-        sync: false
-
+        fromService:
+          name: ai-screener-redis
+          type: keyvalue
+          property: connectionString
       - key: TELNYX_API_KEY
-
         value: ""
-
       - key: TELNYX_PUBLIC_KEY
-
         value: ""
-
       - key: DEEPGRAM_API_KEY
-
         value: ""
-
       - key: GROQ_API_KEY
-
         value: ""
-
       - key: OPENAI_API_KEY
-
         value: ""
-
       - key: OPENROUTER_API_KEY
-
         value: ""
-
       - key: GEMINI_API_KEY
-
         value: ""
-
       - key: RESEND_API_KEY
-
         value: ""
-
       - key: EMAIL_FROM
-
         value: ""
-
       - key: EMAIL_FROM_NAME
-
         value: ""
-
+      # Render terminates TLS at the edge; trust private-network proxy peers.
       - key: TRUSTED_PROXY_IPS
-
-        value: ""
-
+        value: "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,127.0.0.1"
       - key: SUPABASE_URL
-
         value: ""
-
       - key: SUPABASE_SECRET_KEY
-
         value: ""
-
       - key: SUPABASE_STORAGE_BUCKET
-
         value: call-recordings
-
-
 
   # ── Celery worker (emails, CRM webhooks, retention) ─────────────────────────
-
+  # type: web (not worker) — required on Render free plan.
   - type: web
-
     name: ai-screener-worker
-
     runtime: docker
-
     dockerfilePath: ./Dockerfile
-
     dockerCommand: /app/docker-entrypoint.sh worker
-
     plan: free
-
+    region: oregon
+    healthCheckPath: /health
     envVars:
-
       - key: ENVIRONMENT
-
         value: production
-
       - key: DEBUG
-
         value: "false"
-
       - key: SECRET_KEY
-
         fromService:
-
           name: ai-screener-web
-
           type: web
-
           envVarKey: SECRET_KEY
-
       - key: ENCRYPTION_KEY
-
         fromService:
-
           name: ai-screener-web
-
           type: web
-
           envVarKey: ENCRYPTION_KEY
-
       - key: APP_URL
-
         value: https://ai-screener-web.onrender.com
-
       - key: DATABASE_URL
-
         fromService:
-
           name: ai-screener-web
-
           type: web
-
           envVarKey: DATABASE_URL
-
       - key: REDIS_URL
-
         fromService:
-
-          name: ai-screener-web
-
-          type: web
-
-          envVarKey: REDIS_URL
-
+          name: ai-screener-redis
+          type: keyvalue
+          property: connectionString
       - key: CELERY_BROKER_URL
-
         fromService:
-
-          name: ai-screener-web
-
-          type: web
-
-          envVarKey: CELERY_BROKER_URL
-
+          name: ai-screener-redis
+          type: keyvalue
+          property: connectionString
       - key: CELERY_RESULT_BACKEND
-
         fromService:
-
-          name: ai-screener-web
-
-          type: web
-
-          envVarKey: CELERY_RESULT_BACKEND
-
+          name: ai-screener-redis
+          type: keyvalue
+          property: connectionString
       - key: RESEND_API_KEY
-
         value: ""
-
       - key: EMAIL_FROM
-
         value: ""
-
       - key: EMAIL_FROM_NAME
-
         value: ""
-
       - key: SUPABASE_URL
-
         value: ""
-
       - key: SUPABASE_SECRET_KEY
-
         value: ""
-
       - key: SUPABASE_STORAGE_BUCKET
-
         value: call-recordings
-
       - key: DEEPGRAM_API_KEY
-
         value: ""
-
       - key: GROQ_API_KEY
-
         value: ""
-
       - key: OPENAI_API_KEY
-
         value: ""
-
       - key: OPENROUTER_API_KEY
-
         value: ""
-
       - key: GEMINI_API_KEY
-
         value: ""
-
-
 
   # ── Celery beat (scheduler — MUST be a single instance) ─────────────────────
-
+  # type: web (not worker) — required on Render free plan.
   - type: web
-
     name: ai-screener-beat
-
     runtime: docker
-
     dockerfilePath: ./Dockerfile
-
     dockerCommand: /app/docker-entrypoint.sh beat
-
     plan: free
-
+    region: oregon
     numInstances: 1
-
+    healthCheckPath: /health
     envVars:
-
       - key: ENVIRONMENT
-
         value: production
-
       - key: DEBUG
-
         value: "false"
-
-      - key: ENABLE_TEST_CONSOLE
-
-        value: "false"
-
-      - key: WEB_WORKERS
-
-        value: "1"
-
-      - key: LOG_DIR
-
-        value: /app/logs
-
-      - key: LOG_VOICE_TRACE
-
-        value: "false"
-
       - key: SECRET_KEY
-
         fromService:
-
           name: ai-screener-web
-
           type: web
-
           envVarKey: SECRET_KEY
-
       - key: ENCRYPTION_KEY
-
         fromService:
-
           name: ai-screener-web
-
           type: web
-
           envVarKey: ENCRYPTION_KEY
-
       - key: APP_URL
-
         value: https://ai-screener-web.onrender.com
-
-      - key: ADMIN_EMAIL
-
-        fromService:
-
-          name: ai-screener-web
-
-          type: web
-
-          envVarKey: ADMIN_EMAIL
-
-      - key: ADMIN_PASSWORD
-
-        fromService:
-
-          name: ai-screener-web
-
-          type: web
-
-          envVarKey: ADMIN_PASSWORD
-
       - key: DATABASE_URL
-
         fromService:
-
           name: ai-screener-web
-
           type: web
-
           envVarKey: DATABASE_URL
-
       - key: REDIS_URL
-
         fromService:
-
-          name: ai-screener-web
-
-          type: web
-
-          envVarKey: REDIS_URL
-
+          name: ai-screener-redis
+          type: keyvalue
+          property: connectionString
       - key: CELERY_BROKER_URL
-
         fromService:
-
-          name: ai-screener-web
-
-          type: web
-
-          envVarKey: CELERY_BROKER_URL
-
+          name: ai-screener-redis
+          type: keyvalue
+          property: connectionString
       - key: CELERY_RESULT_BACKEND
-
         fromService:
-
-          name: ai-screener-web
-
-          type: web
-
-          envVarKey: CELERY_RESULT_BACKEND
-
-      - key: TELNYX_API_KEY
-
-        value: ""
-
-      - key: TELNYX_PUBLIC_KEY
-
-        value: ""
-
-      - key: DEEPGRAM_API_KEY
-
-        value: ""
-
-      - key: GROQ_API_KEY
-
-        value: ""
-
-      - key: OPENAI_API_KEY
-
-        value: ""
-
-      - key: OPENROUTER_API_KEY
-
-        value: ""
-
-      - key: GEMINI_API_KEY
-
-        value: ""
-
+          name: ai-screener-redis
+          type: keyvalue
+          property: connectionString
       - key: RESEND_API_KEY
-
         value: ""
-
       - key: EMAIL_FROM
-
         value: ""
-
       - key: EMAIL_FROM_NAME
-
         value: ""
-
-      - key: TRUSTED_PROXY_IPS
-
-        value: ""
-
       - key: SUPABASE_URL
-
         value: ""
-
       - key: SUPABASE_SECRET_KEY
-
         value: ""
-
       - key: SUPABASE_STORAGE_BUCKET
-
         value: call-recordings
-
-
-
-  # ── External Redis (Upstash / Redis Cloud / etc.) ─────────────────────────
-
-  # Set REDIS_URL, CELERY_BROKER_URL, and CELERY_RESULT_BACKEND manually in
-  # the Render dashboard or via the Blueprint env vars.
-

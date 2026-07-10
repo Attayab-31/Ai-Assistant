@@ -280,7 +280,9 @@ async def security_headers_middleware(request: Request, call_next):
 @app.middleware("http")
 async def request_logging_middleware(request: Request, call_next):
     """Log all incoming requests with timing."""
-    await _refresh_display_timezone_if_due()
+    # Render health probes must finish within 5s — skip DB-backed timezone refresh.
+    if request.url.path != "/health":
+        await _refresh_display_timezone_if_due()
     start = time.time()
     response = await call_next(request)
     duration_ms = (time.time() - start) * 1000
@@ -328,7 +330,6 @@ async def health_check():
     uptime = time.time() - APP_START_TIME
     db_ok = False
     redis_ok = False
-    celery_health = {"ok": False, "workers": 0, "broker": False, "detail": "Unavailable"}
 
     # Check DB
     try:
@@ -348,6 +349,23 @@ async def health_check():
     except Exception as e:
         logger.warning("Redis health check failed: %s", e)
 
+    # The database is the only hard dependency for serving requests, so a DB
+    # failure returns HTTP 503 to keep load balancers from routing to this
+    # instance. Redis powers async jobs/cache and is reported but not fatal.
+    #
+    # Production probes (Render) must respond within 5s. Celery broker/worker
+    # inspect can take ~4s when Redis is down — skip it here; use /health/detail
+    # or the admin dashboard for full async-job status.
+    healthy = db_ok
+    if settings.is_production:
+        payload = {
+            "status": "healthy" if healthy else "degraded",
+            "database": "connected" if db_ok else "disconnected",
+            "redis": "connected" if redis_ok else "disconnected",
+        }
+        return JSONResponse(payload, status_code=200 if healthy else 503)
+
+    celery_health = {"ok": False, "workers": 0, "broker": False, "detail": "Unavailable"}
     try:
         from app.services.celery_health import check_celery_health
 
@@ -363,20 +381,6 @@ async def health_check():
         provider_health_beat = await cache_get_json("health:providers:last")
     except Exception as e:
         logger.debug("Provider health beat cache read failed: %s", e)
-
-    # The database is the only hard dependency for serving requests, so a DB
-    # failure returns HTTP 503 to keep load balancers from routing to this
-    # instance. Redis powers async jobs/cache and is reported but not fatal.
-    healthy = db_ok
-    if settings.is_production:
-        payload = {
-            "status": "healthy" if healthy else "degraded",
-            "database": "connected" if db_ok else "disconnected",
-            "redis": "connected" if redis_ok else "disconnected",
-        }
-        if not healthy:
-            payload["celery"] = "unavailable" if not celery_health.get("ok") else "connected"
-        return JSONResponse(payload, status_code=200 if healthy else 503)
 
     return JSONResponse(
         {
