@@ -72,19 +72,19 @@ services:
 
       - key: ENCRYPTION_KEY
 
-        sync: false
+        generateValue: true
 
       - key: APP_URL
 
-        sync: false
+        value: ""
 
       - key: ADMIN_EMAIL
 
-        sync: false
+        value: ""
 
       - key: ADMIN_PASSWORD
 
-        sync: false
+        value: ""
 
       - key: DATABASE_URL
 
@@ -108,55 +108,55 @@ services:
 
       - key: TELNYX_API_KEY
 
-        sync: false
+        value: ""
 
       - key: TELNYX_PUBLIC_KEY
 
-        sync: false
+        value: ""
 
       - key: DEEPGRAM_API_KEY
 
-        sync: false
+        value: ""
 
       - key: GROQ_API_KEY
 
-        sync: false
+        value: ""
 
       - key: OPENAI_API_KEY
 
-        sync: false
+        value: ""
 
       - key: OPENROUTER_API_KEY
 
-        sync: false
+        value: ""
 
       - key: GEMINI_API_KEY
 
-        sync: false
+        value: ""
 
       - key: RESEND_API_KEY
 
-        sync: false
+        value: ""
 
       - key: EMAIL_FROM
 
-        sync: false
+        value: ""
 
       - key: EMAIL_FROM_NAME
 
-        sync: false
+        value: ""
 
       - key: TRUSTED_PROXY_IPS
 
-        sync: false
+        value: ""
 
       - key: SUPABASE_URL
 
-        sync: false
+        value: ""
 
       - key: SUPABASE_SECRET_KEY
 
-        sync: false
+        value: ""
 
       - key: SUPABASE_STORAGE_BUCKET
 
