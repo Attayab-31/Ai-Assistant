@@ -50,6 +50,22 @@ services:
 
         value: "false"
 
+      - key: ENABLE_TEST_CONSOLE
+
+        value: "false"
+
+      - key: WEB_WORKERS
+
+        value: "1"
+
+      - key: LOG_DIR
+
+        value: /app/logs
+
+      - key: LOG_VOICE_TRACE
+
+        value: "false"
+
       - key: SECRET_KEY
 
         generateValue: true
