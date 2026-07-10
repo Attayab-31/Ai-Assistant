@@ -8,6 +8,7 @@ exposes the DEFAULT_QUESTIONS for initial database seeding.
 
 import asyncio
 import logging
+import os
 import ssl
 from typing import Optional
 
@@ -177,6 +178,61 @@ class Settings(BaseSettings):
         if isinstance(value, str):
             return value.strip().lower()
         return str(value or "development")
+
+    @classmethod
+    def _is_placeholder_url(cls, value: str) -> bool:
+        normalized = (value or "").strip().lower()
+        return normalized in {
+            "",
+            "http://localhost:8000",
+            "http://127.0.0.1:8000",
+            "http://0.0.0.0:8000",
+            "http://localhost",
+            "https://localhost",
+            "https://127.0.0.1",
+        }
+
+    @field_validator("app_url", mode="before")
+    @classmethod
+    def resolve_app_url(cls, value: object) -> str:
+        if isinstance(value, str):
+            normalized = value.strip()
+            if normalized and not cls._is_placeholder_url(normalized):
+                return normalized
+
+        for env_name in ("APP_URL", "RENDER_EXTERNAL_URL", "RENDER_INTERNAL_URL"):
+            env_value = os.getenv(env_name, "")
+            if env_value and env_value.strip():
+                return env_value.strip()
+
+        return str(value or "")
+
+    @field_validator("redis_url", "celery_broker_url", "celery_result_backend", mode="before")
+    @classmethod
+    def resolve_redis_urls(cls, value: object, info) -> str:
+        if isinstance(value, str):
+            normalized = value.strip()
+            if normalized and not normalized.startswith("redis://localhost"):
+                return normalized
+
+        field_name = info.field_name
+        if field_name == "redis_url":
+            for env_name in ("REDIS_URL", "CELERY_BROKER_URL", "CELERY_RESULT_BACKEND"):
+                env_value = os.getenv(env_name, "")
+                if env_value and env_value.strip():
+                    return env_value.strip()
+        elif field_name == "celery_broker_url":
+            for env_name in ("CELERY_BROKER_URL", "REDIS_URL"):
+                env_value = os.getenv(env_name, "")
+                if env_value and env_value.strip():
+                    return env_value.strip()
+        else:
+            for env_name in ("CELERY_RESULT_BACKEND", "REDIS_URL"):
+                env_value = os.getenv(env_name, "")
+                if env_value and env_value.strip():
+                    return env_value.strip()
+
+        return str(value or "")
 
     @field_validator("redis_url", "celery_broker_url", "celery_result_backend")
     @classmethod

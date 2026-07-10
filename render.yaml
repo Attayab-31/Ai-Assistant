@@ -76,7 +76,7 @@ services:
 
       - key: APP_URL
 
-        value: ""
+        value: https://ai-screener-web.onrender.com
 
       - key: ADMIN_EMAIL
 
@@ -210,13 +210,7 @@ services:
 
       - key: APP_URL
 
-        fromService:
-
-          name: ai-screener-web
-
-          type: web
-
-          envVarKey: APP_URL
+        value: https://ai-screener-web.onrender.com
 
       - key: DATABASE_URL
 
@@ -368,13 +362,7 @@ services:
 
       - key: APP_URL
 
-        fromService:
-
-          name: ai-screener-web
-
-          type: web
-
-          envVarKey: APP_URL
+        value: https://ai-screener-web.onrender.com
 
       - key: ADMIN_EMAIL
 
