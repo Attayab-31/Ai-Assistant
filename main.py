@@ -87,6 +87,18 @@ async def lifespan(app: FastAPI):
             + "; ".join(config_errors)
         )
 
+    if settings.bootstrap_deploy:
+        logger.warning(
+            "BOOTSTRAP_DEPLOY is enabled — Telnyx keys are optional for now. "
+            "Set TELNYX_API_KEY, TELNYX_PUBLIC_KEY, a strong ADMIN_PASSWORD, "
+            "then set BOOTSTRAP_DEPLOY=false before accepting live calls."
+        )
+        if settings.admin_password in ("", "Admin123!"):
+            logger.warning(
+                "ADMIN_PASSWORD is still the default — change it in Render env "
+                "vars or via the admin panel after first login."
+            )
+
     if settings.web_workers != 1:
         logger.warning(
             "WEB_WORKERS=%s — live call sessions are in-process only; "

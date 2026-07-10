@@ -39,6 +39,8 @@ services:
         value: "false"
       - key: ENABLE_TEST_CONSOLE
         value: "false"
+      - key: BOOTSTRAP_DEPLOY
+        value: "true"
       - key: WEB_WORKERS
         value: "1"
       - key: LOG_DIR
@@ -54,7 +56,7 @@ services:
       - key: ADMIN_EMAIL
         sync: false
       - key: ADMIN_PASSWORD
-        sync: false
+        generateValue: true
       - key: DATABASE_URL
         sync: false
       - key: DATABASE_MIGRATION_MODE

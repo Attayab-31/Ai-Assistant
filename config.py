@@ -52,6 +52,9 @@ class Settings(BaseSettings):
     # Live call sessions are in-process; keep at 1 until Redis session store exists.
     web_workers: int = 1
     enable_test_console: bool = False
+    # When true, allows first-time Render deploy without Telnyx keys or a custom
+    # admin password. Set to false before accepting live screening calls.
+    bootstrap_deploy: bool = False
     # Security default: unsigned Telnyx webhooks are rejected unless explicitly
     # opted in for local development debugging.
     allow_unsigned_webhooks_in_dev: bool = False
@@ -69,6 +72,17 @@ class Settings(BaseSettings):
                 return False
             if normalized in {"debug", "dev", "development", "on"}:
                 return True
+        return value
+
+    @field_validator("bootstrap_deploy", mode="before")
+    @classmethod
+    def parse_bootstrap_deploy(cls, value):
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"1", "true", "yes", "on"}:
+                return True
+            if normalized in {"0", "false", "no", "off", ""}:
+                return False
         return value
 
     # Database
@@ -290,9 +304,10 @@ class Settings(BaseSettings):
                 "SECRET_KEY must be at least 32 characters in production")
 
         if self.admin_password in ("", "Admin123!"):
-            errors.append(
-                "ADMIN_PASSWORD must be changed from the default in production"
-            )
+            if not self.bootstrap_deploy:
+                errors.append(
+                    "ADMIN_PASSWORD must be changed from the default in production"
+                )
 
         if not self.encryption_key:
             errors.append(
@@ -314,11 +329,12 @@ class Settings(BaseSettings):
         if not self.app_url.lower().startswith("https://"):
             errors.append("APP_URL must use https:// in production")
 
-        if not self.telnyx_public_key:
-            errors.append(
-                "TELNYX_PUBLIC_KEY must be set in production to verify "
-                "incoming Telnyx webhooks"
-            )
+        if not self.bootstrap_deploy:
+            if not self.telnyx_public_key:
+                errors.append(
+                    "TELNYX_PUBLIC_KEY must be set in production to verify "
+                    "incoming Telnyx webhooks"
+                )
 
         if self.web_workers != 1:
             errors.append(
@@ -330,7 +346,7 @@ class Settings(BaseSettings):
         if self.debug:
             errors.append("DEBUG must be false in production")
 
-        if not (self.telnyx_api_key or "").strip():
+        if not self.bootstrap_deploy and not (self.telnyx_api_key or "").strip():
             errors.append(
                 "TELNYX_API_KEY must be set in production to place and control calls"
             )
