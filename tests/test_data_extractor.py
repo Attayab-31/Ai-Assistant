@@ -7,6 +7,7 @@ from app.core.data_extractor import (
     _roll_future_date,
     coerce_extracted_data,
 )
+from app.core.screening_flow import parse_relative_date
 
 
 def test_roll_future_date_fixes_past_year():
@@ -26,6 +27,18 @@ def test_roll_future_date_leaves_future_untouched():
     future = date(2026, 8, 1)
     assert _roll_future_date(future, today) == future
     assert _roll_future_date(None, today) is None
+
+
+def test_roll_future_date_keeps_same_year_when_current_year_is_explicit():
+    today = date(2026, 7, 25)
+    assert _roll_future_date(date(2026, 7, 24), today) == date(2026, 7, 24)
+
+
+def test_parse_relative_date_keeps_current_year_for_bare_month_day():
+    today = date(2026, 7, 25)
+    parsed, raw = parse_relative_date("July 24", today=today)
+    assert parsed == date(2026, 7, 24)
+    assert raw == "July 24"
 
 
 def test_pet_weight_converts_kg_adjacent_to_number():

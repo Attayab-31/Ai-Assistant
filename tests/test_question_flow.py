@@ -1125,6 +1125,23 @@ def test_understanding_guide_reaches_system_prompt():
     assert "Count cars and motorcycles separately." in prompt
 
 
+def test_build_system_prompt_uses_admin_completion_guidance_for_single_field_questions():
+    from app.core.conversation import ConversationSession, build_system_prompt
+    from app.core.question_flow import new_custom_question
+
+    custom = new_custom_question(question="Which city do you live in?", answer_type="text", order=1)
+    session = ConversationSession(
+        call_id="t",
+        phone_number="+15550000000",
+        questions=[custom],
+        current_state=custom["state"],
+    )
+    prompt = build_system_prompt(session, transcript="New York City")
+    lowered = prompt.lower()
+    assert "single clear answer" in lowered or "single-field" in lowered
+    assert "require_all_extract_fields" not in lowered or "all required slots" in lowered
+
+
 def test_build_system_prompt_includes_admin_flow_outline():
     from app.core.conversation import ConversationSession, build_system_prompt
     from app.core.question_flow import new_custom_question

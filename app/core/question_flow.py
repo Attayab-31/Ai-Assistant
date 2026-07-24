@@ -2279,40 +2279,62 @@ def primary_name_field(questions: list[dict[str, Any]] | None) -> str | None:
     return None
 
 
+def completion_guidance_for_question(q: dict[str, Any] | None) -> str:
+    """Return admin-aware completion guidance for the current question."""
+    if not q:
+        return "Use the current question's admin-defined slots; a direct answer may be enough."
+
+    cfg = build_question_slot_config(q)
+    required = list(cfg.get("required") or ())
+    optional = list(cfg.get("optional") or ())
+
+    if require_all_extract_fields(q):
+        if required:
+            return (
+                "Keep question_complete=false until all required slots are filled: "
+                + ", ".join(required)
+            )
+        return "Keep question_complete=false until all required slots are filled."
+
+    if len(required) <= 1:
+        primary = required[0] if required else "the primary field"
+        if optional:
+            return (
+                f"Single clear answer for {primary} is enough to set question_complete=true; "
+                f"optional slot(s) {', '.join(optional)} may be captured later."
+            )
+        return f"Single clear answer for {primary} is enough to set question_complete=true."
+
+    return (
+        "Keep question_complete=false until the required slots are filled: "
+        + ", ".join(required)
+    )
+
+
 def slot_fill_examples_for_question(q: dict[str, Any] | None) -> str:
     """Short, question-aware slot-filling hint for the live LLM prompt."""
     if not q:
         return "- Stay on CURRENT; extract volunteered later-step fields."
+
+    guidance = completion_guidance_for_question(q)
     answer_type = str(q.get("answer_type") or "text")
     fields = list(q.get("extract_fields") or [])
-    primary = str(fields[0]) if fields else "value"
-    labels = q.get("field_labels") or {}
-    label = str(labels.get(primary, primary.replace("_", " ")))
 
-    if answer_type == "yes_no" and len(fields) > 1:
-        secondary = ", ".join(str(f) for f in fields[1:])
-        return (
-            f'- Yes/no + detail: "yes" → {primary}=true, question_complete=false '
-            f"until {secondary} captured."
-        )
     if answer_type == "date":
         from datetime import date as _date
 
         today = _date.today().isoformat()
-        raw_field = next((str(f) for f in fields if str(f).endswith("_raw")), f"{primary}_raw")
-        return (
-            f'- Today is {today}. Vague date → {raw_field}=their words, '
-            "question_complete=false, ask once for exact calendar date. "
-            "If they give a past year, clarify before accepting."
+        raw_field = next(
+            (str(f) for f in fields if str(f).endswith("_raw")),
+            f"{fields[0]}_raw" if fields else "value_raw",
         )
-    if answer_type == "number" and len(fields) > 1:
         return (
-            f"- Multi-part: fill {', '.join(str(f) for f in fields)} before "
-            "question_complete=true."
+            f"- {guidance} For dates, if the caller gives a vague timeline, "
+            f"store it in {raw_field} and ask once for a more precise calendar date "
+            f"if needed. Today is {today}."
         )
-    return (
-        f"- Partial {label}: fill {primary}, question_complete=false until done."
-    )
+
+    return f"- {guidance}"
 
 
 def _tenant_field_value(tenant: Any, field: str, custom_fields: dict[str, Any]) -> Any:

@@ -17,6 +17,7 @@ from app.core.question_flow import (
     build_field_maps,
     build_question_slot_config,
     confirm_field_for_question,
+    completion_guidance_for_question,
     ConditionalFlowContext,
     count_active_questions,
     count_answered_questions,
@@ -1830,6 +1831,7 @@ def build_system_prompt(
     )
     flow_stats = prompt_flow_stats(session.questions)
     slot_examples = slot_fill_examples_for_question(question)
+    completion_rule = completion_guidance_for_question(question)
     confirmed_line = ""
     if session.confirmed_fields:
         confirmed_line = (
@@ -1950,7 +1952,7 @@ Respond with ONE JSON object only — no markdown, no code fences. response_text
 You are the conversational intelligence for "{business}", screening tenants on a live call. Understand casual, partial, or mixed answers; extract JSON; reply warmly in under 20 words.
 
 # RULES (stable — same for every turn on this call)
-- Use SLOTS + captured data; never re-ask filled fields. question_complete=true only when CURRENT question is fully answered; false while you are asking a follow-up.
+- Use SLOTS + captured data; never re-ask filled fields. Follow the admin-defined completion rule for the CURRENT question: {completion_rule}
 - Vague dates/amounts: ask once for precision; accept if they cannot be more specific. For dates: if the year is before today, ask whether they meant a future date before accepting.
 - Cross-fill: if they volunteer later-step info, extract it, acknowledge briefly, stay on CURRENT.
 - Spoken text only — no markdown, bullets, or lists. Vary acknowledgments; answer interruptions warmly first, then resume CURRENT.

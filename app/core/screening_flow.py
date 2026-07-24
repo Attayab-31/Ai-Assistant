@@ -339,13 +339,30 @@ def roll_future_date(d: date | None, today: date | None = None) -> date | None:
 
     Callers planning a move rarely intend a date in the past; small LLMs often
     guess a wrong year. Applies to any admin ``answer_type: date`` field.
+
+    Important: if the caller explicitly gave a date in the current year, preserve
+    that year instead of forcing it to the next year just because the month/day is
+    already past today. The current-year date is often the intended answer.
     """
     if d is None:
         return None
     today = today or date.today()
     if d >= today:
         return d
-    for year in (today.year, today.year + 1):
+
+    if d.year == today.year:
+        return d
+
+    current_year_candidate = None
+    try:
+        current_year_candidate = d.replace(year=today.year)
+    except ValueError:
+        current_year_candidate = d.replace(year=today.year, month=2, day=28)
+
+    if current_year_candidate is not None and current_year_candidate >= today:
+        return current_year_candidate
+
+    for year in (today.year + 1, today.year + 2):
         try:
             candidate = d.replace(year=year)
         except ValueError:
@@ -802,11 +819,12 @@ def parse_relative_date(
             "dec": 12,
         }
         month_num = month_names[month.group(1)[:3]]
-        year = int(month.group(3) or today.year)
+        explicit_year = month.group(3)
+        year = int(explicit_year) if explicit_year else today.year
         try:
             parsed = date(year, month_num, int(month.group(2)))
-            if parsed < today and month.group(3) is None:
-                parsed = date(year + 1, month_num, int(month.group(2)))
+            if parsed < today and not explicit_year:
+                parsed = date(today.year, month_num, int(month.group(2)))
             return parsed, raw
         except ValueError:
             return None, raw
