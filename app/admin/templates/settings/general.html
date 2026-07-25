@@ -54,6 +54,27 @@
           <textarea id="provider_failure_message" rows="3" placeholder="Leave blank for the default message">{{ settings.get('provider_failure_message', '') }}</textarea>
           <p class="text-muted">Spoken when the AI or phone engines are unavailable. The applicant is marked for human review.</p>
         </div>
+        <div class="form-group">
+          <label>Enable pre-screening route</label>
+          <label style="display:flex; align-items:center; gap:8px; font-weight:500;">
+            <input type="checkbox" id="pre_screening_enabled" {% if settings.get('pre_screening_enabled', 'false')|string|lower == 'true' %}checked{% endif %} />
+            Show a short route-choice prompt before the first screening question
+          </label>
+          <p class="text-muted">When enabled, callers can choose to answer questions, leave a callback message, or ask for a person before the main flow begins.</p>
+        </div>
+        <div class="form-group">
+          <label>Pre-screening prompt</label>
+          <textarea id="pre_screening_prompt" rows="3" placeholder="Leave blank to use the built-in wording">{{ settings.get('pre_screening_prompt', '') }}</textarea>
+          <p class="text-muted">Optional override for the route-choice prompt. Leave blank to use the built-in wording.</p>
+        </div>
+        <div class="form-group">
+          <label>Pre-screening prompt (English)</label>
+          <textarea id="pre_screening_prompt_en" rows="3" placeholder="Leave blank for the default English wording">{{ settings.get('pre_screening_prompt_en', '') }}</textarea>
+        </div>
+        <div class="form-group">
+          <label>Pre-screening prompt (Spanish)</label>
+          <textarea id="pre_screening_prompt_es" rows="3" placeholder="Leave blank for the default Spanish wording">{{ settings.get('pre_screening_prompt_es', '') }}</textarea>
+        </div>
       </div>
     </div>
   </div>
@@ -262,6 +283,10 @@
       greeting_message: document.getElementById('greeting_message').value.trim(),
       closing_message: document.getElementById('closing_message').value.trim(),
       provider_failure_message: document.getElementById('provider_failure_message').value.trim(),
+      pre_screening_enabled: document.getElementById('pre_screening_enabled').checked,
+      pre_screening_prompt: document.getElementById('pre_screening_prompt').value.trim(),
+      pre_screening_prompt_en: document.getElementById('pre_screening_prompt_en').value.trim(),
+      pre_screening_prompt_es: document.getElementById('pre_screening_prompt_es').value.trim(),
       qualified_score_threshold: num('qualified_score_threshold', 75),
       review_score_threshold: num('review_score_threshold', 40),
       max_retries_per_question: num('max_retries_per_question', 2),
