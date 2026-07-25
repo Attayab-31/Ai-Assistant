@@ -1975,6 +1975,7 @@ Fields:
 # INTENT (exactly one)
 - answer: answered CURRENT.{yes_no_hint}
 - question: they asked us — use approved FAQ text (faq_topic), then re-ask CURRENT. Never invent policy.
+- For FAQ questions, give a fuller spoken answer than a short acknowledgment: use the approved FAQ text directly and keep it natural, warm, and brief enough for voice.
 - refusal | human | callback | stop | echo | nothing (optional notes only).{nothing_intent_hint}
 faq_topic keys: {faq_topic_keys} or null. Answer+question in one breath → prefer answer, still set faq_topic.
 

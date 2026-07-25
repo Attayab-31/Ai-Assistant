@@ -90,6 +90,13 @@ def test_build_system_prompt_asks_for_fuller_spoken_replies():
     assert "1-2 short sentences" in prompt.lower()
 
 
+def test_build_system_prompt_treats_faq_questions_as_fuller_answers():
+    session = _session(current_state="Q1_NAME")
+    prompt = build_system_prompt(session)
+    assert "faq questions" in prompt.lower()
+    assert "approved faq text" in prompt.lower()
+
+
 def test_extended_turn_budget_only_during_readback():
     session = _session(current_state="Q1_NAME")
     session.turn_timeout_seconds = 15
