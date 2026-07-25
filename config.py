@@ -852,6 +852,34 @@ DEFAULT_SYSTEM_SETTINGS = [
         "description": "Stream LLM tokens to TTS during live calls for faster replies",
         "is_sensitive": False,
     },
+    {
+        "key": "pre_screening_enabled",
+        "value": "false",
+        "value_type": "boolean",
+        "description": "Offer a pre-screening route choice before the first screening question",
+        "is_sensitive": False,
+    },
+    {
+        "key": "pre_screening_prompt",
+        "value": "",
+        "value_type": "string",
+        "description": "Override the default pre-screening prompt for all languages",
+        "is_sensitive": False,
+    },
+    {
+        "key": "pre_screening_prompt_en",
+        "value": "",
+        "value_type": "string",
+        "description": "English pre-screening prompt override",
+        "is_sensitive": False,
+    },
+    {
+        "key": "pre_screening_prompt_es",
+        "value": "",
+        "value_type": "string",
+        "description": "Spanish pre-screening prompt override",
+        "is_sensitive": False,
+    },
     # ── Data retention (automatic cleanup keeps the database from growing
     # forever). A value of 0 disables that particular cleanup. ──
     {
