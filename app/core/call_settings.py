@@ -276,7 +276,8 @@ class CallSettingsSnapshot:
         default_factory=NotificationSettingsSnapshot
     )
     questions_runtime_fallback: str | None = None
-    captured_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
+    captured_at: str = field(
+        default_factory=lambda: datetime.now(UTC).isoformat())
 
 
 @dataclass
@@ -381,7 +382,8 @@ def notification_settings_from_map(
             )
         ),
         landlord_email=str(
-            values.get("landlord_email") or env_settings.default_landlord_email or ""
+            values.get(
+                "landlord_email") or env_settings.default_landlord_email or ""
         ),
         email_from_name=str(
             values.get("email_from_name") or env_settings.email_from_name or ""
@@ -408,7 +410,8 @@ def notification_settings_from_map(
         email_subject_template=str(values.get("email_subject_template") or ""),
         email_body_template=str(values.get("email_body_template") or ""),
         timezone=str(values.get("timezone") or ""),
-        crm_webhook_url=(crm_url := str(values.get("crm_webhook_url") or "").strip()),
+        crm_webhook_url=(crm_url := str(
+            values.get("crm_webhook_url") or "").strip()),
         crm_webhook_secret=crm_secret,
         crm_notifications_enabled=(
             bool(
@@ -542,9 +545,12 @@ def _load_runtime_questions(values: dict[str, Any]) -> tuple[list, str | None]:
 
 def snapshot_from_map(values: dict[str, Any]) -> CallSettingsSnapshot:
     """Build snapshot from a flat key→value map (DB batch or env defaults)."""
-    llm = str(values.get("active_llm_provider") or env_settings.active_llm_provider)
-    stt = str(values.get("active_stt_provider") or env_settings.active_stt_provider)
-    tts = str(values.get("active_tts_provider") or env_settings.active_tts_provider)
+    llm = str(values.get("active_llm_provider")
+              or env_settings.active_llm_provider)
+    stt = str(values.get("active_stt_provider")
+              or env_settings.active_stt_provider)
+    tts = str(values.get("active_tts_provider")
+              or env_settings.active_tts_provider)
 
     model_by_llm = {
         "groq": values.get("active_groq_model") or env_settings.active_groq_model,
@@ -565,25 +571,33 @@ def snapshot_from_map(values: dict[str, Any]) -> CallSettingsSnapshot:
         values.get("tts_voice_google_es") or env_settings.tts_voice_google_es
     )
 
-    runtime_questions, questions_runtime_fallback = _load_runtime_questions(values)
+    runtime_questions, questions_runtime_fallback = _load_runtime_questions(
+        values)
 
     return CallSettingsSnapshot(
         llm_provider=llm.lower(),
         stt_provider=stt.lower(),
         tts_provider=tts.lower(),
-        llm_model=str(model_by_llm.get(llm.lower(), env_settings.active_groq_model)),
-        stt_model=str(values.get("deepgram_model") or env_settings.deepgram_model),
-        groq_stt_model=str(values.get("groq_stt_model") or "whisper-large-v3-turbo"),
-        tts_voice=str(voice_by_tts.get(tts.lower(), env_settings.tts_voice_deepgram)),
+        llm_model=str(model_by_llm.get(
+            llm.lower(), env_settings.active_groq_model)),
+        stt_model=str(values.get("deepgram_model")
+                      or env_settings.deepgram_model),
+        groq_stt_model=str(values.get("groq_stt_model")
+                           or "whisper-large-v3-turbo"),
+        tts_voice=str(voice_by_tts.get(
+            tts.lower(), env_settings.tts_voice_deepgram)),
         tts_voice_deepgram_es=tts_voice_deepgram_es,
         tts_voice_google_es=tts_voice_google_es,
         tts_speed=_parse_setting("tts_speed", values.get("tts_speed"), 1.0),
         auto_fallback_enabled=_parse_setting(
             "auto_fallback_enabled", values.get("auto_fallback_enabled"), True
         ),
-        llm_fallback_provider=str(values.get("llm_fallback_provider") or "auto").lower(),
-        stt_fallback_provider=str(values.get("stt_fallback_provider") or "auto").lower(),
-        tts_fallback_provider=str(values.get("tts_fallback_provider") or "auto").lower(),
+        llm_fallback_provider=str(values.get(
+            "llm_fallback_provider") or "auto").lower(),
+        stt_fallback_provider=str(values.get(
+            "stt_fallback_provider") or "auto").lower(),
+        tts_fallback_provider=str(values.get(
+            "tts_fallback_provider") or "auto").lower(),
         property_name=str(
             values.get("property_name") or env_settings.default_property_name
         ),
@@ -601,13 +615,16 @@ def snapshot_from_map(values: dict[str, Any]) -> CallSettingsSnapshot:
             )
         ),
         max_retries=_parse_setting(
-            "max_retries_per_question", values.get("max_retries_per_question"), 2
+            "max_retries_per_question", values.get(
+                "max_retries_per_question"), 2
         ),
         silence_timeout_seconds=_parse_setting(
-            "silence_timeout_seconds", values.get("silence_timeout_seconds"), 12
+            "silence_timeout_seconds", values.get(
+                "silence_timeout_seconds"), 12
         ),
         max_call_duration_seconds=_parse_setting(
-            "max_call_duration_seconds", values.get("max_call_duration_seconds"), 600
+            "max_call_duration_seconds", values.get(
+                "max_call_duration_seconds"), 600
         ),
         llm_temperature=_parse_setting(
             "llm_temperature", values.get("llm_temperature"), 0.3
@@ -616,7 +633,8 @@ def snapshot_from_map(values: dict[str, Any]) -> CallSettingsSnapshot:
             "llm_max_tokens", values.get("llm_max_tokens"), 0
         ),
         qualified_score_threshold=_parse_setting(
-            "qualified_score_threshold", values.get("qualified_score_threshold"), 75
+            "qualified_score_threshold", values.get(
+                "qualified_score_threshold"), 75
         ),
         review_score_threshold=_parse_setting(
             "review_score_threshold", values.get("review_score_threshold"), 40
@@ -626,9 +644,12 @@ def snapshot_from_map(values: dict[str, Any]) -> CallSettingsSnapshot:
         pre_screening_enabled=_parse_setting(
             "pre_screening_enabled", values.get("pre_screening_enabled"), False
         ),
-        pre_screening_prompt=str(values.get("pre_screening_prompt") or "").strip(),
-        pre_screening_prompt_en=str(values.get("pre_screening_prompt_en") or "").strip(),
-        pre_screening_prompt_es=str(values.get("pre_screening_prompt_es") or "").strip(),
+        pre_screening_prompt=str(values.get(
+            "pre_screening_prompt") or "").strip(),
+        pre_screening_prompt_en=str(values.get(
+            "pre_screening_prompt_en") or "").strip(),
+        pre_screening_prompt_es=str(values.get(
+            "pre_screening_prompt_es") or "").strip(),
         notification_settings=notification_settings_from_map(values),
         questions_runtime_fallback=questions_runtime_fallback,
         **{
@@ -755,7 +776,8 @@ def build_call_provider_bundle(
         return fallback
 
     llm_by_name = {
-        name: factory(_validated_llm_model(name, str(llm_models.get(name, snapshot.llm_model))))
+        name: factory(_validated_llm_model(
+            name, str(llm_models.get(name, snapshot.llm_model))))
         for name, factory in llm_factories.items()
     }
     tts_by_name = {

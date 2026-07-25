@@ -129,17 +129,20 @@ def classify_pre_screening_route(transcript: str, *, language_code: str = "en") 
 
     is_es = str(language_code or "en").strip().lower().startswith("es")
     human_markers = (
-        ["talk to a person", "speak to a person", "speak with a person", "human", "representative", "agent", "live person", "speak to someone", "talk to someone"]
+        ["talk to a person", "speak to a person", "speak with a person", "human",
+            "representative", "agent", "live person", "speak to someone", "talk to someone"]
         if not is_es
         else ["hablar con una persona", "hablar con alguien", "persona humana", "representante", "agente", "persona en vivo", "alguien"]
     )
     callback_markers = (
-        ["callback", "call me back", "call back", "leave a message", "message", "later", "return my call"]
+        ["callback", "call me back", "call back",
+            "leave a message", "message", "later", "return my call"]
         if not is_es
         else ["llamarme de vuelta", "llamen", "dejar un mensaje", "mensaje", "despues", "que me llamen"]
     )
     question_markers = (
-        ["questions", "answer a few questions", "answer questions", "question", "screening"]
+        ["questions", "answer a few questions",
+            "answer questions", "question", "screening"]
         if not is_es
         else ["preguntas", "responder unas preguntas", "responder preguntas", "pregunta", "screening"]
     )
@@ -158,7 +161,8 @@ def build_pre_screening_prompt(session: ConversationSession) -> str:
     if (session.pre_screening_prompt or "").strip():
         return session.pre_screening_prompt.strip()
 
-    is_es = str(getattr(session, "call_language", "en") or "en").strip().lower().startswith("es")
+    is_es = str(getattr(session, "call_language", "en")
+                or "en").strip().lower().startswith("es")
     if is_es:
         if (session.pre_screening_prompt_es or "").strip():
             return session.pre_screening_prompt_es.strip()
@@ -186,7 +190,8 @@ def _apply_guarded_state_transition(
     from_state = session.current_state
     if from_state == to_state:
         return True
-    is_valid = validate_state_transition(from_state, to_state, session.questions)
+    is_valid = validate_state_transition(
+        from_state, to_state, session.questions)
     # Always log for observability/counters.
     log_state_transition(
         session.call_id,
@@ -204,6 +209,7 @@ def _apply_guarded_state_transition(
         return False
     session.current_state = to_state
     return True
+
 
 # Cached fallback provider instances (avoid per-utterance construction).
 _llm_fallbacks: dict = {}
@@ -226,7 +232,8 @@ _llm_health_hints: dict[str, dict[str, float]] = {}
 LLM_HEALTH_WINDOW_S = 300.0
 LLM_HEALTH_SKIP_FAIL_THRESHOLD = 3
 LLM_HEALTH_PROBE_COOLDOWN_S = 120.0
-LLM_HEALTH_REDIS_TTL_S = int(LLM_HEALTH_WINDOW_S + LLM_HEALTH_PROBE_COOLDOWN_S + 120.0)
+LLM_HEALTH_REDIS_TTL_S = int(
+    LLM_HEALTH_WINDOW_S + LLM_HEALTH_PROBE_COOLDOWN_S + 120.0)
 
 
 def _llm_health_cache_key(provider_name: str) -> str:
@@ -451,7 +458,8 @@ def _apply_tts_voices_for_language(session: ConversationSession, language_code: 
     from app.providers.tts.google_tts import GoogleTTSProvider
 
     for name, tts_obj in providers.tts_by_name.items():
-        en_voice = str(session.tts_voices_en_by_provider.get(name) or session.tts_voice_en or "")
+        en_voice = str(session.tts_voices_en_by_provider.get(
+            name) or session.tts_voice_en or "")
         if isinstance(tts_obj, DeepgramTTSProvider):
             es_voice = session.tts_voice_deepgram_es or session.tts_voice_es
             tts_obj.voice = DeepgramTTSProvider._normalize_voice(
@@ -644,7 +652,7 @@ def _split_for_tts(text: str, max_chars: int = 160) -> list[str]:
         else:
             # Hard-wrap an overlong sentence.
             for i in range(0, len(sentence), max_chars):
-                chunks.append(sentence[i : i + max_chars])
+                chunks.append(sentence[i: i + max_chars])
             current = ""
     if current:
         chunks.append(current)
@@ -851,7 +859,8 @@ async def finalize_active_session_background(call_id: str) -> None:
                         result.get("score"),
                     )
             except Exception as e:
-                logger.error("Error finalizing call %s: %s", call_id, e, exc_info=True)
+                logger.error("Error finalizing call %s: %s",
+                             call_id, e, exc_info=True)
                 from app.db.crud import merge_call_error_log, update_call
 
                 try:
@@ -868,14 +877,15 @@ async def finalize_active_session_background(call_id: str) -> None:
                         commit=True,
                     )
                 except Exception as db_err:
-                    logger.error("Failed to mark call failed in DB: %s", db_err)
+                    logger.error(
+                        "Failed to mark call failed in DB: %s", db_err)
     finally:
         # Drop the in-memory session only when finalize actually ran. A
         # concurrent finalize returns "skipped" and must keep the session so
         # the winning finalize can complete.
         if get_session(call_id) is session and result.get("status") != "skipped":
             remove_session(call_id)
-            unregister_stream_stop(call_id            )
+            unregister_stream_stop(call_id)
 
 
 STREAM_FINALIZE_GRACE_S = 28.0
@@ -1108,12 +1118,15 @@ async def create_session(
             voice_latency_profile=snapshot.voice_latency_profile,
             llm_streaming_enabled=snapshot.llm_streaming_enabled,
             turn_timeout_seconds=float(snapshot.turn_timeout_seconds),
-            llm_timeout_voice_seconds=float(snapshot.llm_timeout_voice_seconds),
+            llm_timeout_voice_seconds=float(
+                snapshot.llm_timeout_voice_seconds),
             deepgram_endpointing_ms=int(snapshot.deepgram_endpointing_ms),
             deepgram_utterance_end_ms=int(snapshot.deepgram_utterance_end_ms),
             latency_alert_turn_p95_ms=int(snapshot.latency_alert_turn_p95_ms),
-            latency_alert_turn_p95_crit_ms=int(snapshot.latency_alert_turn_p95_crit_ms),
-            latency_alert_timeout_rate_pct=float(snapshot.latency_alert_timeout_rate_pct),
+            latency_alert_turn_p95_crit_ms=int(
+                snapshot.latency_alert_turn_p95_crit_ms),
+            latency_alert_timeout_rate_pct=float(
+                snapshot.latency_alert_timeout_rate_pct),
             latency_alert_timeout_rate_crit_pct=float(
                 snapshot.latency_alert_timeout_rate_crit_pct
             ),
@@ -1325,7 +1338,8 @@ async def handle_call_answered(session: ConversationSession) -> list[bytes]:
         return list(parts) if parts else []
 
     if session.current_state != CallState.IDLE.value:
-        logger.debug(f"Session {session.call_id} already past IDLE — skipping greeting")
+        logger.debug(
+            f"Session {session.call_id} already past IDLE — skipping greeting")
         return b""
 
     session.current_state = CallState.GREETING.value
@@ -1333,7 +1347,8 @@ async def handle_call_answered(session: ConversationSession) -> list[bytes]:
     if session.greeting_message:
         intro = session.greeting_message.replace("{property_name}", business)
     else:
-        intro = build_greeting_intro(business, language_code=session.call_language)
+        intro = build_greeting_intro(
+            business, language_code=session.call_language)
 
     if session.pre_screening_enabled and not session.route_choice_selected:
         prompt = build_pre_screening_prompt(session)
@@ -1380,7 +1395,7 @@ def _strip_streamed_speech(text: str, session: ConversationSession) -> str:
     if not text or not prefix:
         return text
     if text.startswith(prefix):
-        return text[len(prefix) :].strip()
+        return text[len(prefix):].strip()
     return text
 
 
@@ -1438,7 +1453,8 @@ async def process_tenant_speech(
     # agent's own voice echoing back on speakerphone/hands-free so it never
     # answers itself. Everything about what the caller MEANT is decided by the LLM.
     if is_echo_of_agent(transcript, session):
-        logger.info("[%s] Ignoring agent echo: %r", session.call_id, transcript)
+        logger.info("[%s] Ignoring agent echo: %r",
+                    session.call_id, transcript)
         return "", [], False
 
     _begin_turn_tts(session)
@@ -1555,7 +1571,8 @@ async def process_tenant_speech(
                 ack = _strip_streamed_speech(
                     (ack if ack is not None else response_text).strip(), session
                 )
-                follow_up = _strip_streamed_speech((follow_up or "").strip(), session)
+                follow_up = _strip_streamed_speech(
+                    (follow_up or "").strip(), session)
             spoken = dedupe_repeated_speech(spoken)
             ack = dedupe_repeated_speech(ack or "")
             follow_up = dedupe_repeated_speech(follow_up)
@@ -1574,7 +1591,8 @@ async def process_tenant_speech(
                     session.add_transcript("AI", display)
                     session.add_message("assistant", display)
             streamed_prefix = (session.streamed_speakable_prefix or "").strip()
-            intended = (display or response_text or ack or follow_up or "").strip()
+            intended = (
+                display or response_text or ack or follow_up or "").strip()
             session.turn_streaming_finalize = {
                 "streamed_prefix": streamed_prefix,
                 "intended": intended,
@@ -1609,7 +1627,8 @@ async def process_tenant_speech(
                 ack = _strip_streamed_speech(intended, session) or intended
             unsynthesized = spoken or ack or follow_up
             if not unsynthesized and response_text.strip():
-                unsynthesized = _strip_streamed_speech(response_text.strip(), session)
+                unsynthesized = _strip_streamed_speech(
+                    response_text.strip(), session)
                 if unsynthesized:
                     ack = unsynthesized
             if not unsynthesized:
@@ -1728,7 +1747,8 @@ async def process_tenant_speech(
             session, ack_text or human_ack(session)
         )
         ack, follow_up = compose_agent_response(session, text, answered_state)
-        response_text = " ".join(part for part in (ack, follow_up) if part).strip()
+        response_text = " ".join(part for part in (
+            ack, follow_up) if part).strip()
         is_complete = session.current_state in (
             CallState.WRAP_UP.value,
             CallState.ENDED.value,
@@ -1794,7 +1814,8 @@ async def process_tenant_speech(
             if _is_spanish(session)
             else "Where were we — go ahead whenever you're ready."
         )
-        ack = ack_text or _localize(session, "Perfect, thank you.", "Perfecto, gracias.")
+        ack = ack_text or _localize(
+            session, "Perfect, thank you.", "Perfecto, gracias.")
         response = " ".join(part for part in (ack, follow_up) if part).strip()
         reset_turn_streaming(session)
         return await finish_turn(response, ack=ack, follow_up=follow_up)
@@ -1838,7 +1859,8 @@ async def process_tenant_speech(
             )
 
     if session.current_state == CallState.PRE_SCREENING.value and session.route_choice_pending:
-        route = classify_pre_screening_route(transcript, language_code=session.call_language)
+        route = classify_pre_screening_route(
+            transcript, language_code=session.call_language)
         if route == "questions":
             first_state = first_active_question_state(session.questions)
             if first_state:
@@ -1862,7 +1884,8 @@ async def process_tenant_speech(
             session.refresh_progress()
             touch_monitor_session(session.call_id)
             ack = (
-                _localize(session, "Great, let's get started.", "Perfecto, empezamos.")
+                _localize(session, "Great, let's get started.",
+                          "Perfecto, empezamos.")
                 if session.pre_screening_prompt_spoken
                 else None
             )
@@ -1957,7 +1980,8 @@ async def process_tenant_speech(
     question_complete = parse_question_complete(llm_response_data)
     relevance = parse_relevance(llm_response_data)
     field_to_state, _ = field_maps_for_session(session)
-    corrected_fields = parse_corrected_fields(llm_response_data, field_to_state)
+    corrected_fields = parse_corrected_fields(
+        llm_response_data, field_to_state)
     consistency_issue = parse_issue(llm_response_data, "consistency_issue")
     plausibility_issue = parse_issue(llm_response_data, "plausibility_issue")
     logger.info(
@@ -1986,7 +2010,8 @@ async def process_tenant_speech(
     question_cfg = session.get_current_question() or {}
     q_fields = {str(f) for f in (question_cfg.get("extract_fields") or [])}
     if (
-        not any(k in extracted for k in ("preferred_language", "language", "call_language"))
+        not any(k in extracted for k in (
+            "preferred_language", "language", "call_language"))
         and q_fields.intersection({"preferred_language", "language", "call_language"})
     ):
         if str(question_cfg.get("answer_type")) == "language_choice":
@@ -2001,7 +2026,8 @@ async def process_tenant_speech(
         await _release_buffered_speakables(discard=True)
         if is_meta_navigation_request(transcript):
             repeat = navigation_repeat_text(session)
-            logger.info("[%s] Echo veto — meta navigation repeat", session.call_id)
+            logger.info("[%s] Echo veto — meta navigation repeat",
+                        session.call_id)
             return await finish_turn(
                 repeat,
                 ack=repeat,
@@ -2040,7 +2066,8 @@ async def process_tenant_speech(
             for c in cfields:
                 if c["field"] in re_changed:
                     c["value"] = str(
-                        session.extracted_data.get(c["field"], re_changed[c["field"]])
+                        session.extracted_data.get(
+                            c["field"], re_changed[c["field"]])
                     )
             pending["attempts"] = pending.get("attempts", 1) + 1
             if pending["attempts"] > confirmation_attempt_limit(session):
@@ -2051,7 +2078,8 @@ async def process_tenant_speech(
                 return await _reask_current()
             rb = build_correction_readback(cfields, session=session)
             logger.info(
-                "[%s] Correction re-adjusted: %s", session.call_id, sorted(re_changed)
+                "[%s] Correction re-adjusted: %s", session.call_id, sorted(
+                    re_changed)
             )
             return await finish_turn(rb, ack=rb, follow_up="", require_speech=True)
 
@@ -2079,7 +2107,8 @@ async def process_tenant_speech(
                 session.pending_confirmation = None
                 session.current_state = return_state
                 return await _reask_current()
-            again = response_text or build_correction_readback(cfields, session=session)
+            again = response_text or build_correction_readback(
+                cfields, session=session)
             return await finish_turn(again, ack=again, follow_up="", require_speech=True)
         # callback: hand off to soft redirect without clearing pending read-back.
 
@@ -2132,7 +2161,8 @@ async def process_tenant_speech(
             )
 
         if intent_kind == "refusal":
-            logger.info("[%s] Caller rejected %s; repairing", session.call_id, field)
+            logger.info("[%s] Caller rejected %s; repairing",
+                        session.call_id, field)
             session.reopen_question_after_failed_confirmation(state_obj, field)
             prompt = response_text or repair_prompt_for_state(
                 pending["state"],
@@ -2296,7 +2326,8 @@ async def process_tenant_speech(
                 await _apply_session_language(session, session.extracted_data.get(key))
                 break
         logger.info(
-            "[%s] Extracted fields merged: %s", session.call_id, sorted(extracted)
+            "[%s] Extracted fields merged: %s", session.call_id, sorted(
+                extracted)
         )
 
     # ── Mid-call correction of an EARLIER answer ─────────────────────────────
@@ -2403,7 +2434,8 @@ async def process_tenant_speech(
         session.refresh_progress()
         touch_monitor_session(session.call_id)
         text = strip_upcoming_question_from_ack(
-            session, (ack_text or response_text or "").strip() or human_ack(session)
+            session, (ack_text or response_text or "").strip(
+            ) or human_ack(session)
         )
         ack, follow_up = compose_agent_response(session, text, prior_state)
         spoken = " ".join(part for part in (ack, follow_up) if part).strip()
@@ -2669,9 +2701,11 @@ async def handle_silence(session: ConversationSession) -> tuple[str, list[bytes]
     silent turn we say goodbye and signal completion so the call hangs up.
     """
     session.silence_count += 1
-    logger.warning("[%s] Silence count: %s", session.call_id, session.silence_count)
+    logger.warning("[%s] Silence count: %s",
+                   session.call_id, session.silence_count)
 
-    prompts = PROGRESSIVE_SILENCE_PROMPTS_ES if _is_spanish(session) else PROGRESSIVE_SILENCE_PROMPTS_EN
+    prompts = PROGRESSIVE_SILENCE_PROMPTS_ES if _is_spanish(
+        session) else PROGRESSIVE_SILENCE_PROMPTS_EN
     if session.silence_count > len(prompts):
         session.control_flags["ended_after_repeated_silence"] = True
         farewell = _localize(
@@ -2683,7 +2717,8 @@ async def handle_silence(session: ConversationSession) -> tuple[str, list[bytes]
         audio = await synthesize_with_fallback(farewell, session)
         if not audio:
             # Avoid silent hangup when TTS is unavailable.
-            session.add_error("silence_goodbye_tts_failed", "No goodbye audio produced")
+            session.add_error("silence_goodbye_tts_failed",
+                              "No goodbye audio produced")
             session.silence_count = max(0, len(prompts))
             return farewell, [], False
         return farewell, [audio], True
@@ -2750,7 +2785,8 @@ async def _collect_streamed_llm_raw(
                 buffer, spoken_through
             )
             for sentence in sentences:
-                tts_tasks.append(asyncio.create_task(on_speakable_sentence(sentence)))
+                tts_tasks.append(asyncio.create_task(
+                    on_speakable_sentence(sentence)))
         return buffer
 
     try:
@@ -2786,8 +2822,9 @@ async def get_llm_response_with_fallback(
     """
     if voice_mode:
         max_retries = 1
-        llm_timeout = float(getattr(session, "llm_timeout_voice_seconds", 5.5) or 5.5)
-        max_tokens = 120
+        llm_timeout = float(
+            getattr(session, "llm_timeout_voice_seconds", 5.5) or 5.5)
+        max_tokens = 220
     else:
         llm_timeout = 5.0
         max_tokens = 300
@@ -2815,10 +2852,12 @@ async def get_llm_response_with_fallback(
         for attempt in range(max_retries + 1):
             remaining = _remaining_turn_budget_s(session)
             if budget_remaining_s is not None:
-                remaining = min(remaining if remaining is not None else budget_remaining_s, budget_remaining_s)
+                remaining = min(
+                    remaining if remaining is not None else budget_remaining_s, budget_remaining_s)
             attempt_timeout = llm_timeout
             if remaining is not None:
-                remaining = max(0.0, remaining - VOICE_TURN_INTERNAL_BUFFER_SECONDS)
+                remaining = max(0.0, remaining -
+                                VOICE_TURN_INTERNAL_BUFFER_SECONDS)
                 if remaining < LLM_MIN_ATTEMPT_BUDGET_SECONDS:
                     vwarn(
                         logger,
@@ -2886,7 +2925,8 @@ async def get_llm_response_with_fallback(
                 is_valid, error = validate_llm_response(data)
                 if is_valid:
                     session.llm_provider = provider_name
-                    session.record_llm_usage(getattr(provider, "last_usage", None))
+                    session.record_llm_usage(
+                        getattr(provider, "last_usage", None))
                     session.record_llm_latency(latency)
                     await _record_llm_health_success_shared(provider_name, latency)
                     if role == "fallback":
@@ -3041,7 +3081,8 @@ async def get_llm_response_with_fallback(
         ]
         # Admin choice: "none" disables, "auto" tries all available, a specific
         # provider is tried FIRST then the rest remain as a safety backstop.
-        pref = (getattr(providers, "llm_fallback_provider", "auto") or "auto").lower()
+        pref = (getattr(providers, "llm_fallback_provider", "auto")
+                or "auto").lower()
         if pref == "none":
             ordered: list[str] = []
         elif pref in available:
@@ -3054,7 +3095,8 @@ async def get_llm_response_with_fallback(
         ranked: list[tuple[tuple[float, float], str]] = []
         for _name in ordered:
             ranked.append((await _llm_health_rank_shared(_name), _name))
-        ordered = [name for _, name in sorted(ranked, key=lambda item: item[0])]
+        ordered = [name for _, name in sorted(
+            ranked, key=lambda item: item[0])]
 
         for name in ordered:
             if not await _llm_provider_healthy_for_fallback_shared(name):
@@ -3206,7 +3248,8 @@ async def _synthesize_ack_followup_parallel(
     if _turn_tts_suppressed(session):
         return []
     parts: list[bytes] = []
-    ack_task = _track_turn_tts_task(session, synthesize_with_fallback(ack, session))
+    ack_task = _track_turn_tts_task(
+        session, synthesize_with_fallback(ack, session))
     follow_task = _track_turn_tts_task(
         session, synthesize_with_fallback(follow_up, session)
     )
@@ -3329,7 +3372,8 @@ async def _synthesize_provider_with_retries(
 ) -> bytes:
     timeout = tts_timeout_for_text(text)
     if timeout_cap_s is not None:
-        timeout = max(TTS_MIN_ATTEMPT_BUDGET_SECONDS, min(timeout, timeout_cap_s))
+        timeout = max(TTS_MIN_ATTEMPT_BUDGET_SECONDS,
+                      min(timeout, timeout_cap_s))
     text_len = len(text.strip())
 
     for attempt in range(1, attempts + 1):
@@ -3379,10 +3423,12 @@ async def synthesize_with_fallback(
     speed = max(0.75, min(1.25, getattr(providers, "tts_speed", 1.0) or 1.0))
     remaining = _remaining_turn_budget_s(session)
     if budget_remaining_s is not None:
-        remaining = min(remaining if remaining is not None else budget_remaining_s, budget_remaining_s)
+        remaining = min(
+            remaining if remaining is not None else budget_remaining_s, budget_remaining_s)
     timeout_cap_s = None
     if remaining is not None:
-        timeout_cap_s = max(0.0, remaining - VOICE_TURN_INTERNAL_BUFFER_SECONDS)
+        timeout_cap_s = max(
+            0.0, remaining - VOICE_TURN_INTERNAL_BUFFER_SECONDS)
     if getattr(session, "tts_confirm_priority", False):
         floor = TTS_CONFIRM_MIN_BUDGET_SECONDS
         if timeout_cap_s is None:
@@ -3494,7 +3540,8 @@ async def synthesize_with_fallback(
             for name, ok in (("deepgram", deepgram_ok), ("google", google_ok))
             if ok
         ]
-        pref = (getattr(providers, "tts_fallback_provider", "auto") or "auto").lower()
+        pref = (getattr(providers, "tts_fallback_provider", "auto")
+                or "auto").lower()
         if pref == "none":
             fallback = None
         elif pref in available:
@@ -3517,7 +3564,8 @@ async def synthesize_with_fallback(
             remaining = _remaining_turn_budget_s(session)
             fallback_timeout_cap = None
             if remaining is not None:
-                fallback_timeout_cap = max(0.0, remaining - VOICE_TURN_INTERNAL_BUFFER_SECONDS)
+                fallback_timeout_cap = max(
+                    0.0, remaining - VOICE_TURN_INTERNAL_BUFFER_SECONDS)
                 if fallback_timeout_cap < TTS_MIN_ATTEMPT_BUDGET_SECONDS:
                     vwarn(
                         logger,
@@ -3934,7 +3982,8 @@ async def _finalize_call_impl(session: ConversationSession, db) -> dict:
             llm_provider=providers.llm,
             questions=session.questions,
         )
-        extracted = filter_extracted_to_allowed_fields(extracted, session.questions)
+        extracted = filter_extracted_to_allowed_fields(
+            extracted, session.questions)
         # Account the extraction call's tokens too (only when the provider
         # actually reported usage — a heuristic fallback makes no LLM call).
         ext_usage = getattr(providers.llm, "last_usage", None)
@@ -3963,7 +4012,8 @@ async def _finalize_call_impl(session: ConversationSession, db) -> dict:
 
     # The qualifier reads these session-state keys; keep them through coercion
     # (they are used for scoring/reasons only, not persisted to the tenant row).
-    meta_keys = ("answered_states", "refused_states", "faq_topics", "control_flags")
+    meta_keys = ("answered_states", "refused_states",
+                 "faq_topics", "control_flags")
     meta = {k: merged[k] for k in meta_keys if k in merged}
     merged = coerce_extracted_data(merged, questions=session.questions)
     merged.update(meta)
@@ -4051,7 +4101,8 @@ async def _finalize_call_impl(session: ConversationSession, db) -> dict:
             "Call record missing for %s — creating before finalize",
             session.call_id,
         )
-        direction = "test" if session.call_id.startswith("test-") else "inbound"
+        direction = "test" if session.call_id.startswith(
+            "test-") else "inbound"
         call = await create_call(
             db,
             call_id=session.call_id,
@@ -4194,7 +4245,8 @@ async def _finalize_call_impl(session: ConversationSession, db) -> dict:
                 log_context=session.call_id,
             )
             if persist_overflow:
-                nd = dict(tenant_payload.get("normalized_data") or normalized_data)
+                nd = dict(tenant_payload.get(
+                    "normalized_data") or normalized_data)
                 nd["persist_overflow"] = {
                     **nd.get("persist_overflow", {}),
                     **persist_overflow,

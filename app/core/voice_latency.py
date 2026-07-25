@@ -18,8 +18,8 @@ LATENCY_PROFILES: dict[str, dict[str, float | int]] = {
         "latency_alert_timeout_rate_crit_pct": 5.0,
     },
     "balanced": {
-        "turn_timeout_seconds": 15,
-        "llm_timeout_voice_seconds": 5.5,
+        "turn_timeout_seconds": 16,
+        "llm_timeout_voice_seconds": 6.0,
         "deepgram_endpointing_ms": 900,
         "deepgram_utterance_end_ms": 1000,
         "latency_alert_turn_p95_ms": 1200,
@@ -28,8 +28,8 @@ LATENCY_PROFILES: dict[str, dict[str, float | int]] = {
         "latency_alert_timeout_rate_crit_pct": 5.0,
     },
     "quality": {
-        "turn_timeout_seconds": 20,
-        "llm_timeout_voice_seconds": 7.0,
+        "turn_timeout_seconds": 22,
+        "llm_timeout_voice_seconds": 7.5,
         "deepgram_endpointing_ms": 1200,
         "deepgram_utterance_end_ms": 1400,
         "latency_alert_turn_p95_ms": 1800,

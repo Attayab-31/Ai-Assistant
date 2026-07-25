@@ -19,7 +19,8 @@ from app.core.conversation import CallState, ConversationSession
     ],
 )
 def test_classify_pre_screening_route_matches_expected(transcript, language_code, expected):
-    assert classify_pre_screening_route(transcript, language_code=language_code) == expected
+    assert classify_pre_screening_route(
+        transcript, language_code=language_code) == expected
 
 
 def test_build_pre_screening_prompt_uses_session_prompt_when_available():

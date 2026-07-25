@@ -1,7 +1,8 @@
 {% extends "settings/base.html" %}
 {% block title %}General settings{% endblock %}
 {% block page_title %}General settings{% endblock %}
-{% block settings_page_sub %}<div class="sub">Set up your property, scoring rules, and how calls behave — advanced options are tucked away at the end.</div>{% endblock %}
+{% block settings_page_sub %}<div class="sub">Set up your property, scoring rules, and how calls behave — advanced
+  options are tucked away at the end.</div>{% endblock %}
 {% block settings_content %}
 
 <nav class="section-tabs" id="generalSectionTabs" aria-label="General settings sections">
@@ -11,7 +12,8 @@
   <button type="button" data-tab="advanced">Advanced &amp; maintenance</button>
 </nav>
 
-<form id="generalSettingsForm" onsubmit="withFormLoading(event, saveSettings, 'Saving\u2026')" class="stack settings-form">
+<form id="generalSettingsForm" onsubmit="withFormLoading(event, saveSettings, 'Saving\u2026')"
+  class="stack settings-form">
 
   <div class="settings-tab-panel active" data-tab="property">
     <div class="form-grid">
@@ -19,16 +21,20 @@
         <h3 style="margin-top: 0;">Property information</h3>
         <div class="form-group">
           <label>Property name</label>
-          <input type="text" id="property_name" value="{{ settings.get('property_name', 'Ready Rentals Online') }}" placeholder="e.g. Ready Rentals Online" />
-          <p class="text-muted">Used in the spoken greeting ("thank you for calling [name]!") and as the business the assistant represents during the call.</p>
+          <input type="text" id="property_name" value="{{ settings.get('property_name', 'Ready Rentals Online') }}"
+            placeholder="e.g. Ready Rentals Online" />
+          <p class="text-muted">Used in the spoken greeting ("thank you for calling [name]!") and as the business the
+            assistant represents during the call.</p>
         </div>
         <div class="form-group">
           <label>Timezone</label>
           {% set cur_tz = settings.get('timezone', 'America/New_York') %}
-          {% set tz_options = ['America/New_York', 'America/Chicago', 'America/Denver', 'America/Phoenix', 'America/Los_Angeles', 'America/Anchorage', 'Pacific/Honolulu', 'UTC', 'Europe/London', 'Europe/Berlin', 'Asia/Karachi', 'Asia/Kolkata', 'Asia/Dubai', 'Australia/Sydney'] %}
+          {% set tz_options = ['America/New_York', 'America/Chicago', 'America/Denver', 'America/Phoenix',
+          'America/Los_Angeles', 'America/Anchorage', 'Pacific/Honolulu', 'UTC', 'Europe/London', 'Europe/Berlin',
+          'Asia/Karachi', 'Asia/Kolkata', 'Asia/Dubai', 'Australia/Sydney'] %}
           <select id="timezone">
             {% for tz in tz_options %}
-            <option value="{{ tz }}" {% if cur_tz == tz %}selected{% endif %}>{{ tz }}</option>
+            <option value="{{ tz }}" {% if cur_tz==tz %}selected{% endif %}>{{ tz }}</option>
             {% endfor %}
             {% if cur_tz not in tz_options %}<option value="{{ cur_tz }}" selected>{{ cur_tz }}</option>{% endif %}
           </select>
@@ -38,42 +44,53 @@
 
       <div class="form-section">
         <h3 style="margin-top: 0;">What the assistant says</h3>
-        <p class="text-muted" style="margin-top: 0;">Customize the opening and closing lines. Leave blank to use the built-in wording. Use <code>{property_name}</code> where you want the business name inserted.</p>
+        <p class="text-muted" style="margin-top: 0;">Customize the opening and closing lines. Leave blank to use the
+          built-in wording. Use <code>{property_name}</code> where you want the business name inserted.</p>
         <div class="form-group">
           <label>Greeting (opening)</label>
-          <textarea id="greeting_message" rows="3" placeholder="Leave blank for the default greeting">{{ settings.get('greeting_message', '') }}</textarea>
+          <textarea id="greeting_message" rows="3"
+            placeholder="Leave blank for the default greeting">{{ settings.get('greeting_message', '') }}</textarea>
           <p class="text-muted">Spoken before the first question.</p>
         </div>
         <div class="form-group">
           <label>Closing (wrap-up)</label>
-          <textarea id="closing_message" rows="2" placeholder="Leave blank for the default closing">{{ settings.get('closing_message', '') }}</textarea>
+          <textarea id="closing_message" rows="2"
+            placeholder="Leave blank for the default closing">{{ settings.get('closing_message', '') }}</textarea>
           <p class="text-muted">Spoken after screening completes.</p>
         </div>
         <div class="form-group">
           <label>When the system is down</label>
-          <textarea id="provider_failure_message" rows="3" placeholder="Leave blank for the default message">{{ settings.get('provider_failure_message', '') }}</textarea>
-          <p class="text-muted">Spoken when the AI or phone engines are unavailable. The applicant is marked for human review.</p>
+          <textarea id="provider_failure_message" rows="3"
+            placeholder="Leave blank for the default message">{{ settings.get('provider_failure_message', '') }}</textarea>
+          <p class="text-muted">Spoken when the AI or phone engines are unavailable. The applicant is marked for human
+            review.</p>
         </div>
         <div class="form-group">
           <label>Enable pre-screening route</label>
           <label style="display:flex; align-items:center; gap:8px; font-weight:500;">
-            <input type="checkbox" id="pre_screening_enabled" {% if settings.get('pre_screening_enabled', 'false')|string|lower == 'true' %}checked{% endif %} />
+            <input type="checkbox" id="pre_screening_enabled" {% if settings.get('pre_screening_enabled', 'false'
+              )|string|lower=='true' %}checked{% endif %} />
             Show a short route-choice prompt before the first screening question
           </label>
-          <p class="text-muted">When enabled, callers can choose to answer questions, leave a callback message, or ask for a person before the main flow begins.</p>
+          <p class="text-muted">When enabled, callers can choose to answer questions, leave a callback message, or ask
+            for a person before the main flow begins.</p>
         </div>
         <div class="form-group">
           <label>Pre-screening prompt</label>
-          <textarea id="pre_screening_prompt" rows="3" placeholder="Leave blank to use the built-in wording">{{ settings.get('pre_screening_prompt', '') }}</textarea>
-          <p class="text-muted">Optional override for the route-choice prompt. Leave blank to use the built-in wording.</p>
+          <textarea id="pre_screening_prompt" rows="3"
+            placeholder="Leave blank to use the built-in wording">{{ settings.get('pre_screening_prompt', '') }}</textarea>
+          <p class="text-muted">Optional override for the route-choice prompt. Leave blank to use the built-in wording.
+          </p>
         </div>
         <div class="form-group">
           <label>Pre-screening prompt (English)</label>
-          <textarea id="pre_screening_prompt_en" rows="3" placeholder="Leave blank for the default English wording">{{ settings.get('pre_screening_prompt_en', '') }}</textarea>
+          <textarea id="pre_screening_prompt_en" rows="3"
+            placeholder="Leave blank for the default English wording">{{ settings.get('pre_screening_prompt_en', '') }}</textarea>
         </div>
         <div class="form-group">
           <label>Pre-screening prompt (Spanish)</label>
-          <textarea id="pre_screening_prompt_es" rows="3" placeholder="Leave blank for the default Spanish wording">{{ settings.get('pre_screening_prompt_es', '') }}</textarea>
+          <textarea id="pre_screening_prompt_es" rows="3"
+            placeholder="Leave blank for the default Spanish wording">{{ settings.get('pre_screening_prompt_es', '') }}</textarea>
         </div>
       </div>
     </div>
@@ -82,51 +99,67 @@
   <div class="settings-tab-panel" data-tab="scoring">
     <div class="form-section" style="max-width: 640px;">
       <h3 style="margin-top: 0;">Who gets qualified?</h3>
-      <p class="text-muted" style="margin-top: 0;">Each question adds points in the <a href="/admin/settings/questions">Questions</a> builder. The total becomes a score from 0 to 100. These cutoffs decide the final result for <strong>new calls</strong> — calls already in progress keep the rules they started with.</p>
+      <p class="text-muted" style="margin-top: 0;">Each question adds points in the <a
+          href="/admin/settings/questions">Questions</a> builder. The total becomes a score from 0 to 100. These cutoffs
+        decide the final result for <strong>new calls</strong> — calls already in progress keep the rules they started
+        with.</p>
       <div class="callout" style="margin-bottom: 16px;">
         <strong>Example</strong> with defaults (qualified ≥ 75, review ≥ 40):<br>
-        Score <strong>82</strong> → Qualified · Score <strong>55</strong> → Needs review · Score <strong>25</strong> → Not qualified
+        Score <strong>82</strong> → Qualified · Score <strong>55</strong> → Needs review · Score <strong>25</strong> →
+        Not qualified
       </div>
       <div class="form-group">
         <label>Qualified at score ≥</label>
-        <input type="number" id="qualified_score_threshold" value="{{ settings.get('qualified_score_threshold', 75) }}" min="0" max="100" step="1" />
-        <p class="text-muted">Applicants at or above this score are marked qualified (unless a question flags them for review).</p>
+        <input type="number" id="qualified_score_threshold" value="{{ settings.get('qualified_score_threshold', 75) }}"
+          min="0" max="100" step="1" />
+        <p class="text-muted">Applicants at or above this score are marked qualified (unless a question flags them for
+          review).</p>
       </div>
       <div class="form-group">
         <label>Needs review at score ≥</label>
-        <input type="number" id="review_score_threshold" value="{{ settings.get('review_score_threshold', 40) }}" min="0" max="100" step="1" />
-        <p class="text-muted">Between this score and the qualified cutoff → needs review. Below this → not qualified. Must be ≤ the qualified cutoff.</p>
+        <input type="number" id="review_score_threshold" value="{{ settings.get('review_score_threshold', 40) }}"
+          min="0" max="100" step="1" />
+        <p class="text-muted">Between this score and the qualified cutoff → needs review. Below this → not qualified.
+          Must be ≤ the qualified cutoff.</p>
       </div>
     </div>
   </div>
 
   <div class="settings-tab-panel" data-tab="behavior">
     <div class="form-section" style="max-width: 640px;">
-      <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 12px;">
+      <div
+        style="display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 12px;">
         <h3 style="margin: 0;">During a call</h3>
-        <button type="button" class="btn btn-secondary btn-sm settings-edit-only" onclick="applyRecommendedBehavior()">Use recommended defaults</button>
+        <button type="button" class="btn btn-secondary btn-sm settings-edit-only"
+          onclick="applyRecommendedBehavior()">Use recommended defaults</button>
       </div>
-      <p class="text-muted" style="margin-top: 0;">These control patience and length. The recommended preset works well for most property managers.</p>
+      <p class="text-muted" style="margin-top: 0;">These control patience and length. The recommended preset works well
+        for most property managers.</p>
       <div class="form-group">
         <label>Max retries per question</label>
-        <input type="number" id="max_retries_per_question" value="{{ settings.get('max_retries_per_question', 2) }}" min="1" max="5" />
+        <input type="number" id="max_retries_per_question" value="{{ settings.get('max_retries_per_question', 2) }}"
+          min="1" max="5" />
         <p class="text-muted">How many times to re-ask before moving on (recommended: 2).</p>
       </div>
       <div class="form-group">
         <label>Silence timeout (seconds)</label>
-        <input type="number" id="silence_timeout_seconds" value="{{ settings.get('silence_timeout_seconds', 12) }}" min="2" max="30" />
+        <input type="number" id="silence_timeout_seconds" value="{{ settings.get('silence_timeout_seconds', 12) }}"
+          min="2" max="30" />
         <p class="text-muted">How long to wait when the caller goes quiet (recommended: 12 seconds).</p>
       </div>
       <div class="form-group">
         <label>Max call length (seconds)</label>
-        <input type="number" id="max_call_duration_seconds" value="{{ settings.get('max_call_duration_seconds', 600) }}" min="60" max="3600" />
+        <input type="number" id="max_call_duration_seconds" value="{{ settings.get('max_call_duration_seconds', 600) }}"
+          min="60" max="3600" />
         <p class="text-muted">Hard limit on call duration (600 = 10 minutes).</p>
       </div>
       <div class="form-group">
         <label>Record calls?</label>
         <select id="call_recording_enabled">
-          <option value="false" {% if settings.get('call_recording_enabled', 'false')|string|lower != 'true' %}selected{% endif %}>No</option>
-          <option value="true" {% if settings.get('call_recording_enabled', 'false')|string|lower == 'true' %}selected{% endif %}>Yes — record and store audio</option>
+          <option value="false" {% if settings.get('call_recording_enabled', 'false' )|string|lower !='true'
+            %}selected{% endif %}>No</option>
+          <option value="true" {% if settings.get('call_recording_enabled', 'false' )|string|lower=='true' %}selected{%
+            endif %}>Yes — record and store audio</option>
         </select>
         <p class="text-muted">When on, inbound calls are recorded via your phone provider.</p>
       </div>
@@ -134,66 +167,80 @@
   </div>
 
   <div class="settings-tab-panel" data-tab="advanced">
-    <div class="banner banner-warn" style="margin-bottom: 16px;">These options are for power users and IT setup. Most accounts can leave them at the defaults.</div>
+    <div class="banner banner-warn" style="margin-bottom: 16px;">These options are for power users and IT setup. Most
+      accounts can leave them at the defaults.</div>
     <div class="form-grid">
       <div class="form-section">
         <h3 style="margin-top: 0;">AI reply tuning</h3>
-        <p class="text-muted" style="margin-top: 0;">Fine-tune how creative and long the assistant's replies are. Defaults are tuned for voice calls.</p>
+        <p class="text-muted" style="margin-top: 0;">Fine-tune how creative and long the assistant's replies are.
+          Defaults are tuned for voice calls.</p>
         <div class="form-group">
           <label>Reply creativity</label>
-          <input type="number" id="llm_temperature" value="{{ settings.get('llm_temperature', '0.3') }}" min="0" max="1" step="0.05" />
+          <input type="number" id="llm_temperature" value="{{ settings.get('llm_temperature', '0.3') }}" min="0" max="1"
+            step="0.05" />
           <p class="text-muted">0 = very consistent, 1 = more varied. Default 0.3.</p>
         </div>
         <div class="form-group">
           <label>Max reply length</label>
-          <input type="number" id="llm_max_tokens" value="{{ settings.get('llm_max_tokens', 0) }}" min="0" max="2000" step="10" />
+          <input type="number" id="llm_max_tokens" value="{{ settings.get('llm_max_tokens', 0) }}" min="0" max="2000"
+            step="10" />
           <p class="text-muted">0 = use the tuned default (keeps replies short for phone calls).</p>
         </div>
       </div>
 
       <div class="form-section">
         <h3 style="margin-top: 0;">Data retention</h3>
-        <p class="text-muted" style="margin-top: 0;">A daily job removes old data so storage doesn't grow forever. Set any window to <strong>0</strong> to keep that data indefinitely.</p>
+        <p class="text-muted" style="margin-top: 0;">A daily job removes old data so storage doesn't grow forever. Set
+          any window to <strong>0</strong> to keep that data indefinitely.</p>
         <div class="form-group">
           <label>Run automatic cleanup?</label>
           <select id="retention_enabled">
-            <option value="true" {% if settings.get('retention_enabled', 'true')|string|lower == 'true' %}selected{% endif %}>Yes — clean up daily</option>
-            <option value="false" {% if settings.get('retention_enabled', 'true')|string|lower != 'true' %}selected{% endif %}>No — keep everything</option>
+            <option value="true" {% if settings.get('retention_enabled', 'true' )|string|lower=='true' %}selected{%
+              endif %}>Yes — clean up daily</option>
+            <option value="false" {% if settings.get('retention_enabled', 'true' )|string|lower !='true' %}selected{%
+              endif %}>No — keep everything</option>
           </select>
         </div>
         <div class="form-group">
           <label>Delete calls + applicants older than (days)</label>
-          <input type="number" id="retention_calls_days" value="{{ settings.get('retention_calls_days', 365) }}" min="0" max="3650" step="1" />
+          <input type="number" id="retention_calls_days" value="{{ settings.get('retention_calls_days', 365) }}" min="0"
+            max="3650" step="1" />
         </div>
         <div class="form-group">
           <label>Delete recordings older than (days)</label>
-          <input type="number" id="retention_recording_days" value="{{ settings.get('retention_recording_days', 90) }}" min="0" max="3650" step="1" />
+          <input type="number" id="retention_recording_days" value="{{ settings.get('retention_recording_days', 90) }}"
+            min="0" max="3650" step="1" />
         </div>
         <div class="form-group">
           <label>Delete activity-log entries older than (days)</label>
-          <input type="number" id="retention_audit_days" value="{{ settings.get('retention_audit_days', 365) }}" min="0" max="3650" step="1" />
+          <input type="number" id="retention_audit_days" value="{{ settings.get('retention_audit_days', 365) }}" min="0"
+            max="3650" step="1" />
         </div>
         <div class="form-group">
           <label>Purge deleted calls after (days)</label>
-          <input type="number" id="retention_soft_deleted_days" value="{{ settings.get('retention_soft_deleted_days', 30) }}" min="0" max="365" step="1" />
+          <input type="number" id="retention_soft_deleted_days"
+            value="{{ settings.get('retention_soft_deleted_days', 30) }}" min="0" max="365" step="1" />
         </div>
         <div class="form-group">
           <label>Close stuck calls after (hours)</label>
-          <input type="number" id="retention_stale_call_hours" value="{{ settings.get('retention_stale_call_hours', 24) }}" min="0" max="720" step="1" />
+          <input type="number" id="retention_stale_call_hours"
+            value="{{ settings.get('retention_stale_call_hours', 24) }}" min="0" max="720" step="1" />
           <p class="text-muted">Calls left starting or in progress longer than this are marked failed. 0 = disable.</p>
         </div>
       </div>
 
       <div class="form-section">
         <h3 style="margin-top: 0;">Send results to another system</h3>
-        <p class="text-muted" style="margin-top: 0;">Optional — automatically send each finished screening to a CRM or other URL. Leave blank if you don't use one.</p>
+        <p class="text-muted" style="margin-top: 0;">Optional — automatically send each finished screening to a CRM or
+          other URL. Leave blank if you don't use one.</p>
         <div class="form-group">
           <label>Send results to CRM after each call?</label>
           {% set crm_url_configured = (settings.get('crm_webhook_url', '')|string|trim)|length > 0 %}
-          {% if settings.get('crm_notifications_enabled') is not none and settings.get('crm_notifications_enabled') != '' %}
-            {% set crm_enabled = settings.get('crm_notifications_enabled')|string|lower == 'true' %}
+          {% if settings.get('crm_notifications_enabled') is not none and settings.get('crm_notifications_enabled') !=
+          '' %}
+          {% set crm_enabled = settings.get('crm_notifications_enabled')|string|lower == 'true' %}
           {% else %}
-            {% set crm_enabled = crm_url_configured %}
+          {% set crm_enabled = crm_url_configured %}
           {% endif %}
           <select id="crm_notifications_enabled">
             <option value="true" {% if crm_enabled %}selected{% endif %}>Yes — send to CRM</option>
@@ -203,12 +250,15 @@
         </div>
         <div class="form-group">
           <label>Destination URL</label>
-          <input type="text" id="crm_webhook_url" value="{{ settings.get('crm_webhook_url', '') }}" placeholder="https://your-crm.example.com/hooks/screening" />
+          <input type="text" id="crm_webhook_url" value="{{ settings.get('crm_webhook_url', '') }}"
+            placeholder="https://your-crm.example.com/hooks/screening" />
         </div>
         <div class="form-group">
           <label>Signing secret (optional)</label>
-          <input type="password" id="crm_webhook_secret" placeholder="Leave blank to keep the current secret" autocomplete="new-password" />
-          <p class="text-muted">Lets your other system verify the message is genuine. Leave blank to keep what's already saved.</p>
+          <input type="password" id="crm_webhook_secret" placeholder="Leave blank to keep the current secret"
+            autocomplete="new-password" />
+          <p class="text-muted">Lets your other system verify the message is genuine. Leave blank to keep what's already
+            saved.</p>
         </div>
       </div>
 
@@ -217,17 +267,22 @@
         <p class="text-muted" style="margin-top: 0;">Calls from numbers on this list are declined automatically.</p>
         <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px;">
           <label for="blacklistPhone" class="sr-only">Phone number to add</label>
-          <input type="text" id="blacklistPhone" placeholder="e.g. +15551234567" aria-label="Phone number to add" style="flex: 1; min-width: 220px;" />
-          <button type="button" class="btn btn-primary settings-edit-only" onclick="withBtnLoading(this, addBlacklist, 'Adding\u2026')">Add to list</button>
+          <input type="text" id="blacklistPhone" placeholder="e.g. +15551234567" aria-label="Phone number to add"
+            style="flex: 1; min-width: 220px;" />
+          <button type="button" class="btn btn-primary settings-edit-only"
+            onclick="withBtnLoading(this, addBlacklist, 'Adding\u2026')">Add to list</button>
         </div>
-        <div id="blacklistList"><p class="text-muted">Loading…</p></div>
+        <div id="blacklistList">
+          <p class="text-muted">Loading…</p>
+        </div>
       </div>
     </div>
   </div>
 
   <div class="form-actions">
     <button type="submit" class="btn btn-primary settings-save">Save settings</button>
-    <button type="button" class="btn btn-secondary settings-edit-only" onclick="withBtnLoading(this, resetGeneralDefaults, 'Resetting\u2026')">Reset to defaults</button>
+    <button type="button" class="btn btn-secondary settings-edit-only"
+      onclick="withBtnLoading(this, resetGeneralDefaults, 'Resetting\u2026')">Reset to defaults</button>
     <button type="button" class="btn btn-secondary" data-discard>Discard changes</button>
   </div>
 </form>

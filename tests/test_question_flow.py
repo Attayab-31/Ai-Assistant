@@ -29,7 +29,8 @@ def test_migrate_v1_to_v2():
 
 def test_add_delete_questions_validation():
     base = default_questions_v2()[:3]
-    custom = new_custom_question(question="Do you smoke?", answer_type="yes_no", order=4)
+    custom = new_custom_question(
+        question="Do you smoke?", answer_type="yes_no", order=4)
     saved = validate_questions_for_save(base + [custom])
     assert len(saved) == 4
     assert saved[-1]["question"] == "Do you smoke?"
@@ -83,7 +84,8 @@ def test_screening_question_schema_accepts_admin_conditional_operators():
         id="q1",
         state="Q_INCOME_HIGH",
         question="High income follow-up?",
-        conditional={"field": "monthly_income", "operator": "gte", "value": 5000},
+        conditional={"field": "monthly_income",
+                     "operator": "gte", "value": 5000},
     )
     assert q.conditional is not None
     assert q.conditional.operator == "gte"
@@ -95,7 +97,6 @@ def test_screening_question_schema_accepts_admin_conditional_operators():
         conditional={"field": "has_pets", "operator": "asked"},
     )
     assert asked.conditional.operator == "asked"
-
 
     from app.core.question_flow import ordered_active_questions, should_skip_question
 
@@ -142,7 +143,8 @@ def test_question_save_warnings():
     assert not missing_contact_fields(questions)
     assert total_enabled_scoring_points(questions) >= 0
 
-    custom = new_custom_question(question="Extra?", answer_type="text", order=99)
+    custom = new_custom_question(
+        question="Extra?", answer_type="text", order=99)
     custom["scoring"] = {
         "enabled": True,
         "max_points": 60,
@@ -206,7 +208,8 @@ def test_normalize_date_object_does_not_raise_name_error():
 
     out = normalize_extracted_fields(
         {"move_in_date": date(2026, 7, 24)},
-        questions=[{"extract_fields": ["move_in_date"], "field_types": {"move_in_date": "date"}}],
+        questions=[{"extract_fields": ["move_in_date"],
+                    "field_types": {"move_in_date": "date"}}],
     )
     assert out["move_in_date"] == "2026-07-24"
 
@@ -232,7 +235,8 @@ def test_coerce_preserves_admin_extract_fields_without_custom_prefix():
     from app.core.data_extractor import coerce_extracted_data
     from app.core.question_flow import new_custom_question
 
-    q = new_custom_question(question="Do you smoke?", answer_type="yes_no", order=1)
+    q = new_custom_question(question="Do you smoke?",
+                            answer_type="yes_no", order=1)
     q["extract_fields"] = ["smokes"]
     out = coerce_extracted_data(
         {"smokes": True, "full_name": "Jane Doe"},
@@ -273,6 +277,7 @@ def test_infer_monthly_income_defaults_unqualified_period_to_monthly():
     monthly = infer_monthly_income_from_raw("4800 per month")
     assert monthly is not None
     assert float(monthly) == pytest.approx(4800.0, rel=0.01)
+
 
 def test_conditional_truthy_treats_no_string_as_false():
     from app.core.question_flow import evaluate_conditional
@@ -356,16 +361,19 @@ def test_text_answer_uses_session_raw_answers():
         "order": 1,
     }
     assert not is_question_answered_for_def(q, {})
-    assert is_question_answered_for_def(q, {}, raw_answers={"Q_NOTES": "hello"})
+    assert is_question_answered_for_def(
+        q, {}, raw_answers={"Q_NOTES": "hello"})
     assert is_question_answered_for_def(q, {"notes": "typed"})
 
 
 def test_validate_questions_rejects_numeric_conditional_without_value():
     from app.core.question_flow import new_custom_question, validate_questions_for_save
 
-    base = new_custom_question(question="Income?", answer_type="currency", order=1)
+    base = new_custom_question(
+        question="Income?", answer_type="currency", order=1)
     base["extract_fields"] = ["custom_income"]
-    q = new_custom_question(question="High income follow-up?", answer_type="text", order=2)
+    q = new_custom_question(
+        question="High income follow-up?", answer_type="text", order=2)
     q["conditional"] = {
         "field": "custom_income",
         "operator": "gte",
@@ -490,7 +498,8 @@ def test_scoring_does_not_crash_on_malformed_config():
             "pass_config": {"max_days_ahead": "not-a-number"},
         },
     }
-    pts3, _, _ = evaluate_question_scoring(date_q, {"move_in_date": "2099-01-01"})
+    pts3, _, _ = evaluate_question_scoring(
+        date_q, {"move_in_date": "2099-01-01"})
     assert isinstance(pts3, int)
 
 
@@ -498,8 +507,10 @@ def test_save_warns_on_unreachable_and_unscored_flow():
     from app.core.question_flow import new_custom_question, question_save_warnings
 
     # Only an all-conditional active flow → unreachable at start.
-    base = new_custom_question(question="Got X?", answer_type="yes_no", order=1)
-    follow = new_custom_question(question="Details?", answer_type="text", order=2)
+    base = new_custom_question(
+        question="Got X?", answer_type="yes_no", order=1)
+    follow = new_custom_question(
+        question="Details?", answer_type="text", order=2)
     follow["conditional"] = {
         "field": base["extract_fields"][0],
         "operator": "truthy",
@@ -513,7 +524,8 @@ def test_analyze_questions_draft_no_scoring_warning():
     from app.core.question_flow import analyze_questions_draft, new_custom_question
 
     q = new_custom_question(question="Notes?", answer_type="text", order=1)
-    q["scoring"] = {"enabled": False, "max_points": 0, "rule_type": "any_answer", "pass_config": {}}
+    q["scoring"] = {"enabled": False, "max_points": 0,
+                    "rule_type": "any_answer", "pass_config": {}}
     analysis = analyze_questions_draft([q])
     assert analysis["validation_error"] is None
     assert analysis["runtime_valid"] is True
@@ -526,8 +538,10 @@ def test_analyze_questions_draft_validation_error():
     base = new_custom_question(question="Gate?", answer_type="yes_no", order=1)
     base["extract_fields"] = ["custom_gate_flag"]
     base["active"] = False
-    follow = new_custom_question(question="Follow?", answer_type="text", order=2)
-    follow["conditional"] = {"field": "custom_gate_flag", "operator": "eq", "value": True}
+    follow = new_custom_question(
+        question="Follow?", answer_type="text", order=2)
+    follow["conditional"] = {
+        "field": "custom_gate_flag", "operator": "eq", "value": True}
     analysis = analyze_questions_draft([base, follow])
     assert analysis["validation_error"] is not None
     assert analysis["runtime_valid"] is False
@@ -546,7 +560,8 @@ def test_analyze_questions_draft_uses_validated_override():
 def test_custom_question_cannot_use_reserved_column():
     from app.core.question_flow import new_custom_question
 
-    bad = new_custom_question(question="Your email?", answer_type="email", order=1)
+    bad = new_custom_question(question="Your email?",
+                              answer_type="email", order=1)
     bad["extract_fields"] = ["email"]
     bad["state"] = "CUSTOM_EMAIL"
     try:
@@ -646,7 +661,8 @@ def test_scoring_data_reconstructs_full_record_for_consistency():
 def test_scoring_skips_inactive_questions():
     from app.core.question_scoring import score_custom_questions
 
-    q = new_custom_question(question="Inactive scored?", answer_type="yes_no", order=1)
+    q = new_custom_question(question="Inactive scored?",
+                            answer_type="yes_no", order=1)
     q["active"] = False
     q["scoring"] = {
         "enabled": True,
@@ -663,10 +679,12 @@ def test_scoring_skips_inactive_questions():
 def test_scoring_excludes_conditionally_skipped_questions():
     from app.core.question_scoring import score_custom_questions
 
-    parent = new_custom_question(question="Pets?", answer_type="yes_no", order=1)
+    parent = new_custom_question(
+        question="Pets?", answer_type="yes_no", order=1)
     parent["extract_fields"] = ["has_pets"]
     parent["state"] = "Q_PETS"
-    follow = new_custom_question(question="Pet breed?", answer_type="text", order=2)
+    follow = new_custom_question(
+        question="Pet breed?", answer_type="text", order=2)
     follow["state"] = "Q_PET_BREED"
     follow["conditional"] = {"field": "has_pets", "operator": "truthy"}
     follow["scoring"] = {
@@ -685,7 +703,6 @@ def test_scoring_excludes_conditionally_skipped_questions():
     )
     assert total == 0
     assert breakdown == []
-
 
     from app.core.question_flow import (
         build_question_slot_config,
@@ -728,7 +745,8 @@ def test_skipped_conditional_is_not_counted_answered():
     )
 
     questions = default_questions_v2()
-    pet_followup = next(q for q in questions if q["state"] == "Q6A_PET_DETAILS")
+    pet_followup = next(
+        q for q in questions if q["state"] == "Q6A_PET_DETAILS")
     assert not is_question_answered_for_def(pet_followup, {"has_pets": False})
     assert not is_question_answered_for_def(
         pet_followup, {"has_pets": False, "pet_type": "dog"}
@@ -829,11 +847,13 @@ def test_confirmation_required_before_question_counts_answered():
     phone_q = next(q for q in questions if q["state"] == "Q2_PHONE")
     data = {"full_name": "Stone Smith", "contact_phone": "+13174026780"}
     confirmed = {"full_name", "contact_phone"}
-    assert not is_question_answered_for_def(phone_q, data, confirmed_fields=set())
+    assert not is_question_answered_for_def(
+        phone_q, data, confirmed_fields=set())
     assert next_unanswered_state(
         data, questions=questions, confirmed_fields={"full_name"}
     ) == "Q2_PHONE"
-    assert is_question_answered_for_def(phone_q, data, confirmed_fields=confirmed)
+    assert is_question_answered_for_def(
+        phone_q, data, confirmed_fields=confirmed)
     assert count_answered_questions(
         data, questions=questions, confirmed_fields=confirmed
     ) == 2
@@ -973,7 +993,8 @@ def test_screening_complete_honors_raw_answers_context():
     ]
     # Text questions can be considered answered from raw_answers even when no
     # normalized extract slot was written.
-    assert screening_complete({}, questions=questions, raw_answers={"Q_NOTES": "hello"})
+    assert screening_complete({}, questions=questions,
+                              raw_answers={"Q_NOTES": "hello"})
 
 
 def test_compose_agent_response_dedupes_follow_up():
@@ -1054,7 +1075,8 @@ def test_normalize_extracted_fields_applies_custom_phone_type():
     from app.core.question_flow import new_custom_question
     from app.core.screening_flow import normalize_extracted_fields
 
-    custom = new_custom_question(question="Callback number?", answer_type="phone", order=1)
+    custom = new_custom_question(
+        question="Callback number?", answer_type="phone", order=1)
     field = custom["extract_fields"][0]
     normalized = normalize_extracted_fields(
         {field: "5551234567"},
@@ -1102,7 +1124,8 @@ def test_builtin_primary_field_cannot_change_on_save():
 def test_custom_question_primary_field_can_change():
     from app.core.question_flow import new_custom_question, validate_questions_for_save
 
-    custom = new_custom_question(question="Vehicle?", answer_type="yes_no", order=1)
+    custom = new_custom_question(
+        question="Vehicle?", answer_type="yes_no", order=1)
     custom["extract_fields"] = ["custom_vehicle"]
     custom["field_labels"] = {"custom_vehicle": "has a vehicle"}
     saved = validate_questions_for_save([custom])
@@ -1113,7 +1136,8 @@ def test_understanding_guide_reaches_system_prompt():
     from app.core.conversation import ConversationSession, build_system_prompt
     from app.core.question_flow import new_custom_question
 
-    custom = new_custom_question(question="Any vehicles?", answer_type="text", order=1)
+    custom = new_custom_question(
+        question="Any vehicles?", answer_type="text", order=1)
     custom["understanding_guide"] = "Count cars and motorcycles separately."
     session = ConversationSession(
         call_id="t",
@@ -1129,7 +1153,8 @@ def test_build_system_prompt_uses_admin_completion_guidance_for_single_field_que
     from app.core.conversation import ConversationSession, build_system_prompt
     from app.core.question_flow import new_custom_question
 
-    custom = new_custom_question(question="Which city do you live in?", answer_type="text", order=1)
+    custom = new_custom_question(
+        question="Which city do you live in?", answer_type="text", order=1)
     session = ConversationSession(
         call_id="t",
         phone_number="+15550000000",
@@ -1146,7 +1171,8 @@ def test_build_system_prompt_includes_admin_flow_outline():
     from app.core.conversation import ConversationSession, build_system_prompt
     from app.core.question_flow import new_custom_question
 
-    custom = new_custom_question(question="Do you smoke?", answer_type="yes_no", order=1)
+    custom = new_custom_question(
+        question="Do you smoke?", answer_type="yes_no", order=1)
     custom["requires_confirmation"] = True
     session = ConversationSession(
         call_id="t",
@@ -1201,7 +1227,8 @@ def test_merge_extracted_data_allows_admin_custom_field():
     from app.core.conversation import ConversationSession
     from app.core.question_flow import new_custom_question, validate_questions_for_save
 
-    custom = new_custom_question(question="Pet age?", answer_type="text", order=99)
+    custom = new_custom_question(
+        question="Pet age?", answer_type="text", order=99)
     custom["extract_fields"] = ["pet_age"]
     custom["field_labels"] = {"pet_age": "pet age"}
     questions = validate_questions_for_save([custom])
@@ -1237,7 +1264,8 @@ def test_merge_extracted_data_skips_confirmed_admin_field():
     session.extracted_data["custom_id_number"] = "ID-111"
     session.mark_field_confirmed("custom_id_number")
 
-    session.merge_extracted_data({"custom_id_number": "ID-999", "other_note": "x"})
+    session.merge_extracted_data(
+        {"custom_id_number": "ID-999", "other_note": "x"})
 
     assert session.extracted_data["custom_id_number"] == "ID-111"
     assert "other_note" not in session.extracted_data
@@ -1369,7 +1397,8 @@ def test_localized_question_text_falls_back_to_base():
         "retry_prompt": "Could you share your employer?",
         "locales": {"es": {"question": "Donde trabaja?"}},
     }
-    assert localized_question_text(q, language_code="es", key="question") == "Donde trabaja?"
+    assert localized_question_text(
+        q, language_code="es", key="question") == "Donde trabaja?"
     assert localized_question_text(q, language_code="es", key="retry_prompt") == (
         "Could you share your employer?"
     )
@@ -1381,7 +1410,8 @@ def test_count_missing_spanish_question_overrides():
         new_custom_question,
     )
 
-    custom = new_custom_question(question="Smoke?", answer_type="yes_no", order=1)
+    custom = new_custom_question(
+        question="Smoke?", answer_type="yes_no", order=1)
     assert count_missing_spanish_question_overrides([custom]) == 1
     custom["locales"] = {"es": {"question": "Fuma?"}}
     assert count_missing_spanish_question_overrides([custom]) == 0
@@ -1420,7 +1450,8 @@ def test_default_seed_questions_include_spanish_locales():
     from app.core.seed_data import load_seed_questions
 
     load_seed_questions.cache_clear()
-    q1 = next(q for q in default_questions_v2() if q["state"] == "Q1_FULL_NAME")
+    q1 = next(q for q in default_questions_v2()
+              if q["state"] == "Q1_FULL_NAME")
     assert localized_question_text(q1, language_code="es", key="question").startswith(
         "¿"
     )
@@ -1429,7 +1460,8 @@ def test_default_seed_questions_include_spanish_locales():
 def test_question_save_warnings_missing_spanish():
     from app.core.question_flow import new_custom_question, question_save_warnings
 
-    custom = new_custom_question(question="Pets?", answer_type="yes_no", order=1)
+    custom = new_custom_question(
+        question="Pets?", answer_type="yes_no", order=1)
     warnings = question_save_warnings([custom])
     assert any("Spanish wording" in w for w in warnings)
 
@@ -1487,13 +1519,15 @@ def test_build_system_prompt_token_budget():
 def test_prompt_extraction_rules_follow_active_questions_only():
     from app.core.question_flow import new_custom_question, prompt_extraction_rules
 
-    custom = new_custom_question(question="Favorite color?", answer_type="text", order=1)
+    custom = new_custom_question(
+        question="Favorite color?", answer_type="text", order=1)
     rules = prompt_extraction_rules([custom])
     assert "Eviction means" not in rules
     assert "monthly_income" not in rules
     assert "Today's date:" in rules
 
-    income_q = new_custom_question(question="Income?", answer_type="currency", order=2)
+    income_q = new_custom_question(
+        question="Income?", answer_type="currency", order=2)
     rules_income = prompt_extraction_rules([income_q])
     assert "money fields" in rules_income
 
@@ -1570,7 +1604,8 @@ def test_build_conversation_preview_flow_uses_localized_question_text():
 def test_speech_mode_pet_bundle_extraction():
     from app.core.question_flow import default_questions_v2, extract_fields_from_speech
 
-    pet_q = next(q for q in default_questions_v2() if q["state"] == "Q6A_PET_DETAILS")
+    pet_q = next(q for q in default_questions_v2()
+                 if q["state"] == "Q6A_PET_DETAILS")
     out = extract_fields_from_speech("German shepherd about 70 pounds", pet_q)
     assert out.get("pet_weight") == 70
     assert out.get("pets_raw")
@@ -1598,9 +1633,11 @@ def test_validate_blocks_all_conditional_flow():
     gate = new_custom_question(question="Gate?", answer_type="yes_no", order=1)
     gate["extract_fields"] = ["custom_gate_flag"]
     gate["active"] = False
-    follow = new_custom_question(question="Follow?", answer_type="text", order=2)
+    follow = new_custom_question(
+        question="Follow?", answer_type="text", order=2)
     follow["extract_fields"] = ["custom_follow_note"]
-    follow["conditional"] = {"field": "custom_gate_flag", "operator": "eq", "value": True}
+    follow["conditional"] = {
+        "field": "custom_gate_flag", "operator": "eq", "value": True}
     with pytest.raises(ValueError, match="start of a call"):
         validate_questions_for_save([gate, follow])
 
@@ -1622,7 +1659,8 @@ def test_coerce_questions_for_runtime_with_reason():
     assert reason is not None
     assert "blocked" in reason.lower()
 
-    valid, no_reason = coerce_questions_for_runtime_with_reason(default_questions_v2())
+    valid, no_reason = coerce_questions_for_runtime_with_reason(
+        default_questions_v2())
     assert no_reason is None
     assert len(valid) == len(default_questions_v2())
 
@@ -1653,7 +1691,8 @@ async def test_handle_call_answered_blocked_on_invalid_questions_config(monkeypa
     audio = await handle_call_answered(session)
     assert audio == [b"audio"]
     assert session.current_state == CallState.ENDED.value
-    assert session.control_flags.get("provider_failure", {}).get("service") == "questions"
+    assert session.control_flags.get(
+        "provider_failure", {}).get("service") == "questions"
     assert session.control_flags.get("questions_config_fallback") == (
         "Duplicate question states are not allowed"
     )
@@ -1786,4 +1825,3 @@ def test_validate_only_one_active_language_choice():
     q2["state"] = "Q0_LANGUAGE_OTHER"
     with pytest.raises(ValueError, match="Only one language choice"):
         validate_questions_for_save([q1, q2])
-

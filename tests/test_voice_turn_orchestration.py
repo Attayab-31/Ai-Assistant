@@ -6,6 +6,7 @@ import pytest
 
 from app.core.conversation import (
     ConversationSession,
+    build_system_prompt,
     capture_turn_snapshot,
     handle_turn_timeout,
     is_meta_navigation_request,
@@ -80,6 +81,13 @@ def test_turn_timeout_recovery_uses_admin_retry():
     text = turn_timeout_recovery_text(session, "John Smith.")
     assert "Sorry for the pause" in text
     assert "full legal name" in text.lower()
+
+
+def test_build_system_prompt_asks_for_fuller_spoken_replies():
+    session = _session(current_state="Q1_NAME")
+    prompt = build_system_prompt(session)
+    assert "slightly fuller" in prompt.lower()
+    assert "1-2 short sentences" in prompt.lower()
 
 
 def test_extended_turn_budget_only_during_readback():

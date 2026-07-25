@@ -50,6 +50,7 @@ def _encrypt_api_key_for_storage(api_key: str) -> str:
         return cleaned
     return encrypt_value(cleaned)
 
+
 router = APIRouter()
 
 _PROVIDER_SWITCH_LOCK_KEY = "settings:provider_switch:lock"
@@ -188,7 +189,8 @@ def _validate_llm_model(provider: str, model: str | None) -> None:
     }
     allowed = allowlists.get(provider)
     if allowed is None:
-        raise HTTPException(status_code=400, detail=f"Unknown LLM provider: {provider}")
+        raise HTTPException(
+            status_code=400, detail=f"Unknown LLM provider: {provider}")
     if model not in allowed:
         raise HTTPException(
             status_code=400,
@@ -236,7 +238,8 @@ def _validate_stt_model(provider: str, model: str | None) -> None:
     }
     allowed = allowlists.get(provider)
     if allowed is None:
-        raise HTTPException(status_code=400, detail=f"Unknown STT provider: {provider}")
+        raise HTTPException(
+            status_code=400, detail=f"Unknown STT provider: {provider}")
     if model not in allowed:
         raise HTTPException(
             status_code=400,
@@ -277,7 +280,8 @@ def _validate_tts_voice(provider: str, voice: str | None) -> None:
                 f"Choose one of: {', '.join(sorted(GOOGLE_VOICES))}"
             ),
         )
-    raise HTTPException(status_code=400, detail=f"Unknown TTS provider: {provider}")
+    raise HTTPException(
+        status_code=400, detail=f"Unknown TTS provider: {provider}")
 
 
 async def _build_questions_preview_response(
@@ -444,7 +448,8 @@ async def _restore_settings(
     try:
         await invalidate_settings_cache()
     except Exception:
-        logger.warning("Settings cache invalidation failed during provider rollback")
+        logger.warning(
+            "Settings cache invalidation failed during provider rollback")
 
 
 async def _apply_provider_switch_settings(
@@ -639,11 +644,13 @@ def _validate_general_settings_updates(updates: dict, current: dict) -> None:
                 detail="Latency warning timeout-rate threshold must be > 0%.",
             )
     else:
-        timeout_warn = float(current.get("latency_alert_timeout_rate_pct") or 2.0)
+        timeout_warn = float(current.get(
+            "latency_alert_timeout_rate_pct") or 2.0)
 
     if updates.get("latency_alert_timeout_rate_crit_pct") is not None:
         try:
-            timeout_crit = float(updates["latency_alert_timeout_rate_crit_pct"])
+            timeout_crit = float(
+                updates["latency_alert_timeout_rate_crit_pct"])
         except (TypeError, ValueError):
             timeout_crit = -1.0
         if timeout_crit <= 0:
@@ -949,7 +956,8 @@ async def check_provider_health(
         if name == "groq" and not _has_key("groq"):
             continue
         inst = (
-            DeepgramSTTProvider(model=factory_model, api_key=configured_keys.deepgram)
+            DeepgramSTTProvider(model=factory_model,
+                                api_key=configured_keys.deepgram)
             if name == "deepgram"
             else GroqSTTProvider(model=factory_model, api_key=configured_keys.groq)
         )
@@ -1011,7 +1019,8 @@ async def update_questions(
 
     from app.services.admin_audit_helpers import summarize_questions_audit_change
 
-    change_summary = summarize_questions_audit_change(old_questions, new_questions)
+    change_summary = summarize_questions_audit_change(
+        old_questions, new_questions)
     audit_ok = await _safe_create_audit_log(
         db,
         action="updated_screening_questions",
@@ -1127,7 +1136,8 @@ async def update_faqs(
         ip_address=audit_client_ip(request),
     )
 
-    response = _add_cache_warning({"success": True, "faqs": new_faqs}, cache_ok)
+    response = _add_cache_warning(
+        {"success": True, "faqs": new_faqs}, cache_ok)
     return _add_audit_warning(response, audit_ok)
 
 
@@ -1151,7 +1161,8 @@ async def reset_faqs_to_defaults(
         entity_type="setting",
         ip_address=audit_client_ip(request),
     )
-    response = _add_cache_warning({"success": True, "faqs": DEFAULT_FAQS}, cache_ok)
+    response = _add_cache_warning(
+        {"success": True, "faqs": DEFAULT_FAQS}, cache_ok)
     return _add_audit_warning(response, audit_ok)
 
 
@@ -1251,14 +1262,17 @@ async def send_test_email(
     from config import settings as app_settings
 
     if not app_settings.resend_api_key:
-        raise HTTPException(status_code=400, detail="RESEND_API_KEY not configured")
+        raise HTTPException(
+            status_code=400, detail="RESEND_API_KEY not configured")
 
     email_settings = {
         key: await crud.get_setting_value(db, key, "") for key in EMAIL_SETTING_KEYS
     }
 
-    from_name = email_settings.get("email_from_name") or app_settings.email_from_name
-    from_address = email_settings.get("email_from_address") or app_settings.email_from
+    from_name = email_settings.get(
+        "email_from_name") or app_settings.email_from_name
+    from_address = email_settings.get(
+        "email_from_address") or app_settings.email_from
 
     test_recipient = (
         payload.get("email")
@@ -1266,7 +1280,8 @@ async def send_test_email(
         or app_settings.default_landlord_email
     )
     if not test_recipient:
-        raise HTTPException(status_code=400, detail="No recipient email provided")
+        raise HTTPException(
+            status_code=400, detail="No recipient email provided")
 
     subject, html_body = build_test_email_preview(email_settings)
 
@@ -1387,7 +1402,8 @@ async def update_general_settings(
         from app.utils.security import is_encrypted_value
 
         if not is_encrypted_value(crm_secret):
-            updates_to_persist["crm_webhook_secret"] = encrypt_value(crm_secret)
+            updates_to_persist["crm_webhook_secret"] = encrypt_value(
+                crm_secret)
 
     cache_ok = await crud.set_settings_bulk(
         db,
@@ -1417,7 +1433,8 @@ async def update_general_settings(
         try:
             await provider_registry.reload_from_db(db)
         except Exception as e:
-            logger.warning("Registry reload after general settings failed: %s", e)
+            logger.warning(
+                "Registry reload after general settings failed: %s", e)
 
     from app.utils.security import redact_for_audit
 
@@ -1504,7 +1521,8 @@ async def reset_general_settings_to_defaults(
         from app.utils.security import is_encrypted_value
 
         if not is_encrypted_value(crm_secret):
-            defaults_to_persist["crm_webhook_secret"] = encrypt_value(crm_secret)
+            defaults_to_persist["crm_webhook_secret"] = encrypt_value(
+                crm_secret)
 
     cache_ok = await crud.set_settings_bulk(
         db,

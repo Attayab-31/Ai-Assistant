@@ -1,4 +1,6 @@
-import os, json, sys
+import os
+import json
+import sys
 from pathlib import Path
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
@@ -10,7 +12,8 @@ if not db_url:
     sys.exit(0)
 engine = create_engine(db_url)
 with engine.connect() as conn:
-    row = conn.execute(text("SELECT value FROM system_settings WHERE key='screening_questions' LIMIT 1")).fetchone()
+    row = conn.execute(text(
+        "SELECT value FROM system_settings WHERE key='screening_questions' LIMIT 1")).fetchone()
     if not row:
         print('NO_ROW')
         sys.exit(0)
@@ -22,4 +25,5 @@ with engine.connect() as conn:
         sys.exit(0)
     print('COUNT', len(data))
     for q in data:
-        print(json.dumps({k:q.get(k) for k in ['state','question','required','requires_confirmation','answer_type','conditional','require_all_extract_fields','extract_fields']}, ensure_ascii=False))
+        print(json.dumps({k: q.get(k) for k in ['state', 'question', 'required', 'requires_confirmation',
+              'answer_type', 'conditional', 'require_all_extract_fields', 'extract_fields']}, ensure_ascii=False))

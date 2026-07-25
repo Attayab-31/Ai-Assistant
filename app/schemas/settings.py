@@ -185,8 +185,10 @@ class GeneralSettingsUpdate(BaseModel):
     llm_fallback_provider: Literal[
         "auto", "groq", "openai", "openrouter", "gemini", "none"
     ] | None = None
-    stt_fallback_provider: Literal["auto", "deepgram", "groq", "none"] | None = None
-    tts_fallback_provider: Literal["auto", "google", "deepgram", "none"] | None = None
+    stt_fallback_provider: Literal["auto",
+                                   "deepgram", "groq", "none"] | None = None
+    tts_fallback_provider: Literal["auto",
+                                   "google", "deepgram", "none"] | None = None
     qualified_score_threshold: int | None = None
     review_score_threshold: int | None = None
     llm_temperature: float | None = None
@@ -218,7 +220,8 @@ class GeneralSettingsUpdate(BaseModel):
         if value is None:
             return value
         if not (1 <= int(value) <= 5):
-            raise ValueError("max_retries_per_question must be between 1 and 5")
+            raise ValueError(
+                "max_retries_per_question must be between 1 and 5")
         return int(value)
 
     @field_validator("silence_timeout_seconds")
@@ -227,7 +230,8 @@ class GeneralSettingsUpdate(BaseModel):
         if value is None:
             return value
         if not (2 <= int(value) <= 30):
-            raise ValueError("silence_timeout_seconds must be between 2 and 30")
+            raise ValueError(
+                "silence_timeout_seconds must be between 2 and 30")
         return int(value)
 
     @field_validator("max_call_duration_seconds")
@@ -236,7 +240,8 @@ class GeneralSettingsUpdate(BaseModel):
         if value is None:
             return value
         if not (60 <= int(value) <= 3600):
-            raise ValueError("max_call_duration_seconds must be between 60 and 3600")
+            raise ValueError(
+                "max_call_duration_seconds must be between 60 and 3600")
         return int(value)
 
     @field_validator("timezone")

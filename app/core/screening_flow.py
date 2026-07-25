@@ -34,7 +34,8 @@ def build_greeting_intro(business: str = BUSINESS_NAME, *, language_code: str = 
     )
 
 
-PHONE_RE = re.compile(r"(?:\+?1[\s.-]?)?(?:\(?\d{3}\)?[\s.-]?)\d{3}[\s.-]?\d{4}")
+PHONE_RE = re.compile(
+    r"(?:\+?1[\s.-]?)?(?:\(?\d{3}\)?[\s.-]?)\d{3}[\s.-]?\d{4}")
 EMAIL_RE = re.compile(r"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}", re.I)
 MONEY_RE = re.compile(
     r"(?P<prefix>\$)?\b(?P<num>\d{2,3}(?:,\d{3})+|\d+(?:\.\d+)?)\s*(?P<suffix>k|thousand|grand)?\b",
@@ -90,7 +91,8 @@ def validate_faqs_for_save(faqs: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if not title:
             raise ValueError(f"FAQ {entry.get('topic')} is missing a title")
         if not pattern:
-            raise ValueError(f"FAQ {entry.get('topic')} is missing a match pattern")
+            raise ValueError(
+                f"FAQ {entry.get('topic')} is missing a match pattern")
         if not answer:
             raise ValueError(f"FAQ {entry.get('topic')} is missing an answer")
         try:
@@ -259,7 +261,7 @@ def parse_spoken_email(value: str) -> str | None:
     # tail actually carries email content, so we never drop a real local part.
     matches = list(_EMAIL_CORRECTION_RE.finditer(raw))
     if matches:
-        tail = raw[matches[-1].end() :]
+        tail = raw[matches[-1].end():]
         if "@" in tail or re.search(
             r"\b(at|dot|gmail|yahoo|hotmail|outlook|icloud|proton)\b", tail
         ):
@@ -505,7 +507,8 @@ def normalize_extracted_fields(
             fields = [str(f) for f in (q.get("extract_fields") or [])]
             raw_key = next((f for f in fields if f.endswith("_raw")), None)
             weight_key = next(
-                (f for f in fields if "weight" in f.lower() and not f.endswith("_raw")),
+                (f for f in fields if "weight" in f.lower()
+                 and not f.endswith("_raw")),
                 None,
             )
             if not raw_key or not weight_key:
@@ -682,7 +685,7 @@ def _digits_spaced(value: str) -> str:
     i, n = 0, len(digits)
     while i < n:
         size = 3 if (n - i) > 4 else (n - i)
-        groups.append(" ".join(digits[i : i + size]))
+        groups.append(" ".join(digits[i: i + size]))
         i += size
     return ", ".join(groups)
 
@@ -714,7 +717,8 @@ def extract_money_from_text(text: str) -> tuple[Decimal | None, str | None]:
     amount = match.group("num")
     suffix = match.group("suffix") or ""
     raw = match.group(0)
-    normalized = normalize_money(f"{amount}{'k' if suffix.lower() == 'k' else ''}")
+    normalized = normalize_money(
+        f"{amount}{'k' if suffix.lower() == 'k' else ''}")
     if suffix.lower() in {"thousand", "grand"}:
         normalized = normalize_money(f"{amount} thousand")
     return normalized, raw
@@ -917,7 +921,8 @@ def extract_occupants(text: str) -> dict[str, int]:
 
     # Self + partner + named kids when no explicit adult count was given.
     has_me = bool(
-        re.search(r"\b(just me|only me|myself|me and|me my|i live|it'?s me)\b", norm)
+        re.search(
+            r"\b(just me|only me|myself|me and|me my|i live|it'?s me)\b", norm)
         or re.fullmatch(r"(just |only )?me", norm)
     )
     partners = len(_PARTNER_RE.findall(norm))
@@ -1207,7 +1212,7 @@ def parse_spoken_name(text: str) -> str:
     # If the caller restated, keep the part after the LAST correction marker.
     matches = list(_NAME_CORRECTION_SPLIT_RE.finditer(s))
     if matches:
-        tail = s[matches[-1].end() :]
+        tail = s[matches[-1].end():]
         if tail.strip():
             s = tail
 
