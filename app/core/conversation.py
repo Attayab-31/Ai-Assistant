@@ -122,6 +122,7 @@ class ConversationSession:
     pre_screening_prompt: str = ""
     pre_screening_prompt_en: str = ""
     pre_screening_prompt_es: str = ""
+    pre_screening_prompt_spoken: bool = False
     route_choice_pending: bool = False
     route_choice_selected: str | None = None
     # Caller-selected language for spoken responses. Defaults to English.

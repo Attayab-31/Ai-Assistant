@@ -1339,6 +1339,7 @@ async def handle_call_answered(session: ConversationSession) -> list[bytes]:
         prompt = build_pre_screening_prompt(session)
         session.current_state = CallState.PRE_SCREENING.value
         session.route_choice_pending = True
+        session.pre_screening_prompt_spoken = True
         full_greeting = f"{intro} {prompt}"
         session.add_transcript("AI", full_greeting)
         parts = await synthesize_speech_parts(intro, prompt, session, combine=True)
@@ -1860,7 +1861,17 @@ async def process_tenant_speech(
                 prompt = _localize(session, "Let's get started.", "Empecemos.")
             session.refresh_progress()
             touch_monitor_session(session.call_id)
-            return await finish_turn(prompt, ack=prompt, follow_up="")
+            ack = (
+                _localize(session, "Great, let's get started.", "Perfecto, empezamos.")
+                if session.pre_screening_prompt_spoken
+                else None
+            )
+            response_text = prompt if not ack else f"{ack} {prompt}"
+            return await finish_turn(
+                response_text,
+                ack=ack,
+                follow_up=prompt if ack else "",
+            )
 
         if route == "callback":
             session.route_choice_pending = False
