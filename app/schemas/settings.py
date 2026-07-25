@@ -207,6 +207,10 @@ class GeneralSettingsUpdate(BaseModel):
     latency_alert_timeout_rate_pct: float | None = None
     latency_alert_timeout_rate_crit_pct: float | None = None
     llm_streaming_enabled: bool | None = None
+    pre_screening_enabled: bool | None = None
+    pre_screening_prompt: str | None = None
+    pre_screening_prompt_en: str | None = None
+    pre_screening_prompt_es: str | None = None
 
     @field_validator("max_retries_per_question")
     @classmethod

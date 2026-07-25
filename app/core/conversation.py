@@ -46,7 +46,7 @@ from app.core.screening_flow import (
 )
 
 # Meta states only — screening question states are dynamic strings from admin config.
-META_STATES = frozenset({"IDLE", "GREETING", "WRAP_UP", "ENDED"})
+META_STATES = frozenset({"IDLE", "GREETING", "PRE_SCREENING", "WRAP_UP", "ENDED"})
 
 
 class CallState(str, Enum):
@@ -54,6 +54,7 @@ class CallState(str, Enum):
 
     IDLE = "IDLE"
     GREETING = "GREETING"
+    PRE_SCREENING = "PRE_SCREENING"
     WRAP_UP = "WRAP_UP"
     ENDED = "ENDED"
 
@@ -116,6 +117,13 @@ class ConversationSession:
     greeting_message: str = ""
     closing_message: str = ""
     provider_failure_message: str = ""
+    # Optional pre-screening route choice prompt shown before the first question.
+    pre_screening_enabled: bool = False
+    pre_screening_prompt: str = ""
+    pre_screening_prompt_en: str = ""
+    pre_screening_prompt_es: str = ""
+    route_choice_pending: bool = False
+    route_choice_selected: str | None = None
     # Caller-selected language for spoken responses. Defaults to English.
     call_language: str = "en"
     # Frozen per-call TTS voices for English / Spanish switching.

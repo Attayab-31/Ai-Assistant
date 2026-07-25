@@ -60,6 +60,10 @@ CALL_SETTINGS_KEYS = (
     "latency_alert_timeout_rate_pct",
     "latency_alert_timeout_rate_crit_pct",
     "llm_streaming_enabled",
+    "pre_screening_enabled",
+    "pre_screening_prompt",
+    "pre_screening_prompt_en",
+    "pre_screening_prompt_es",
     "email_notifications_enabled",
     "landlord_email",
     "email_from_name",
@@ -252,6 +256,10 @@ class CallSettingsSnapshot:
     review_score_threshold: int = 40
     voice_latency_profile: str = "balanced"
     llm_streaming_enabled: bool = True
+    pre_screening_enabled: bool = False
+    pre_screening_prompt: str = ""
+    pre_screening_prompt_en: str = ""
+    pre_screening_prompt_es: str = ""
     turn_timeout_seconds: float = 15.0
     llm_timeout_voice_seconds: float = 5.5
     deepgram_endpointing_ms: int = 900
@@ -615,6 +623,12 @@ def snapshot_from_map(values: dict[str, Any]) -> CallSettingsSnapshot:
         ),
         llm_models_by_provider={k: str(v) for k, v in model_by_llm.items()},
         tts_voices_by_provider={k: str(v) for k, v in voice_by_tts.items()},
+        pre_screening_enabled=_parse_setting(
+            "pre_screening_enabled", values.get("pre_screening_enabled"), False
+        ),
+        pre_screening_prompt=str(values.get("pre_screening_prompt") or "").strip(),
+        pre_screening_prompt_en=str(values.get("pre_screening_prompt_en") or "").strip(),
+        pre_screening_prompt_es=str(values.get("pre_screening_prompt_es") or "").strip(),
         notification_settings=notification_settings_from_map(values),
         questions_runtime_fallback=questions_runtime_fallback,
         **{

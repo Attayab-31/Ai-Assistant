@@ -121,6 +121,60 @@ _AUDIT_ONLY_FIELDS = frozenset(
 logger = logging.getLogger(__name__)
 
 
+def classify_pre_screening_route(transcript: str, *, language_code: str = "en") -> str:
+    """Classify a caller's pre-screening choice into questions/callback/human."""
+    text = (transcript or "").strip().lower()
+    if not text:
+        return "questions"
+
+    is_es = str(language_code or "en").strip().lower().startswith("es")
+    human_markers = (
+        ["talk to a person", "speak to a person", "speak with a person", "human", "representative", "agent", "live person", "speak to someone", "talk to someone"]
+        if not is_es
+        else ["hablar con una persona", "hablar con alguien", "persona humana", "representante", "agente", "persona en vivo", "alguien"]
+    )
+    callback_markers = (
+        ["callback", "call me back", "call back", "leave a message", "message", "later", "return my call"]
+        if not is_es
+        else ["llamarme de vuelta", "llamen", "dejar un mensaje", "mensaje", "despues", "que me llamen"]
+    )
+    question_markers = (
+        ["questions", "answer a few questions", "answer questions", "question", "screening"]
+        if not is_es
+        else ["preguntas", "responder unas preguntas", "responder preguntas", "pregunta", "screening"]
+    )
+
+    if any(marker in text for marker in human_markers):
+        return "human"
+    if any(marker in text for marker in callback_markers):
+        return "callback"
+    if any(marker in text for marker in question_markers):
+        return "questions"
+    return "questions"
+
+
+def build_pre_screening_prompt(session: ConversationSession) -> str:
+    """Return the localized pre-screening prompt, using admin overrides when present."""
+    if (session.pre_screening_prompt or "").strip():
+        return session.pre_screening_prompt.strip()
+
+    is_es = str(getattr(session, "call_language", "en") or "en").strip().lower().startswith("es")
+    if is_es:
+        if (session.pre_screening_prompt_es or "").strip():
+            return session.pre_screening_prompt_es.strip()
+        return (
+            "Quiere responder unas preguntas, dejar un mensaje para que le llamemos "
+            "o pedir hablar con una persona?"
+        )
+
+    if (session.pre_screening_prompt_en or "").strip():
+        return session.pre_screening_prompt_en.strip()
+    return (
+        "Would you like to answer a few questions, leave a callback message, "
+        "or ask for a person?"
+    )
+
+
 def _apply_guarded_state_transition(
     session: ConversationSession,
     to_state: str,
@@ -1072,6 +1126,10 @@ async def create_session(
             tts_voice_deepgram_es=snapshot.tts_voice_deepgram_es,
             tts_voice_google_es=snapshot.tts_voice_google_es,
             tts_voices_en_by_provider=dict(snapshot.tts_voices_by_provider),
+            pre_screening_enabled=snapshot.pre_screening_enabled,
+            pre_screening_prompt=snapshot.pre_screening_prompt,
+            pre_screening_prompt_en=snapshot.pre_screening_prompt_en,
+            pre_screening_prompt_es=snapshot.pre_screening_prompt_es,
             notification_settings=snapshot.notification_settings,
         )
         if snapshot.questions_runtime_fallback and questions is None:
@@ -1276,6 +1334,21 @@ async def handle_call_answered(session: ConversationSession) -> list[bytes]:
         intro = session.greeting_message.replace("{property_name}", business)
     else:
         intro = build_greeting_intro(business, language_code=session.call_language)
+
+    if session.pre_screening_enabled and not session.route_choice_selected:
+        prompt = build_pre_screening_prompt(session)
+        session.current_state = CallState.PRE_SCREENING.value
+        session.route_choice_pending = True
+        full_greeting = f"{intro} {prompt}"
+        session.add_transcript("AI", full_greeting)
+        parts = await synthesize_speech_parts(intro, prompt, session, combine=True)
+        if not parts:
+            _, shutdown_parts, _ = await end_call_for_provider_failure(
+                session, "tts", "Greeting speech synthesis failed"
+            )
+            return shutdown_parts
+        return parts
+
     first_state = first_active_question_state(session.questions)
     session.current_state = first_state or CallState.WRAP_UP.value
     q1 = session.get_current_question()
@@ -1762,6 +1835,74 @@ async def process_tenant_speech(
                 ack=_localize(session, "Great, thanks.", "Perfecto, gracias."),
                 follow_up=prompt,
             )
+
+    if session.current_state == CallState.PRE_SCREENING.value and session.route_choice_pending:
+        route = classify_pre_screening_route(transcript, language_code=session.call_language)
+        if route == "questions":
+            first_state = first_active_question_state(session.questions)
+            if first_state:
+                session.current_state = first_state
+            else:
+                session.current_state = CallState.WRAP_UP.value
+            session.route_choice_pending = False
+            session.route_choice_selected = "questions"
+            question = session.get_current_question()
+            prompt = (
+                localized_question_text(
+                    question,
+                    language_code=session.call_language,
+                    key="question",
+                )
+                if question
+                else (_localize(session, "Let's get started.", "Empecemos.") if not is_meta_navigation_request(transcript) else "")
+            )
+            if not prompt:
+                prompt = _localize(session, "Let's get started.", "Empecemos.")
+            session.refresh_progress()
+            touch_monitor_session(session.call_id)
+            return await finish_turn(prompt, ack=prompt, follow_up="")
+
+        if route == "callback":
+            session.route_choice_pending = False
+            session.route_choice_selected = "callback"
+            session.control_flags["callback_requested"] = True
+            session.merge_extracted_data(
+                {"callback_requested": True, "special_notes": transcript},
+                raw_text=transcript,
+            )
+            response_text = _localize(
+                session,
+                "No problem. I will note that you asked for a callback later.",
+                "No hay problema. Dejare anotado que desea que le devolvamos la llamada.",
+            )
+            _apply_guarded_state_transition(
+                session,
+                CallState.ENDED.value,
+                "Pre-screening route: callback",
+                retry_count=session.retry_count,
+            )
+            return await finish_turn(response_text, complete=True)
+
+        if route == "human":
+            session.route_choice_pending = False
+            session.route_choice_selected = "human"
+            session.control_flags["human_requested"] = True
+            session.merge_extracted_data(
+                {"human_requested": True, "special_notes": transcript},
+                raw_text=transcript,
+            )
+            response_text = _localize(
+                session,
+                "Of course. I will connect your request with a team member.",
+                "Claro. Voy a enviar su solicitud a un miembro del equipo.",
+            )
+            _apply_guarded_state_transition(
+                session,
+                CallState.ENDED.value,
+                "Pre-screening route: human",
+                retry_count=session.retry_count,
+            )
+            return await finish_turn(response_text, complete=True)
 
     # ── The single LLM brain ────────────────────────────────────────────────
     # ONE call resolves intent, FAQ answering, field extraction, and the spoken
