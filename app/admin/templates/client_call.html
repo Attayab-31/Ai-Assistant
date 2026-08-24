@@ -183,7 +183,7 @@
     async function startCall() {
       setPhase("connecting", "Connecting…");
       try {
-        const data = await api("/test/api/start", { mode: "voice", phone_number: "+15555550123" });
+        const data = await api("/test/call/api/start", { mode: "voice", phone_number: "+15555550123" });
         callId = data.call_id;
         ws = new WebSocket(data.ws_url);
 
@@ -241,7 +241,7 @@
       const id = callId;
       cleanup();
       setPhase("ended", caption || "Call ended.");
-      if (id) { try { await api("/test/api/end", { call_id: id }); } catch (_) {} }
+      if (id) { try { await api("/test/call/api/end", { call_id: id }); } catch (_) {} }
       // Return to idle shortly so the client can call again.
       setTimeout(() => { if (phase === "ended") setPhase("idle", "Tap to talk with our assistant"); }, 2600);
     }

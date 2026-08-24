@@ -26,6 +26,7 @@ from slowapi.errors import RateLimitExceeded
 from app.api.admin import router as admin_router
 from app.api.auth import router as auth_router
 from app.api.settings import router as settings_router
+from app.api.test_console import public_router as public_test_router
 from app.api.test_console import router as test_console_router
 from app.api.webhook import router as webhook_router
 
@@ -175,7 +176,8 @@ async def lifespan(app: FastAPI):
     except RuntimeError:
         raise
     except Exception as e:
-        logger.warning("Could not verify recording storage configuration: %s", e)
+        logger.warning(
+            "Could not verify recording storage configuration: %s", e)
 
     logger.info("✅ AI Tenant Screener ready!")
     yield
@@ -248,7 +250,8 @@ async def csrf_middleware(request: Request, call_next):
         return await call_next(request)
 
     path = request.url.path
-    protected = path in _CSRF_PROTECTED_PATHS or path.startswith(_CSRF_PROTECTED_PREFIXES)
+    protected = path in _CSRF_PROTECTED_PATHS or path.startswith(
+        _CSRF_PROTECTED_PREFIXES)
     if not protected or not request.cookies.get(ACCESS_TOKEN_COOKIE_NAME):
         return await call_next(request)
 
@@ -324,9 +327,12 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 app.include_router(webhook_router, prefix="/telnyx", tags=["Telnyx Webhooks"])
 app.include_router(auth_router, prefix="/auth", tags=["Authentication"])
 app.include_router(admin_router, prefix="/admin", tags=["Admin Dashboard"])
-app.include_router(settings_router, prefix="/api/settings", tags=["Settings API"])
+app.include_router(settings_router, prefix="/api/settings",
+                   tags=["Settings API"])
+app.include_router(public_test_router, prefix="/test", tags=["Public Call"])
 if settings.allow_test_console:
-    app.include_router(test_console_router, prefix="/test", tags=["Test Console"])
+    app.include_router(test_console_router, prefix="/test",
+                       tags=["Test Console"])
 else:
     logger.info("Test console disabled (production default)")
 
@@ -377,7 +383,8 @@ async def health_check():
         }
         return JSONResponse(payload, status_code=200 if healthy else 503)
 
-    celery_health = {"ok": False, "workers": 0, "broker": False, "detail": "Unavailable"}
+    celery_health = {"ok": False, "workers": 0,
+                     "broker": False, "detail": "Unavailable"}
     try:
         from app.services.celery_health import check_celery_health
 

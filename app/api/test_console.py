@@ -57,6 +57,7 @@ from config import settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+public_router = APIRouter()
 __test__ = False
 
 TEMPLATES_DIR = Path(__file__).parent.parent / "admin" / "templates"
@@ -78,6 +79,10 @@ class StartCallRequest(BaseModel):
 class SayRequest(BaseModel):
     call_id: str
     text: str
+
+
+class EndCallRequest(BaseModel):
+    call_id: str
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -275,10 +280,9 @@ async def test_console_page(
     )
 
 
-@router.get("/call", response_class=HTMLResponse, include_in_schema=False)
+@public_router.get("/call", response_class=HTMLResponse, include_in_schema=False)
 async def client_call_page(
     request: Request,
-    _auth: None = Depends(require_test_console_access),
 ):
     """Render the minimal, client-friendly single-button call interface.
 
@@ -289,6 +293,31 @@ async def client_call_page(
         "client_call.html",
         {"request": request, "app_url": settings.app_url},
     )
+
+
+@public_router.post("/call/api/start")
+@limiter.limit("30/minute")
+async def public_start_test_call(
+    request: Request,
+    body: Annotated[StartCallRequest, Body()],
+    db: AsyncSession = Depends(get_db),
+):
+    """Start a call for the public single-button client."""
+    result = await start_test_call(request=request, body=body, db=db, _auth=None)
+    result["ws_url"] = result["ws_url"].replace(
+        "/test/api/stream/", "/test/call/api/stream/", 1
+    )
+    return result
+
+
+@public_router.post("/call/api/end")
+@limiter.limit("60/minute")
+async def public_end_test_call(
+    request: Request,
+    body: Annotated[EndCallRequest, Body()],
+):
+    """Finalize a call from the public single-button client."""
+    return await end_test_call(request=request, body=body, _auth=None)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -429,7 +458,8 @@ async def say_audio(
     try:
         mulaw = any_audio_to_mulaw(raw)
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Unsupported audio: {e}") from e
+        raise HTTPException(
+            status_code=400, detail=f"Unsupported audio: {e}") from e
 
     from app.core.audio_stream import transcribe_buffer
 
@@ -449,10 +479,6 @@ async def say_audio(
         **_audio_payload(response_audio),
         "session": _session_snapshot(session),
     }
-
-
-class EndCallRequest(BaseModel):
-    call_id: str
 
 
 @router.post("/api/end")
@@ -549,13 +575,17 @@ async def list_test_sessions(
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-@router.websocket("/api/stream/{call_id}")
-async def test_stream(websocket: WebSocket, call_id: str):
+async def _run_test_stream(
+    websocket: WebSocket,
+    call_id: str,
+    *,
+    require_auth: bool,
+):
     """
     Telnyx-compatible WebSocket: same protocol and handler as production.
     Emits debug events (transcript, response, complete) for the test UI.
     """
-    if not await _verify_ws_auth(websocket):
+    if require_auth and not await _verify_ws_auth(websocket):
         await websocket.close(code=1008, reason="authentication required")
         return
     await websocket.accept()
@@ -582,3 +612,15 @@ async def test_stream(websocket: WebSocket, call_id: str):
         hangup_on_complete=False,
         emit_debug_events=True,
     )
+
+
+@router.websocket("/api/stream/{call_id}")
+async def test_stream(websocket: WebSocket, call_id: str):
+    """Authenticated WebSocket for the full test console."""
+    await _run_test_stream(websocket, call_id, require_auth=True)
+
+
+@public_router.websocket("/call/api/stream/{call_id}")
+async def public_test_stream(websocket: WebSocket, call_id: str):
+    """Public WebSocket for the single-button call client."""
+    await _run_test_stream(websocket, call_id, require_auth=False)
